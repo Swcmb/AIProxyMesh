@@ -1,0 +1,17 @@
+services:
+  resin:
+    image: ghcr.io/resinat/resin:latest
+    container_name: resin
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      # 主端口：管理控制台 + HTTP/SOCKS5 代理入口
+      - "2260:2260"
+      # 预发布端口段：WebUI 新增自定义监听端口时无需重建容器
+      - "52983:52983"
+      - "2300-2399:2300-2399"
+    volumes:
+      - ./data/cache:/var/cache/resin
+      - ./data/state:/var/lib/resin
+      - ./data/log:/var/log/resin

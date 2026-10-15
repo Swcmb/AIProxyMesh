@@ -1,0 +1,72 @@
+name: opencode2api
+
+# 4 个 opencode2api 实例 + 共享代理清单目录
+# 公共配置用 YAML 锚点复用，改公共参数只改这一处
+x-oc2api-common: &oc2api-common
+  image: ghcr.io/jasonxu114514/opencode2api:1.4.0
+  restart: unless-stopped
+  # 容器以非 root 用户运行，rootfs 只读
+  read_only: true
+  tmpfs:
+    - /tmp:size=32m
+  environment:
+    TZ: Asia/Shanghai
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+  networks:
+    - oc2api-net
+    # 加入 New API 的网络，让 new-api 容器能直接用 http://oc2api-1:8080 访问
+    - new-api_default
+
+services:
+  oc2api-1:
+    <<: *oc2api-common
+    container_name: oc2api-1
+    ports:
+      - "127.0.0.1:8080:8080"   # API
+      - "127.0.0.1:8081:8081"   # WebUI
+    volumes:
+      # 宿主目录直挂为配置目录，绕开「compose 仅首次启动导入 config.json」的限制
+      - ./instance-1:/var/lib/opencode2api
+      # 代理清单只读挂载（嵌套挂载，Docker 按路径深度排序生效）
+      - ./proxies:/var/lib/opencode2api/proxies:ro
+
+  oc2api-2:
+    <<: *oc2api-common
+    container_name: oc2api-2
+    ports:
+      - "127.0.0.1:8082:8080"
+      - "127.0.0.1:8083:8081"
+    volumes:
+      - ./instance-2:/var/lib/opencode2api
+      - ./proxies:/var/lib/opencode2api/proxies:ro
+
+  oc2api-3:
+    <<: *oc2api-common
+    container_name: oc2api-3
+    ports:
+      - "127.0.0.1:8084:8080"
+      - "127.0.0.1:8085:8081"
+    volumes:
+      - ./instance-3:/var/lib/opencode2api
+      - ./proxies:/var/lib/opencode2api/proxies:ro
+
+  oc2api-4:
+    <<: *oc2api-common
+    container_name: oc2api-4
+    ports:
+      - "127.0.0.1:8086:8080"
+      - "127.0.0.1:8087:8081"
+    volumes:
+      - ./instance-4:/var/lib/opencode2api
+      - ./proxies:/var/lib/opencode2api/proxies:ro
+
+networks:
+  oc2api-net:
+    driver: bridge
+  # 复用 New API 已有的网络，无需重复创建
+  new-api_default:
+    external: true
