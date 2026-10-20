@@ -3,18 +3,18 @@
 | 项 | 值 |
 | :--- | :--- |
 | 日期 | 2026-10-20 |
-| 版本 | `v0.1.1` |
+| 版本 | `v0.1.2` |
 | 平台 | Windows 10.0.26100 / amd64；Docker 29.2.1 (linux/x86_64) |
 | 交付形态 | 单个 Go 可执行文件 + 单个 Docker 镜像 + 内嵌 WebUI |
 | 许可证 | GPL-3.0-or-later（`mesh/LICENSE`），Resin MIT 声明（`mesh/NOTICE`） |
 
-> **版本说明**：`v0.1.0` 为初始发布（tag 保留、不移动）；`v0.1.1` 追加“上游共识后撤销先前节点层冷却”修复，是本报告与镜像 `mesh:v0.1.1` 对应的最终交付版本。
+> **版本说明**：`v0.1.0` 初始发布；`v0.1.1` 追加“上游共识后撤销先前节点层冷却”；`v0.1.2` 将轮转别名、模型目录刷新与可用性探测统一接入出口池，并补充订阅热更新与免费模型探测回归。三个 tag 均保留、不移动，`v0.1.2` 为最终交付版本。
 
 ## 1. 发布物
 
 ### 跨平台二进制
 
-`CGO_ENABLED=0`，`-trimpath -ldflags "-s -w -X main.version=v0.1.1"`：
+`CGO_ENABLED=0`，`-trimpath -ldflags "-s -w -X main.version=v0.1.2"`：
 
 | 目标 | 大小 | 校验 |
 | :--- | ---: | :--- |
@@ -29,15 +29,15 @@
 ```bash
 cd mesh
 CGO_ENABLED=0 GOOS=<os> GOARCH=<arch> \
-  go build -trimpath -ldflags "-s -w -X main.version=v0.1.1" -o mesh-<os>-<arch> ./cmd/mesh
+  go build -trimpath -ldflags "-s -w -X main.version=v0.1.2" -o mesh-<os>-<arch> ./cmd/mesh
 ```
 
 ### Docker
 
 ```bash
 cd mesh
-docker build --build-arg VERSION=v0.1.1 -t mesh:v0.1.1 .
-docker tag mesh:v0.1.1 mesh:local
+docker build --build-arg VERSION=v0.1.2 -t mesh:v0.1.2 .
+docker tag mesh:v0.1.2 mesh:local
 # image size: 35.2 MB
 ```
 
@@ -64,7 +64,7 @@ docker run -d --name mesh-smoke -p 18090:8080 -p 18091:8081 \
 
 | 检查 | 结果 |
 | :--- | :--- |
-| 启动日志 | `api 0.0.0.0:8080`、`webui 0.0.0.0:8081`、`version v0.1.1` |
+| 启动日志 | `api 0.0.0.0:8080`、`webui 0.0.0.0:8081`、`version v0.1.2` |
 | `GET /`（WebUI） | 200 |
 | `GET /healthz` | 503 `starting`（沙箱无法访问 opencode.ai，模型目录 pending；非崩溃） |
 | 登录 `/api/auth/login` | 200，返回 CSRF |
@@ -77,10 +77,10 @@ docker run -d --name mesh-smoke -p 18090:8080 -p 18091:8081 \
 ## 3. 升级与回滚演练
 
 1. 停止旧进程，备份 `config.json` 与 `egress.db`（含 WAL/SHM）。
-2. 使用 `v0.1.1` 二进制与同一份配置/状态目录启动。
+2. 使用 `v0.1.2` 二进制与同一份配置/状态目录启动。
 3. 未携带 Cookie 的 `/api/auth/session` 返回 401（会话不跨进程复用，符合 HttpOnly 内存会话语义）。
 4. 重新登录后 `/api/egress` 返回 `total=1, eligible=1`，节点 `direct` 从持久化状态恢复。
-5. `/healthz` 返回 `version=v0.1.1`。
+5. `/healthz` 返回 `version=v0.1.2`。
 6. 回滚路径：停止进程 → 恢复上一版二进制 → 恢复 `config.json.upgrade-backup`；状态库建议同时恢复备份（迁移只向前）。
 7. 演练产生的备份：`config.json.upgrade-backup`、`egress.db.backup`、`egress.db-wal.backup`。
 
