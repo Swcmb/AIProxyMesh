@@ -162,3 +162,14 @@ type Selector interface {
 - 轮转请求的总尝试次数纳入 `retry.max_attempts`；同一模型的多次重试共享 exclude 集合；上游共识时停止切换模型。
 - 模型目录刷新与免费模型可用性探测优先使用出口池客户端；这类诊断/目录请求不把模型级 4xx 归因到出口，避免误冷却。
 - 验证：`TestRotationFailoverUsesEgress`（429 → 切换模型 → 健康出口成功、单节点冷却、上游 2 次调用）；`TestFreeModelAvailabilityProbeUsesEgress`（探测经出口池、诊断不冷却）；`TestEngineApplyReconcilesSubscriptions`（订阅热更新）；全量 `go test -race ./...` 通过。
+
+
+---
+
+## D-21 CI 工作流与子模块自动更新（2026-10-20）
+
+- `checks.yml` 以 opencode2api 的 Checks 为结构基线（Go 矩阵、gofmt、WebUI 构建），路径适配 `mesh/`，并保留 `go test` / `go test -race` 质量门。
+- `release.yml` 以 opencode2api 的 Release 为结构基线：六平台产物、GHCR 多架构镜像、GitHub Release。
+- `update-submodules.yml` 每 6 小时执行 `git submodule update --remote Resin opencode2api`；有变化时提交 gitlink、推送 `main` 并显式 `gh workflow run checks.yml`（`GITHUB_TOKEN` 推送默认不触发工作流）。
+- 失败通知：`notify-failure.yml` 可复用工作流，SMTP Secrets 缺失时跳过邮件；GitHub Actions 自带失败邮件作为零配置兜底。
+- 发布包命名 `mesh_<tag>_<os>_<arch>`，二进制 `mesh`，附带 README/LICENSE/NOTICE/config.example.json/docs。

@@ -132,6 +132,13 @@ mesh/
 └── docs/                    # 配置与 API 文档
 ```
 
+## CI 与自动更新
+
+- `.github/workflows/checks.yml`：与 opencode2api 同构的检查流程（Ubuntu/Windows × Go 1.25.x/stable 的 vet/build 矩阵、gofmt、WebUI 构建），并追加 `go test` 与 `go test -race`。
+- `.github/workflows/release.yml`：推送 `v*` 标签时构建六个平台产物、发布 GHCR 多架构镜像并创建 GitHub Release。
+- `.github/workflows/update-submodules.yml`：每 6 小时检查 Resin 与 opencode2api 上游；有新提交时更新子模块指针、推送 `main`，并显式触发 checks 工作流。
+- 失败邮件：在仓库 Secrets 配置 `SMTP_SERVER`、`SMTP_USERNAME`、`SMTP_PASSWORD`、`NOTIFY_EMAIL`，可选 `SMTP_PORT`、`SMTP_SECURE`、`SMTP_FROM`。未配置时跳过邮件步骤；也可在 GitHub 通知设置中开启 Actions 失败邮件。
+
 ## 许可证
 
 本项目按 **GPL-3.0-or-later** 分发，完整文本见 `LICENSE`。它衍生自 GPL-3.0-or-later 的 opencode2api，并包含来自 MIT 许可的 Resin 的设计与代码片段；Resin 的版权与许可声明见 `NOTICE`。第三方依赖清单同样在 `NOTICE` 中。

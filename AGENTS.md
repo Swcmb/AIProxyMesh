@@ -52,6 +52,12 @@ docker build -t mesh:local .
 - 决策记录：`project-context/decisions.md`
 - 上游设计：`Resin/DESIGN.md`、`Resin/doc/`、`opencode2api/docs/`
 
+## CI 与自动化
+
+- `.github/workflows/checks.yml`、`release.yml` 与 opencode2api 的工作流同构，路径适配 `mesh/`；release 产出六平台二进制与 GHCR 镜像。
+- `.github/workflows/update-submodules.yml` 每 6 小时更新 Resin/opencode2api 子模块指针；有变化时推送 `main` 并显式触发 checks。
+- 失败邮件由 `notify-failure.yml` 处理，依赖仓库 Secrets：`SMTP_SERVER`、`SMTP_USERNAME`、`SMTP_PASSWORD`、`NOTIFY_EMAIL`（可选 `SMTP_PORT`、`SMTP_SECURE`、`SMTP_FROM`）。
+
 ## 维护规则
 
 当项目结构、构建测试命令、架构边界、子模块版本或开发约定发生变化时，必须在同一次改动中同步更新本文件。
