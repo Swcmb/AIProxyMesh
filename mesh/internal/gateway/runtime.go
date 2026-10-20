@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/config"
+	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress"
 	modelcatalog "github.com/Swcmb/AIProxyMesh/mesh/internal/models"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/protocol"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/rotation"
@@ -45,6 +46,8 @@ type RuntimeManager struct {
 	effective          effectiveListeners
 	metadata           *modelcatalog.PricingStore
 	availabilityCancel context.CancelFunc
+	egressMu           sync.Mutex
+	egressEngine       *egress.Engine
 }
 
 type effectiveListeners struct {
@@ -63,16 +66,10 @@ func NewRuntimeManager(root context.Context, configPath string, cfg config.Confi
 	// and fall back to the store's direct client when none are available.
 	manager.metadata.SetClientProvider(func() []*http.Client {
 		runtime := manager.current.Load()
-		if runtime == nil || runtime.gateway == nil || runtime.gateway.transports == nil {
+		if runtime == nil || runtime.gateway == nil {
 			return nil
 		}
-		clients := make([]*http.Client, 0, len(runtime.gateway.transports.items))
-		for _, proxy := range runtime.gateway.transports.items {
-			if proxy != nil && proxy.healthy.Load() {
-				clients = append(clients, proxy.client)
-			}
-		}
-		return clients
+		return runtime.gateway.discoveryClients()
 	})
 	if cfg.WebUI.Password != "" {
 		hash, err := config.HashPassword(cfg.WebUI.Password)
@@ -94,6 +91,9 @@ func NewRuntimeManager(root context.Context, configPath string, cfg config.Confi
 		return nil, err
 	}
 	manager.rotation = rotationManager
+	if err := manager.ensureEgress(cfg); err != nil {
+		return nil, err
+	}
 	runtime, err := manager.build(cfg)
 	if err != nil {
 		return nil, err
@@ -121,6 +121,7 @@ func (m *RuntimeManager) build(cfg config.Config) (*gatewayRuntime, error) {
 	if err != nil {
 		return nil, err
 	}
+	gateway.SetEgress(m.Egress())
 	gateway.rotation = m.rotation
 	availabilityPath := ""
 	if m.configPath != "" {
@@ -222,6 +223,9 @@ func (m *RuntimeManager) applyLocked(candidate config.Config, persist bool) (App
 	if err != nil {
 		return ApplyResult{}, err
 	}
+	if err := m.ensureEgress(normalized); err != nil {
+		return ApplyResult{}, err
+	}
 	next, err := m.build(normalized)
 	if err != nil {
 		return ApplyResult{}, fmt.Errorf("initialize runtime: %w", err)
@@ -283,9 +287,51 @@ func (m *RuntimeManager) Shutdown() {
 	if m.availabilityCancel != nil {
 		m.availabilityCancel()
 	}
+	m.egressMu.Lock()
+	if m.egressEngine != nil {
+		_ = m.egressEngine.Close()
+		m.egressEngine = nil
+	}
+	m.egressMu.Unlock()
 	if current := m.current.Load(); current != nil {
 		current.cancel()
 	}
+}
+
+// Egress returns the exit-pool engine, or nil when the feature is disabled.
+func (m *RuntimeManager) Egress() *egress.Engine {
+	m.egressMu.Lock()
+	defer m.egressMu.Unlock()
+	return m.egressEngine
+}
+
+func (m *RuntimeManager) ensureEgress(cfg config.Config) error {
+	m.egressMu.Lock()
+	defer m.egressMu.Unlock()
+	if !cfg.EgressEnabled() {
+		if m.egressEngine != nil {
+			_ = m.egressEngine.Close()
+			m.egressEngine = nil
+		}
+		return nil
+	}
+	if m.egressEngine == nil {
+		engine, err := egress.New(egress.Options{
+			Egress:      cfg.Egress,
+			Performance: cfg.Performance,
+			Upstream:    cfg.Upstream,
+			Legacy:      cfg.LegacyContent(),
+			Logger:      m.logger,
+		})
+		if err != nil {
+			return fmt.Errorf("initialize egress: %w", err)
+		}
+		engine.Start(m.root)
+		m.egressEngine = engine
+		return nil
+	}
+	m.egressEngine.Apply(cfg.Egress, cfg.Upstream, cfg.LegacyContent())
+	return nil
 }
 
 type ResourceSnapshot struct {

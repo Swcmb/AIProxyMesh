@@ -210,7 +210,7 @@ func (g *Gateway) rotationAttempt(parent context.Context, w http.ResponseWriter,
 	setRequestCredential(parent, config.TierGo, config.KeyDisplayID(node.key), "key", false, proxy)
 	started := time.Now()
 	resp, err := client.Do(req)
-	g.recordUpstreamAttempt(parent, route, ids, attempt, config.KeyDisplayID(node.key), "key", false, proxy, resp, err, time.Since(started))
+	g.recordUpstreamAttempt(parent, route, ids, attempt, config.KeyDisplayID(node.key), "key", false, proxyTrace(proxy), resp, err, time.Since(started))
 	if resp != nil {
 		defer resp.Body.Close()
 	}

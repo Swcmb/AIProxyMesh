@@ -33,6 +33,7 @@ type Config struct {
 	WebUI             WebUIConfig                  `json:"webui"`
 	Prefer            Tier                         `json:"prefer"`
 	Reasoning         ReasoningConfig              `json:"reasoning"`
+	Egress            *EgressConfig                `json:"egress,omitempty"`
 
 	effectiveProxies []string
 }
@@ -262,6 +263,11 @@ func Normalize(path string, cfg Config) (Config, error) {
 	if err := normalizeReasoning(&cfg); err != nil {
 		return Config{}, err
 	}
+	if cfg.Egress != nil {
+		if err := cfg.Egress.normalize(path); err != nil {
+			return Config{}, err
+		}
+	}
 	return cfg, nil
 }
 
@@ -366,5 +372,6 @@ func Clone(cfg Config) Config {
 		}
 		cfg.Reasoning.EffortByModel = efforts
 	}
+	cfg.Egress = cloneEgress(cfg.Egress)
 	return cfg
 }

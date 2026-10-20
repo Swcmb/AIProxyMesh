@@ -121,6 +121,22 @@ func TestCooldownBackoffAndRetryAfter(t *testing.T) {
 	}
 }
 
+func TestRetryAfterBeyondCooldownCap(t *testing.T) {
+	r, p := testRouter(t)
+	now := time.Unix(1_700_000_000, 0)
+	r.SetClock(func() time.Time { return now })
+	u := mustURL(t, "https://api.example.com/v1")
+	addNode(p, "sub", httpExit("1.1.1.1", 8080, "a"))
+	attempt := selectOnly(t, r, u)
+	result := attempt.Report(Outcome{Kind: ExitFailure, StatusCode: 429, RetryAfter: time.Hour})
+	if result.NodeCooldown == nil {
+		t.Fatal("expected cooldown")
+	}
+	if got := result.NodeCooldown.Sub(now); got != time.Hour {
+		t.Fatalf("Retry-After must set the full cooldown, got %v", got)
+	}
+}
+
 func TestExitFailureConsensusBecomesUpstreamWide(t *testing.T) {
 	r, p := testRouter(t)
 	u := mustURL(t, "https://api.example.com/v1")
@@ -274,6 +290,43 @@ func TestDiagnoseExplainsEligibility(t *testing.T) {
 	if reasons[unsupported.ID()] != "unsupported_protocol" {
 		t.Fatalf("unsupported reason = %q", reasons[unsupported.ID()])
 	}
+}
+
+func TestAffinityIsStickyButRespectsHealth(t *testing.T) {
+	r, p := testRouter(t)
+	u := mustURL(t, "https://api.example.com/v1")
+	var entries []*node.Entry
+	for i := 0; i < 4; i++ {
+		entries = append(entries, addNode(p, "sub", httpExit("10.0.0."+string(rune('1'+i)), uint16(8080+i), "n"+string(rune('1'+i)))))
+	}
+	var preferred string
+	for i := 0; i < 20; i++ {
+		attempt, err := r.SelectAffinity(context.Background(), u, nil, "key-stable")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if preferred == "" {
+			preferred = attempt.NodeID
+		}
+		if attempt.NodeID != preferred {
+			t.Fatalf("affinity must keep the same exit: got %s want %s", attempt.NodeID, preferred)
+		}
+		attempt.Report(Outcome{Kind: Success})
+	}
+
+	// A failed affinity exit must yield to another node.
+	preferredHash, _ := node.ParseHex(preferred)
+	entry := p.Get(preferredHash)
+	entry.SetEnabled(false)
+	attempt, err := r.SelectAffinity(context.Background(), u, nil, "key-stable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempt.NodeID == preferred {
+		t.Fatal("disabled affinity node must not be chosen")
+	}
+	attempt.Report(Outcome{Kind: Success})
+	_ = entries
 }
 
 func TestScoreComponents(t *testing.T) {

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/config"
+	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/routing"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/httpx"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/identity"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/jsonutil"
@@ -230,6 +231,11 @@ func (g *Gateway) doUpstreamTiers(ctx context.Context, route models.Route, bodie
 		keyTiers = []config.Tier{route.Tier}
 	}
 	for _, tier := range keyTiers {
+		if attempts >= g.cfg.Retry.MaxAttempts {
+			// The single request budget is spent; keep the last tier's response
+			// instead of replacing it with a budget-exhausted error.
+			break
+		}
 		if lastResponse != nil {
 			httpx.DrainAndClose(lastResponse.Body)
 			lastResponse = nil
@@ -262,9 +268,17 @@ func (g *Gateway) doUpstreamTiers(ctx context.Context, route models.Route, bodie
 func (g *Gateway) doAnonymousUpstream(ctx context.Context, route models.Route, bodies map[config.Tier][]byte, ids identity.RequestIDs, attemptOffset int) (*http.Response, error, int) {
 	var lastResponse *http.Response
 	var lastErr error
-	cursor := g.anonymous.CursorFor(ids.Session)
-	limit := g.anonymous.Len()
 	attempts := 0
+	remaining := g.cfg.Retry.MaxAttempts - attemptOffset
+	if remaining < 1 {
+		return nil, errors.New("request attempt budget exhausted"), 0
+	}
+	limit := g.anonymous.Len()
+	if g.egressEnabled() {
+		limit = remaining
+	} else if limit > remaining {
+		limit = remaining
+	}
 	body := bodies[config.TierZen]
 	if len(body) == 0 {
 		return nil, errors.New("no prepared Zen request body"), 0
@@ -275,6 +289,14 @@ func (g *Gateway) doAnonymousUpstream(ctx context.Context, route models.Route, b
 	// collapses the stream back when the downstream client asked for a plain
 	// JSON reply. Key tiers keep their original bodies.
 	body = prepareAnonymousBody(body, route.ProtocolFor(config.TierZen))
+
+	var cursor *anonymousCursor
+	if !g.egressEnabled() {
+		c := g.anonymous.CursorFor(ids.Session)
+		cursor = &c
+	}
+	exclude := make(map[string]struct{})
+	var retryWait time.Duration
 	for attempts < limit {
 		if ctx.Err() != nil {
 			// The request-level budget is already gone. Stop scanning instead
@@ -285,10 +307,39 @@ func (g *Gateway) doAnonymousUpstream(ctx context.Context, route models.Route, b
 			}
 			break
 		}
-		node := cursor.Next()
-		if node == nil {
-			break
+
+		var client *http.Client
+		var node *anonymousNode
+		var egressAttempt *routing.Attempt
+		var proxy *proxyTransport
+		if g.egressEnabled() {
+			target, err := g.egressTarget(g.cfg.Upstream.Anonymous)
+			if err != nil {
+				return nil, err, attempts
+			}
+			egressAttempt, err = g.selectEgress(ctx, target, exclude, ids.Session)
+			if err != nil {
+				if retryWait > 0 && waitForRetryAfter(ctx, retryWait) {
+					retryWait = 0
+					continue
+				}
+				lastErr = err
+				break
+			}
+			retryWait = 0
+			exclude[egressAttempt.NodeID] = struct{}{}
+			client = egressAttempt.Client()
+			setRequestCredentialEgress(ctx, config.TierZen, "anonymous", "anonymous", true, egressAttempt)
+		} else {
+			node = cursor.Next()
+			if node == nil {
+				break
+			}
+			proxy = node.proxy
+			client = proxy.client
+			setRequestCredential(ctx, config.TierZen, "anonymous", "anonymous", true, proxy)
 		}
+
 		attempts++
 		if meta := telemetry.MetaFromContext(ctx); meta != nil {
 			meta.Attempts = attemptOffset + attempts
@@ -300,34 +351,70 @@ func (g *Gateway) doAnonymousUpstream(ctx context.Context, route models.Route, b
 		}
 		req, err := newUpstreamRequest(ctx, g.cfg.Upstream.Anonymous, route.Protocol, body, ids, anonymousZenKey)
 		if err != nil {
+			if egressAttempt != nil {
+				egressAttempt.Release()
+			}
 			return nil, err, attempts
 		}
-		setRequestCredential(ctx, config.TierZen, "anonymous", "anonymous", true, node.proxy)
 		started := time.Now()
-		resp, err := doInferenceAttempt(node.proxy.client, req, time.Duration(g.cfg.Performance.FirstEventTimeoutSeconds)*time.Second, g.attemptTimeout)
+		resp, err := doInferenceAttempt(client, req, time.Duration(g.cfg.Performance.FirstEventTimeoutSeconds)*time.Second, g.attemptTimeout)
 		duration := time.Since(started)
 		if ctx.Err() != nil {
 			// The parent budget expired while this attempt was in flight. Its
-			// outcome says nothing about this proxy, so record nothing and stop
+			// outcome says nothing about this exit, so record nothing and stop
 			// scanning.
+			if egressAttempt != nil {
+				egressAttempt.Release()
+			}
 			lastResponse, lastErr = resp, err
 			if lastErr == nil && lastResponse == nil {
 				lastErr = ctx.Err()
 			}
 			break
 		}
+
+		if egressAttempt != nil {
+			classification := g.reportEgressAttempt(ctx, route, ids, attemptOffset+attempts, "anonymous", "anonymous", true, egressAttempt, resp, err, duration)
+			status := upstreamStatus(resp)
+			switch classification.Kind {
+			case routing.Success, routing.Neutral:
+				g.logger.Debug("anonymous upstream accepted request", "component", "upstream", "event", "anonymous_attempt_succeeded", "request_id", ids.Request, "attempt", attempts, "tier", config.TierZen, "node", egressAttempt.NodeName, "node_id", egressAttempt.NodeID, "status", status, "duration_ms", duration.Milliseconds())
+				return resp, nil, attempts
+			case routing.UpstreamFailure:
+				lastResponse, lastErr = resp, err
+				if classification.UpstreamWide {
+					return resp, nil, attempts
+				}
+				continue
+			case routing.ClientCancel:
+				lastResponse, lastErr = resp, err
+				return resp, lastErr, attempts
+			default:
+				lastResponse, lastErr = resp, egressProxyError(egressAttempt, classification, err)
+				if classification.Kind == routing.ExitFailure && resp != nil && g.honorRetryAfter() {
+					retryWait = parseRetryAfter(resp.Header.Get("Retry-After"))
+				}
+				if err != nil {
+					g.logger.Debug("anonymous egress attempt failed", "component", "upstream", "event", "anonymous_attempt_transport_failed", "request_id", ids.Request, "attempt", attempts, "node", egressAttempt.NodeName, "node_id", egressAttempt.NodeID, "duration_ms", duration.Milliseconds(), "error", err)
+				} else {
+					g.logger.Debug("anonymous upstream returned an error response; trying the next exit", "component", "upstream", "event", "anonymous_attempt_response_failed", "request_id", ids.Request, "attempt", attempts, "node", egressAttempt.NodeName, "node_id", egressAttempt.NodeID, "status", status, "duration_ms", duration.Milliseconds())
+				}
+				continue
+			}
+		}
+
 		g.observeAnonymousResult(ctx, node, resp, err)
-		g.recordUpstreamAttempt(ctx, route, ids, attemptOffset+attempts, "anonymous", "anonymous", true, node.proxy, resp, err, duration)
+		g.recordUpstreamAttempt(ctx, route, ids, attemptOffset+attempts, "anonymous", "anonymous", true, proxyTrace(proxy), resp, err, duration)
 		if err == nil && resp.StatusCode/100 == 2 {
-			g.logger.Debug("anonymous upstream accepted request", "component", "upstream", "event", "anonymous_attempt_succeeded", "request_id", ids.Request, "attempt", attempts, "tier", config.TierZen, "key_id", "anonymous", "channel", "anonymous", "anonymous", true, "proxy", config.RedactURL(node.proxy.name), "status", resp.StatusCode, "duration_ms", duration.Milliseconds())
+			g.logger.Debug("anonymous upstream accepted request", "component", "upstream", "event", "anonymous_attempt_succeeded", "request_id", ids.Request, "attempt", attempts, "tier", config.TierZen, "key_id", "anonymous", "channel", "anonymous", "anonymous", true, "proxy", config.RedactURL(proxy.name), "status", resp.StatusCode, "duration_ms", duration.Milliseconds())
 			return resp, nil, attempts
 		}
 		lastResponse = resp
-		lastErr = asProxyUnavailable(node.proxy, err)
+		lastErr = asProxyUnavailable(proxy, err)
 		if err != nil {
-			g.logger.Debug("anonymous transport attempt failed", "component", "upstream", "event", "anonymous_attempt_transport_failed", "request_id", ids.Request, "attempt", attempts, "tier", config.TierZen, "key_id", "anonymous", "channel", "anonymous", "anonymous", true, "proxy", config.RedactURL(node.proxy.name), "duration_ms", duration.Milliseconds(), "error", err)
+			g.logger.Debug("anonymous transport attempt failed", "component", "upstream", "event", "anonymous_attempt_transport_failed", "request_id", ids.Request, "attempt", attempts, "tier", config.TierZen, "key_id", "anonymous", "channel", "anonymous", "anonymous", true, "proxy", config.RedactURL(proxy.name), "duration_ms", duration.Milliseconds(), "error", err)
 		} else {
-			g.logger.Debug("anonymous upstream returned an error response; trying the next proxy", "component", "upstream", "event", "anonymous_attempt_response_failed", "request_id", ids.Request, "attempt", attempts, "tier", config.TierZen, "key_id", "anonymous", "channel", "anonymous", "anonymous", true, "proxy", config.RedactURL(node.proxy.name), "status", resp.StatusCode, "duration_ms", duration.Milliseconds())
+			g.logger.Debug("anonymous upstream returned an error response; trying the next proxy", "component", "upstream", "event", "anonymous_attempt_response_failed", "request_id", ids.Request, "attempt", attempts, "tier", config.TierZen, "key_id", "anonymous", "channel", "anonymous", "anonymous", true, "proxy", config.RedactURL(proxy.name), "status", resp.StatusCode, "duration_ms", duration.Milliseconds())
 		}
 	}
 	if lastResponse != nil {
@@ -335,7 +422,7 @@ func (g *Gateway) doAnonymousUpstream(ctx context.Context, route models.Route, b
 	}
 	if lastErr == nil {
 		lastErr = errors.New("no healthy anonymous proxies available")
-		if !g.transports.hasHealthy() {
+		if !g.egressEnabled() && !g.transports.hasHealthy() {
 			lastErr = fmt.Errorf("no healthy anonymous proxies available: %w", errProxyUnavailable)
 		}
 	}
@@ -638,26 +725,59 @@ func (g *Gateway) doSelectedKeyUpstream(ctx context.Context, route models.Route,
 			meta.Shaped = true
 		}
 	}
-	proxy := nodes.Proxy(node)
-	if proxy == nil {
-		return nil, errors.New("selected upstream key has no proxy binding"), 0
-	}
 	if meta := telemetry.MetaFromContext(ctx); meta != nil {
 		meta.Attempts = attemptOffset + 1
 		meta.Tier = string(override.Tier)
 	}
 	keyID := config.KeyDisplayID(node.key)
-	setRequestCredential(ctx, override.Tier, keyID, "key", false, proxy)
 	req, err := newUpstreamRequest(ctx, baseURL, route.ProtocolFor(override.Tier), body, ids, node.key)
 	if err != nil {
 		return nil, err, 0
 	}
+
+	var client *http.Client
+	var egressAttempt *routing.Attempt
+	var proxy *proxyTransport
+	if g.egressEnabled() {
+		target, targetErr := g.egressTarget(baseURL)
+		if targetErr != nil {
+			return nil, targetErr, 0
+		}
+		egressAttempt, err = g.selectEgress(ctx, target, nil, keyID)
+		if err != nil {
+			return nil, err, 0
+		}
+		client = egressAttempt.Client()
+		setRequestCredentialEgress(ctx, override.Tier, keyID, "key", false, egressAttempt)
+	} else {
+		proxy = nodes.Proxy(node)
+		if proxy == nil {
+			return nil, errors.New("selected upstream key has no proxy binding"), 0
+		}
+		client = proxy.client
+		setRequestCredential(ctx, override.Tier, keyID, "key", false, proxy)
+	}
+
 	started := time.Now()
-	resp, err := doInferenceAttempt(proxy.client, req, time.Duration(g.cfg.Performance.FirstEventTimeoutSeconds)*time.Second, g.attemptTimeout)
+	resp, err := doInferenceAttempt(client, req, time.Duration(g.cfg.Performance.FirstEventTimeoutSeconds)*time.Second, g.attemptTimeout)
 	duration := time.Since(started)
-	g.recordUpstreamAttempt(ctx, route, ids, attemptOffset+1, keyID, "key", false, proxy, resp, err, duration)
+	if egressAttempt != nil {
+		// Diagnostics must not change pool state; release the in-flight slot
+		// and record only telemetry.
+		egressAttempt.Release()
+		g.recordUpstreamAttempt(ctx, route, ids, attemptOffset+1, keyID, "key", false,
+			egressTrace{Proxy: "egress", ExitNode: egressAttempt.NodeName, ExitID: egressAttempt.NodeID}, resp, err, duration)
+	} else {
+		g.recordUpstreamAttempt(ctx, route, ids, attemptOffset+1, keyID, "key", false, proxyTrace(proxy), resp, err, duration)
+	}
 	if err != nil {
-		return nil, asProxyUnavailable(proxy, err), 1
+		if egressAttempt != nil && egressAttempt.ProxyURL != nil {
+			return nil, &proxyUnavailableError{proxy: egressAttempt.NodeName, err: err}, 1
+		}
+		if proxy != nil {
+			return nil, asProxyUnavailable(proxy, err), 1
+		}
+		return nil, err, 1
 	}
 	return resp, nil, 1
 }
@@ -671,11 +791,14 @@ func (g *Gateway) doKeyUpstream(ctx context.Context, route models.Route, bodies 
 		nodes = g.goNodes
 		baseURL = g.cfg.Upstream.Go
 	}
-	cursor := nodes.CursorFor(ids.Session)
 	if nodes.Len() == 0 {
 		return nil, fmt.Errorf("no %s nodes configured", route.Tier), 0
 	}
-	attempts := 0
+	remaining := g.cfg.Retry.MaxAttempts - attemptOffset
+	if remaining < 1 {
+		return nil, errors.New("request attempt budget exhausted"), 0
+	}
+	cursor := nodes.CursorFor(ids.Session)
 	body := bodies[route.Tier]
 	if len(body) == 0 {
 		return nil, fmt.Errorf("no prepared %s request body", route.Tier), 0
@@ -686,7 +809,11 @@ func (g *Gateway) doKeyUpstream(ctx context.Context, route models.Route, bodies 
 			meta.Shaped = true
 		}
 	}
-	for attempts < g.cfg.Retry.MaxAttempts {
+	attempts := 0
+	var current *upstreamNode
+	exclude := make(map[string]struct{})
+	var retryWait time.Duration
+	for attempts < remaining {
 		if ctx.Err() != nil {
 			// Same guard as the anonymous loop: an exhausted request budget
 			// must not be spent rotating keys that were never really tried.
@@ -695,48 +822,112 @@ func (g *Gateway) doKeyUpstream(ctx context.Context, route models.Route, bodies 
 			}
 			break
 		}
-		node := cursor.Next()
-		if node == nil {
-			break
+		if current == nil {
+			current = cursor.Next()
+			if current == nil {
+				break
+			}
 		}
-		attempts++
-		// Keep the request-level trace synchronized with the attempt that is
-		// about to be sent. Only the redacted key suffix is retained.
+		keyID := config.KeyDisplayID(current.key)
+		req, err := newUpstreamRequest(ctx, baseURL, route.Protocol, body, ids, current.key)
+		if err != nil {
+			return nil, err, attempts
+		}
+
+		var client *http.Client
+		var egressAttempt *routing.Attempt
+		var proxy *proxyTransport
+		if g.egressEnabled() {
+			target, err := g.egressTarget(baseURL)
+			if err != nil {
+				return nil, err, attempts
+			}
+			egressAttempt, err = g.selectEgress(ctx, target, exclude, keyID)
+			if err != nil {
+				if retryWait > 0 && waitForRetryAfter(ctx, retryWait) {
+					retryWait = 0
+					continue
+				}
+				lastErr = err
+				break
+			}
+			retryWait = 0
+			exclude[egressAttempt.NodeID] = struct{}{}
+			client = egressAttempt.Client()
+			setRequestCredentialEgress(ctx, route.Tier, keyID, "key", false, egressAttempt)
+		} else {
+			proxy = nodes.Proxy(current)
+			if proxy == nil {
+				lastErr = errors.New("upstream key has no proxy binding")
+				break
+			}
+			client = proxy.client
+			setRequestCredential(ctx, route.Tier, keyID, "key", false, proxy)
+		}
 		if meta := telemetry.MetaFromContext(ctx); meta != nil {
-			meta.Attempts = attemptOffset + attempts
+			meta.Attempts = attemptOffset + attempts + 1
 			meta.Tier = string(route.Tier)
 		}
 		if lastResponse != nil {
 			httpx.DrainAndClose(lastResponse.Body)
 			lastResponse = nil
 		}
-		req, err := newUpstreamRequest(ctx, baseURL, route.Protocol, body, ids, node.key)
-		if err != nil {
-			return nil, err, attempts
-		}
-		proxy := nodes.Proxy(node)
-		if proxy == nil {
-			lastErr = errors.New("upstream key has no proxy binding")
-			break
-		}
-		keyID := config.KeyDisplayID(node.key)
-		setRequestCredential(ctx, route.Tier, keyID, "key", false, proxy)
+		attempts++
 		attemptStarted := time.Now()
-		resp, err := doInferenceAttempt(proxy.client, req, time.Duration(g.cfg.Performance.FirstEventTimeoutSeconds)*time.Second, g.attemptTimeout)
+		resp, err := doInferenceAttempt(client, req, time.Duration(g.cfg.Performance.FirstEventTimeoutSeconds)*time.Second, g.attemptTimeout)
 		attemptDuration := time.Since(attemptStarted)
 		if ctx.Err() != nil {
 			// The request budget expired while this attempt was in flight. A
-			// cancelled context says nothing about the key or the proxy: without
-			// this guard the instant DeadlineExceeded would cool a healthy key
-			// and evict a healthy proxy from the pool.
+			// cancelled context says nothing about the key or the exit.
+			if egressAttempt != nil {
+				egressAttempt.Release()
+			}
 			lastResponse, lastErr = resp, err
 			if lastErr == nil && lastResponse == nil {
 				lastErr = ctx.Err()
 			}
 			break
 		}
-		g.observeKeyResult(ctx, nodes, node, proxy, resp, err)
-		g.recordUpstreamAttempt(ctx, route, ids, attemptOffset+attempts, keyID, "key", false, proxy, resp, err, attemptDuration)
+
+		if egressAttempt != nil {
+			classification := g.reportEgressAttempt(ctx, route, ids, attemptOffset+attempts, keyID, "key", false, egressAttempt, resp, err, attemptDuration)
+			status := upstreamStatus(resp)
+			switch classification.Kind {
+			case routing.Success, routing.Neutral:
+				nodes.MarkSuccess(current)
+				g.logger.Debug("upstream accepted request", "component", "upstream", "event", "attempt_succeeded", "request_id", ids.Request, "attempt", attempts, "tier", route.Tier, "key_id", keyID, "node", egressAttempt.NodeName, "node_id", egressAttempt.NodeID, "status", status, "duration_ms", attemptDuration.Milliseconds())
+				return resp, nil, attempts
+			case routing.KeyFailure:
+				nodes.MarkFailure(current, resp, err)
+				lastResponse, lastErr = resp, err
+				current = nil
+				continue
+			case routing.UpstreamFailure:
+				lastResponse, lastErr = resp, err
+				if classification.UpstreamWide {
+					nodes.MarkFailure(current, resp, err)
+					return resp, nil, attempts
+				}
+				continue
+			case routing.ClientCancel:
+				lastResponse, lastErr = resp, err
+				return resp, lastErr, attempts
+			default:
+				lastResponse, lastErr = resp, egressProxyError(egressAttempt, classification, err)
+				if classification.Kind == routing.ExitFailure && resp != nil && g.honorRetryAfter() {
+					retryWait = parseRetryAfter(resp.Header.Get("Retry-After"))
+				}
+				if err != nil {
+					g.logger.Debug("upstream egress attempt failed", "component", "upstream", "event", "attempt_transport_failed", "request_id", ids.Request, "attempt", attempts, "tier", route.Tier, "key_id", keyID, "node", egressAttempt.NodeName, "node_id", egressAttempt.NodeID, "duration_ms", attemptDuration.Milliseconds(), "error", err)
+				} else {
+					g.logger.Debug("upstream returned a retryable response", "component", "upstream", "event", "attempt_retryable_response", "request_id", ids.Request, "attempt", attempts, "tier", route.Tier, "key_id", keyID, "node", egressAttempt.NodeName, "node_id", egressAttempt.NodeID, "status", status, "duration_ms", attemptDuration.Milliseconds())
+				}
+				continue
+			}
+		}
+
+		g.observeKeyResult(ctx, nodes, current, proxy, resp, err)
+		g.recordUpstreamAttempt(ctx, route, ids, attemptOffset+attempts, keyID, "key", false, proxyTrace(proxy), resp, err, attemptDuration)
 		if err == nil && resp.StatusCode/100 == 2 {
 			g.logger.Debug("upstream accepted request", "component", "upstream", "event", "attempt_succeeded", "request_id", ids.Request, "attempt", attempts, "tier", route.Tier, "key_id", keyID, "proxy", config.RedactURL(proxy.name), "status", resp.StatusCode, "duration_ms", attemptDuration.Milliseconds())
 			return resp, nil, attempts
@@ -756,6 +947,7 @@ func (g *Gateway) doKeyUpstream(ctx context.Context, route models.Route, bodies 
 		} else {
 			g.logger.Debug("upstream returned a retryable response", "component", "upstream", "event", "attempt_retryable_response", "request_id", ids.Request, "attempt", attempts, "tier", route.Tier, "key_id", keyID, "status", resp.StatusCode, "proxy", config.RedactURL(proxy.name), "duration_ms", attemptDuration.Milliseconds())
 		}
+		current = nil
 	}
 	if lastResponse != nil {
 		return lastResponse, nil, attempts
@@ -810,6 +1002,8 @@ func setRequestCredential(ctx context.Context, tier config.Tier, keyID, channel 
 	meta.Channel = channel
 	meta.Anonymous = anonymous
 	meta.Proxy = ""
+	meta.ExitNode = ""
+	meta.ExitID = ""
 	if proxy != nil {
 		meta.Proxy = config.RedactURL(proxy.name)
 	}
@@ -823,7 +1017,7 @@ func requestCredential(ctx context.Context) (string, string, bool) {
 	return meta.KeyID, meta.Channel, meta.Anonymous
 }
 
-func (g *Gateway) recordUpstreamAttempt(ctx context.Context, route models.Route, ids identity.RequestIDs, attempt int, keyID, channel string, anonymous bool, proxy *proxyTransport, resp *http.Response, err error, duration time.Duration) {
+func (g *Gateway) recordUpstreamAttempt(ctx context.Context, route models.Route, ids identity.RequestIDs, attempt int, keyID, channel string, anonymous bool, trace egressTrace, resp *http.Response, err error, duration time.Duration) {
 	status := upstreamStatus(resp)
 	success := err == nil && status >= 200 && status < 300
 	outcome := "retryable_failure"
@@ -837,6 +1031,9 @@ func (g *Gateway) recordUpstreamAttempt(ctx context.Context, route models.Route,
 	if meta := telemetry.MetaFromContext(ctx); meta != nil {
 		meta.AttemptOutcome = outcome
 		meta.Protocol = route.Protocol
+		meta.Proxy = trace.Proxy
+		meta.ExitNode = trace.ExitNode
+		meta.ExitID = trace.ExitID
 		// Append a per-attempt leg (key:status:ms, anonymized for the
 		// public lane) so the request log shows the whole attempt chain
 		// at a glance. Only the redacted key suffix is retained.
@@ -856,15 +1053,23 @@ func (g *Gateway) recordUpstreamAttempt(ctx context.Context, route models.Route,
 	if g.monitor == nil {
 		return
 	}
-	proxyName := "unavailable"
-	if proxy != nil {
-		proxyName = config.RedactURL(proxy.name)
+	proxyName := trace.Proxy
+	if proxyName == "" {
+		proxyName = "unavailable"
 	}
 	g.monitor.RecordAttempt(telemetry.UpstreamAttempt{
 		Time: time.Now().UTC(), RequestID: ids.Request, Model: route.ID, Tier: string(route.Tier), Attempt: attempt,
-		KeyID: keyID, Channel: channel, Anonymous: anonymous, Proxy: proxyName, Status: status,
+		KeyID: keyID, Channel: channel, Anonymous: anonymous, Proxy: proxyName,
+		ExitNode: trace.ExitNode, ExitID: trace.ExitID, Status: status,
 		DurationMS: max(duration.Milliseconds(), 0), Success: success, Outcome: outcome,
 	})
+}
+
+func proxyTrace(proxy *proxyTransport) egressTrace {
+	if proxy == nil {
+		return egressTrace{Proxy: "unavailable"}
+	}
+	return egressTrace{Proxy: config.RedactURL(proxy.name)}
 }
 
 func newUpstreamRequest(ctx context.Context, baseURL string, protocol wire.Protocol, body []byte, ids identity.RequestIDs, key string) (*http.Request, error) {

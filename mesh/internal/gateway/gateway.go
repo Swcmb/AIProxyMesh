@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/config"
+	egresspkg "github.com/Swcmb/AIProxyMesh/mesh/internal/egress"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/identity"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/jsonutil"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/models"
@@ -56,6 +57,7 @@ type Gateway struct {
 	catalog      *models.Catalog
 	monitor      *telemetry.Monitor
 	availability *models.AvailabilityStore
+	egress       *egresspkg.Engine
 	// attemptTimeout bounds a whole upstream attempt (dial + write + headers +
 	// first event), not just the header wait. Zero keeps the legacy behavior.
 	attemptTimeout time.Duration
@@ -95,6 +97,44 @@ func New(cfg config.Config, logger *slog.Logger, monitor *telemetry.Monitor) (*G
 		monitor:        monitor,
 		attemptTimeout: attemptDeadline(cfg),
 	}, nil
+}
+
+// SetEgress attaches the unified exit pool. A nil engine keeps the legacy
+// transport-pool behaviour.
+func (g *Gateway) SetEgress(engine *egresspkg.Engine) {
+	g.egress = engine
+}
+
+// discoveryClients lists clients for background catalog refreshes. With the
+// exit pool active these follow the same nodes as inference; otherwise the
+// legacy healthy transports are used.
+func (g *Gateway) discoveryClients() []*http.Client {
+	if g.egress != nil {
+		now := time.Now()
+		clients := make([]*http.Client, 0, 8)
+		for _, entry := range g.egress.Pool().List() {
+			if entry == nil || !entry.Enabled() || !entry.Options.Supported() || entry.Cooling(now) {
+				continue
+			}
+			client, err := g.egress.Client(entry)
+			if err == nil {
+				clients = append(clients, client)
+			}
+		}
+		if len(clients) > 0 {
+			return clients
+		}
+	}
+	if g.transports == nil {
+		return nil
+	}
+	clients := make([]*http.Client, 0, len(g.transports.items))
+	for _, proxy := range g.transports.items {
+		if proxy != nil && proxy.healthy.Load() {
+			clients = append(clients, proxy.client)
+		}
+	}
+	return clients
 }
 
 func (g *Gateway) Handler() http.Handler {

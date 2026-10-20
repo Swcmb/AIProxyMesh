@@ -47,14 +47,19 @@ type Options struct {
 	RawType string `json:"raw_type,omitempty"`
 }
 
-// Supported reports whether the node can be used as a v1 (Tier A) exit.
-func (o Options) Supported() bool {
-	switch o.Type {
+// Supported reports whether the protocol has a v1 (Tier A) outbound.
+func (p Protocol) Supported() bool {
+	switch p {
 	case Direct, HTTP, HTTPS, SOCKS5, SOCKS5H:
 		return true
 	default:
 		return false
 	}
+}
+
+// Supported reports whether the node can be used as a v1 (Tier A) exit.
+func (o Options) Supported() bool {
+	return o.Type.Supported()
 }
 
 // Addr returns host:port, or empty for direct/unsupported entries.
@@ -351,6 +356,17 @@ func (e *Entry) UpstreamSnapshot() map[string][2]uint64 {
 		return true
 	})
 	return out
+}
+
+// RestoreUpstreamStats reloads persisted attribution counters.
+func (e *Entry) RestoreUpstreamStats(target string, success, failure uint64) {
+	if target == "" {
+		return
+	}
+	value, _ := e.upstream.LoadOrStore(target, &UpstreamStats{})
+	stats := value.(*UpstreamStats)
+	stats.Success.Store(success)
+	stats.Failure.Store(failure)
 }
 
 // Latency returns the per-target latency table, or nil when disabled.

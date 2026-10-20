@@ -26,11 +26,15 @@ type RequestMeta struct {
 	Channel   string
 	Anonymous bool
 	Proxy     string
-	Attempts  int
-	Legs      []string
-	Stop      string
-	Tail      string
-	Stream    bool
+	// ExitNode/ExitID identify the egress pool node used by the last attempt.
+	// They stay empty when the legacy transport pool served the request.
+	ExitNode string
+	ExitID   string
+	Attempts int
+	Legs     []string
+	Stop     string
+	Tail     string
+	Stream   bool
 	// ServerKeyID is the fingerprint of the local server key the caller
 	// authenticated with, so usage can be split per caller. KeyID is the
 	// upstream account that served the request.

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
@@ -25,10 +26,11 @@ var ErrNoEligible = errors.New("egress: no eligible exit node")
 
 // Config controls scoring, cooldown and attribution behaviour.
 type Config struct {
-	Weights        Weights
-	CooldownBase   time.Duration
-	CooldownMax    time.Duration
-	UpstreamWindow time.Duration
+	Weights          Weights
+	CooldownBase     time.Duration
+	CooldownMax      time.Duration
+	UpstreamWindow   time.Duration
+	AllowedProtocols map[node.Protocol]bool
 }
 
 // DefaultConfig returns the approved initial parameters.
@@ -39,6 +41,19 @@ func DefaultConfig() Config {
 		CooldownMax:    15 * time.Minute,
 		UpstreamWindow: time.Minute,
 	}
+}
+
+// Allows reports whether a node protocol may be selected. An empty map means
+// every supported Tier A protocol is allowed.
+func (c Config) Allows(protocol node.Protocol) bool {
+	if !protocol.Supported() {
+		return false
+	}
+	if len(c.AllowedProtocols) == 0 {
+		return true
+	}
+	allowed, ok := c.AllowedProtocols[protocol]
+	return ok && allowed
 }
 
 func (c Config) normalized() Config {
@@ -135,9 +150,27 @@ func (a *Attempt) Report(outcome Outcome) Classification {
 	return result
 }
 
+// Release frees the in-flight slot without recording any outcome. It is used by
+// diagnostic requests that must not change pool state.
+func (a *Attempt) Release() {
+	a.once.Do(func() {
+		if a.entry != nil {
+			a.Router.release(a.entry.Hash)
+		}
+	})
+}
+
 // Select chooses the highest-scoring eligible exit using weighted randomness.
 // exclude holds node IDs already attempted in this request.
 func (r *Router) Select(ctx context.Context, target *url.URL, exclude map[string]struct{}) (*Attempt, error) {
+	return r.SelectAffinity(ctx, target, exclude, "")
+}
+
+// SelectAffinity adds a stickiness preference: the exit picked by rendezvous
+// hashing of affinity wins unless its score falls below half of the best
+// candidate, in which case weighted selection decides. An empty affinity
+// behaves exactly like Select.
+func (r *Router) SelectAffinity(ctx context.Context, target *url.URL, exclude map[string]struct{}, affinity string) (*Attempt, error) {
 	if target == nil || target.Hostname() == "" {
 		return nil, fmt.Errorf("egress: invalid target")
 	}
@@ -152,15 +185,9 @@ func (r *Router) Select(ctx context.Context, target *url.URL, exclude map[string
 	cfg := *r.cfg.Load()
 	weights := cfg.Weights
 
-	type pick struct {
-		entry  *node.Entry
-		client *http.Client
-		score  float64
-	}
 	var picks []pick
-	total := 0.0
 	for _, entry := range r.pool.List() {
-		if !r.eligible(entry, host, now, exclude) {
+		if !r.eligible(entry, host, now, exclude, cfg) {
 			continue
 		}
 		client, err := r.outbound.Client(entry)
@@ -169,19 +196,40 @@ func (r *Router) Select(ctx context.Context, target *url.URL, exclude map[string
 		}
 		score := computeScore(entry, host, r.inflightFor(entry.Hash), weights).Total
 		picks = append(picks, pick{entry: entry, client: client, score: score})
-		total += score + 0.001
 	}
 	if len(picks) == 0 {
 		return nil, ErrNoEligible
 	}
 
-	point := rand.Float64() * total
+	forced := -1
+	if affinity != "" {
+		preferred := rendezvousPick(affinity, picks)
+		best := 0.0
+		for _, candidate := range picks {
+			best = max(best, candidate.score)
+		}
+		for i := range picks {
+			if picks[i].entry.ID() == preferred && picks[i].score >= best*0.5 {
+				forced = i
+				break
+			}
+		}
+	}
 	chosen := picks[len(picks)-1]
-	for _, candidate := range picks {
-		point -= candidate.score + 0.001
-		if point <= 0 {
-			chosen = candidate
-			break
+	if forced >= 0 {
+		chosen = picks[forced]
+	} else {
+		total := 0.0
+		for _, candidate := range picks {
+			total += candidate.score + 0.001
+		}
+		point := rand.Float64() * total
+		for _, candidate := range picks {
+			point -= candidate.score + 0.001
+			if point <= 0 {
+				chosen = candidate
+				break
+			}
 		}
 	}
 
@@ -206,8 +254,29 @@ func (r *Router) Select(ctx context.Context, target *url.URL, exclude map[string
 	}, nil
 }
 
-func (r *Router) eligible(entry *node.Entry, host string, now time.Time, exclude map[string]struct{}) bool {
-	if entry == nil || !entry.Enabled() || !entry.Options.Supported() {
+type pick struct {
+	entry  *node.Entry
+	client *http.Client
+	score  float64
+}
+
+func rendezvousPick(affinity string, picks []pick) string {
+	best := ""
+	var bestHash uint64
+	for _, candidate := range picks {
+		hash := fnv.New64a()
+		_, _ = hash.Write([]byte(affinity))
+		_, _ = hash.Write([]byte{0})
+		_, _ = hash.Write([]byte(candidate.entry.ID()))
+		if value := hash.Sum64(); best == "" || value > bestHash {
+			best, bestHash = candidate.entry.ID(), value
+		}
+	}
+	return best
+}
+
+func (r *Router) eligible(entry *node.Entry, host string, now time.Time, exclude map[string]struct{}, cfg Config) bool {
+	if entry == nil || !entry.Enabled() || !cfg.Allows(entry.Options.Type) {
 		return false
 	}
 	if !r.pool.Active(entry) {
@@ -372,8 +441,11 @@ func (r *Router) cooldown(entry *node.Entry, retryAfter time.Duration, cfg Confi
 		delay = cfg.CooldownMax
 	}
 	if retryAfter > delay {
-		if retryAfter > cfg.CooldownMax {
-			retryAfter = cfg.CooldownMax
+		// The upstream explicitly asked for this delay; the exponential cap
+		// governs inferred cooldowns and must not shorten a server request.
+		const hardCap = 24 * time.Hour
+		if retryAfter > hardCap {
+			retryAfter = hardCap
 		}
 		delay = retryAfter
 	}
@@ -433,6 +505,8 @@ func (r *Router) Diagnose(target *url.URL, exclude map[string]struct{}) []Candid
 			candidate.Reason = "disabled"
 		case !entry.Options.Supported():
 			candidate.Reason = "unsupported_protocol"
+		case !cfg.Allows(entry.Options.Type):
+			candidate.Reason = "protocol_disabled"
 		case !r.pool.Active(entry):
 			candidate.Reason = "subscription_disabled"
 		case entry.Cooling(now):

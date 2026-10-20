@@ -16,6 +16,7 @@ import (
 
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/buildinfo"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/config"
+	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/gateway"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/httpx"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/telemetry"
@@ -23,23 +24,25 @@ import (
 )
 
 type Server struct {
-	manager       *gateway.RuntimeManager
-	monitor       *telemetry.Monitor
-	logs          *telemetry.LogHub
-	logger        *slog.Logger
-	mu            sync.Mutex
-	sessions      map[string]adminSession
-	attempts      map[string]loginWindow
-	debugAttempts map[string]loginWindow
-	lastInference *DebugInferenceResult
-	quotaMu       sync.Mutex
-	quotaCache    map[string]quotaCacheEntry
+	manager        *gateway.RuntimeManager
+	monitor        *telemetry.Monitor
+	logs           *telemetry.LogHub
+	logger         *slog.Logger
+	mu             sync.Mutex
+	sessions       map[string]adminSession
+	attempts       map[string]loginWindow
+	debugAttempts  map[string]loginWindow
+	lastInference  *DebugInferenceResult
+	quotaMu        sync.Mutex
+	quotaCache     map[string]quotaCacheEntry
+	egressProvider func() *egress.Engine
 }
 
 func New(manager *gateway.RuntimeManager, monitor *telemetry.Monitor, logs *telemetry.LogHub, logger *slog.Logger) *Server {
 	return &Server{
 		manager: manager, monitor: monitor, logs: logs, logger: logger, sessions: make(map[string]adminSession),
 		attempts: make(map[string]loginWindow), debugAttempts: make(map[string]loginWindow),
+		egressProvider: manager.Egress,
 	}
 }
 
@@ -69,6 +72,13 @@ func (a *Server) Handler() http.Handler {
 	mux.Handle("POST /api/debug/inference", a.authenticate(a.csrf(http.HandlerFunc(a.handleDebugInference))))
 	mux.Handle("GET /api/logs", a.authenticate(http.HandlerFunc(a.handleLogs)))
 	mux.Handle("GET /api/logs/stream", a.authenticate(http.HandlerFunc(a.handleLogStream)))
+	mux.Handle("GET /api/egress", a.authenticate(http.HandlerFunc(a.handleEgressSummary)))
+	mux.Handle("GET /api/egress/nodes", a.authenticate(http.HandlerFunc(a.handleEgressNodes)))
+	mux.Handle("GET /api/egress/subscriptions", a.authenticate(http.HandlerFunc(a.handleEgressSubscriptions)))
+	mux.Handle("POST /api/egress/subscriptions/{id}/refresh", a.authenticate(a.csrf(http.HandlerFunc(a.handleEgressRefresh))))
+	mux.Handle("POST /api/egress/nodes/{id}/enabled", a.authenticate(a.csrf(http.HandlerFunc(a.handleEgressToggle))))
+	mux.Handle("GET /api/egress/events", a.authenticate(http.HandlerFunc(a.handleEgressEvents)))
+	mux.Handle("GET /api/egress/diagnose", a.authenticate(http.HandlerFunc(a.handleEgressDiagnose)))
 	mux.Handle("/", a.staticHandler())
 	return a.securityHeaders(telemetry.Recover(a.logger, mux))
 }
@@ -207,7 +217,10 @@ func (a *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		Listen:            update.Listen, ServerKeys: serverKeys, ZenKeys: zenKeys, GoKeys: goKeys, Anonymous: update.Anonymous, Proxies: proxies, ProxyFile: update.ProxyFile,
 		Upstream: update.Upstream, Retry: update.Retry, Models: update.Models, Performance: update.Performance, Logging: update.Logging, Prefer: update.Prefer,
 		Reasoning: reasoning,
-		WebUI:     config.WebUIConfig{Enabled: update.WebUI.Enabled, Listen: update.WebUI.Listen, Username: current.WebUI.Username, PasswordHash: current.WebUI.PasswordHash, SessionTTLMinutes: update.WebUI.SessionTTLMinutes},
+		// Egress editing is not part of the legacy config form yet; preserve the
+		// section so an unrelated save cannot silently drop the exit pool.
+		Egress: current.Egress,
+		WebUI:  config.WebUIConfig{Enabled: update.WebUI.Enabled, Listen: update.WebUI.Listen, Username: current.WebUI.Username, PasswordHash: current.WebUI.PasswordHash, SessionTTLMinutes: update.WebUI.SessionTTLMinutes},
 	}
 	result, err := a.manager.Apply(candidate, true)
 	if err != nil {
