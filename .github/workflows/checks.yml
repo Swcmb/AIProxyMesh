@@ -1,32 +1,94 @@
-name: checks
+name: Checks
 
 on:
   push:
+    branches: ["**"]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
+  build:
+    name: Go ${{ matrix.go }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        go: ["1.25.x", stable]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          cache: true
+          cache-dependency-path: mesh/go.sum
+      - name: Vet
+        working-directory: mesh
+        run: go vet ./...
+      - name: Build
+        working-directory: mesh
+        run: go build -trimpath ./cmd/mesh
+
   test:
+    name: Go tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25.5"
-      - name: Go build, vet and tests
+          go-version-file: mesh/go.mod
+          cache: true
+          cache-dependency-path: mesh/go.sum
+      - name: Test
         working-directory: mesh
-        run: |
-          go build ./...
-          go vet ./...
-          go test ./...
-          go test -race ./...
+        run: go test ./...
+      - name: Test with race detector
+        working-directory: mesh
+        run: go test -race ./...
+
+  format:
+    name: Formatting and WebUI build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: mesh/go.mod
+          cache: true
+          cache-dependency-path: mesh/go.sum
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-      - name: Frontend build
+          cache: npm
+          cache-dependency-path: mesh/webui/package-lock.json
+      - name: Check Go formatting
+        working-directory: mesh
+        shell: bash
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            printf '%s\n' "$unformatted"
+            exit 1
+          fi
+      - name: Build WebUI
         working-directory: mesh/webui
         run: |
           npm ci
           npm run build
-      - name: Docker build
-        working-directory: mesh
-        run: docker build -t mesh:ci .
+
+  notify:
+    name: Notify on failure
+    needs: [build, test, format]
+    if: failure()
+    uses: ./.github/workflows/notify-failure.yml
+    with:
+      workflow_name: Checks
+      run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    secrets: inherit

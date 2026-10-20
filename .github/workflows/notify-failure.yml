@@ -1,0 +1,63 @@
+name: Notify failure
+
+on:
+  workflow_call:
+    inputs:
+      workflow_name:
+        required: true
+        type: string
+      run_url:
+        required: true
+        type: string
+    secrets:
+      SMTP_SERVER:
+        required: false
+      SMTP_PORT:
+        required: false
+      SMTP_USERNAME:
+        required: false
+      SMTP_PASSWORD:
+        required: false
+      SMTP_FROM:
+        required: false
+      SMTP_SECURE:
+        required: false
+      NOTIFY_EMAIL:
+        required: false
+
+jobs:
+  email:
+    name: Send failure email
+    runs-on: ubuntu-latest
+    env:
+      SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+      SMTP_PORT: ${{ secrets.SMTP_PORT }}
+      SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+      SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+      SMTP_FROM: ${{ secrets.SMTP_FROM }}
+      SMTP_SECURE: ${{ secrets.SMTP_SECURE }}
+      NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
+    steps:
+      - name: Send email
+        if: ${{ env.SMTP_SERVER != '' && env.SMTP_USERNAME != '' && env.SMTP_PASSWORD != '' && env.NOTIFY_EMAIL != '' }}
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ env.SMTP_SERVER }}
+          server_port: ${{ env.SMTP_PORT || '465' }}
+          secure: ${{ env.SMTP_SECURE || 'true' }}
+          username: ${{ env.SMTP_USERNAME }}
+          password: ${{ env.SMTP_PASSWORD }}
+          from: ${{ env.SMTP_FROM || env.SMTP_USERNAME }}
+          to: ${{ env.NOTIFY_EMAIL }}
+          subject: "[${{ github.repository }}] ${{ inputs.workflow_name }} failed"
+          body: |
+            Workflow : ${{ inputs.workflow_name }}
+            Repository: ${{ github.repository }}
+            Ref       : ${{ github.ref_name }}
+            Commit    : ${{ github.sha }}
+            Run       : ${{ inputs.run_url }}
+
+            Inspect the run log for the failing step and its annotations.
+      - name: Email not configured
+        if: ${{ env.SMTP_SERVER == '' || env.SMTP_USERNAME == '' || env.SMTP_PASSWORD == '' || env.NOTIFY_EMAIL == '' }}
+        run: echo "SMTP secrets are not configured; failure email skipped."
