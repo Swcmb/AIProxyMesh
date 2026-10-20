@@ -13,12 +13,12 @@ COPY webui/ ./webui/
 RUN cd webui && npm run build
 
 FROM ${GO_IMAGE} AS build
-ARG GOPROXY=https://mirrors.aliyun.com/goproxy/,direct
+ARG GOPROXY=https://mirrors.aliyun.com/goproxy/,https://proxy.golang.org,direct
 ARG VERSION=dev
 ENV GOPROXY=${GOPROXY} CGO_ENABLED=0 GOTOOLCHAIN=auto
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN go mod download
+RUN for attempt in 1 2 3; do         go mod download && exit 0;         echo "go mod download attempt ${attempt} failed; retrying" >&2;         sleep 5;     done;     exit 1
 COPY . .
 COPY --from=webui /src/internal/webui/dist ./internal/webui/dist
 RUN go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/mesh ./cmd/mesh
