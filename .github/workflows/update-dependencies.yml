@@ -44,8 +44,14 @@ jobs:
       - name: Update Go modules
         working-directory: mesh
         run: |
-          go get -u=patch ./...
-          go mod tidy
+          # 只升级直接依赖：滚动发布的间接依赖（如 golang.org/x/exp）会要求更高的
+          # Go 版本，让 tidy 失败。
+          mapfile -t direct < <(go list -m -f '{{if not .Indirect}}{{.Path}}{{end}}' all | grep -v '^$' | grep -v "^$(go list -m)$")
+          printf '直接依赖：%s\n' "${direct[*]}"
+          if ! go get "${direct[@]/%/@patch}" || ! go mod tidy; then
+            git checkout -- go.mod go.sum 2>/dev/null || true
+            echo "::warning::Go 依赖补丁更新与当前 Go 版本不兼容，已回退 Go 更新，仅继续更新前端依赖"
+          fi
 
       - name: Verify Go build and tests
         working-directory: mesh
