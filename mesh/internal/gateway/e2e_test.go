@@ -23,6 +23,7 @@ import (
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/identity"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/models"
 	wire "github.com/Swcmb/AIProxyMesh/mesh/internal/protocol"
+	"github.com/Swcmb/AIProxyMesh/mesh/internal/rotation"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/telemetry"
 )
 
@@ -419,6 +420,80 @@ func runKeyAttempt(t *testing.T, g *Gateway) (*http.Response, error, int, *telem
 		map[config.Tier][]byte{config.TierZen: []byte(`{"model":"test-model","messages":[]}`)},
 		identity.RequestIDs{Request: "req-egress", Session: "ses-egress"}, 0)
 	return resp, err, used, meta
+}
+
+func TestRotationFailoverUsesEgress(t *testing.T) {
+	upstream := newFakeUpstream(t)
+	upstream.reply = func(w http.ResponseWriter, r *http.Request, body []byte) bool {
+		var payload map[string]any
+		_ = json.Unmarshal(body, &payload)
+		model, _ := payload["model"].(string)
+		if model == config.SOTAModels[0] {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, `{"error":"quota_exceeded"}`)
+			return true
+		}
+		return false
+	}
+	proxyA := forwardingProxy(t, nil)
+	proxyB := forwardingProxy(t, nil)
+	engine := testEgressEngine(t, testConfig(upstream.server.URL, nil), proxyA.URL+"#a\n"+proxyB.URL+"#b")
+
+	cfg := testConfig(upstream.server.URL, nil)
+	cfg.ServerKeys = []string{localTestKey}
+	cfg.GoKeys = []string{"go-key-rotation"}
+	cfg.Models.Protocols = map[string]string{}
+	for _, model := range config.SOTAModels {
+		cfg.Models.Protocols[model] = "chat"
+	}
+	g, err := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), telemetry.NewMonitor())
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.SetEgress(engine)
+	g.catalog.ReplaceWithCapabilities(nil, append([]string(nil), config.SOTAModels...), nil, nil, nil)
+	manager, err := rotation.New("", cfg.Rotation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.rotation = manager
+	g.syncRotation()
+
+	recorder := postInference(t, g.Handler(), "/v1/chat/completions", map[string]any{
+		"model": "sota", "messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("rotation = %d %s", recorder.Code, recorder.Body.String())
+	}
+	if resolved := recorder.Header().Get("X-Resolved-Model"); resolved != config.SOTAModels[1] {
+		t.Fatalf("resolved model = %q, want %q", resolved, config.SOTAModels[1])
+	}
+	var document map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &document); err != nil {
+		t.Fatal(err)
+	}
+	if document["model"] != "sota" {
+		t.Fatalf("response model alias = %v", document["model"])
+	}
+	snapshot := manager.Snapshot()
+	if snapshot.Groups[0].Current != config.SOTAModels[1] {
+		t.Fatalf("rotation current = %s", snapshot.Groups[0].Current)
+	}
+	now := time.Now()
+	cooling := 0
+	for _, entry := range engine.Pool().List() {
+		if entry.Cooling(now) {
+			cooling++
+		}
+	}
+	if cooling != 1 {
+		t.Fatalf("429 exit must be cooling, cooling = %d", cooling)
+	}
+	hits, paths, _ := upstream.snapshot()
+	if len(hits) != 2 || paths[0] != "/v1/chat/completions" {
+		t.Fatalf("upstream hits = %d paths=%v", len(hits), paths)
+	}
 }
 
 func TestEgress429SwitchesExit(t *testing.T) {

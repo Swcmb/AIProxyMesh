@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/config"
+	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/routing"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/identity"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/jsonutil"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/models"
@@ -79,16 +80,46 @@ func (g *Gateway) probeFreeModel(ctx context.Context, model string) probeResult 
 		client             *http.Client
 	}
 	var lanes []lane
-	if g.cfg.Anonymous {
-		cursor := g.anonymous.CursorFor(ids.Session)
-		if node := cursor.Next(); node != nil {
-			lanes = append(lanes, lane{anonymousZenKey, "anonymous", g.cfg.Upstream.Anonymous, node.proxy.client})
+	var releases []*routing.Attempt
+	defer func() {
+		for _, attempt := range releases {
+			attempt.Release()
 		}
-	}
-	cursor := g.zenNodes.CursorFor(ids.Session)
-	if node := cursor.Next(); node != nil {
-		if proxy := g.zenNodes.Proxy(node); proxy != nil {
-			lanes = append(lanes, lane{node.key, "zen", g.cfg.Upstream.Zen, proxy.client})
+	}()
+	if g.egressEnabled() {
+		// Availability probes are diagnostic: reuse the exit pool client but
+		// never attribute model-level 4xx responses to the exit.
+		if g.cfg.Anonymous {
+			if target, err := g.egressTarget(g.cfg.Upstream.Anonymous); err == nil {
+				if attempt, selErr := g.selectEgress(ctx, target, nil, ids.Session); selErr == nil {
+					lanes = append(lanes, lane{anonymousZenKey, "anonymous", g.cfg.Upstream.Anonymous, attempt.Client()})
+					releases = append(releases, attempt)
+				}
+			}
+		}
+		if target, err := g.egressTarget(g.cfg.Upstream.Zen); err == nil {
+			if attempt, selErr := g.selectEgress(ctx, target, nil, ids.Session); selErr == nil {
+				key := ""
+				keyCursor := g.zenNodes.CursorFor(ids.Session)
+				if node := keyCursor.Next(); node != nil {
+					key = node.key
+				}
+				lanes = append(lanes, lane{key, "zen", g.cfg.Upstream.Zen, attempt.Client()})
+				releases = append(releases, attempt)
+			}
+		}
+	} else {
+		if g.cfg.Anonymous {
+			cursor := g.anonymous.CursorFor(ids.Session)
+			if node := cursor.Next(); node != nil {
+				lanes = append(lanes, lane{anonymousZenKey, "anonymous", g.cfg.Upstream.Anonymous, node.proxy.client})
+			}
+		}
+		cursor := g.zenNodes.CursorFor(ids.Session)
+		if node := cursor.Next(); node != nil {
+			if proxy := g.zenNodes.Proxy(node); proxy != nil {
+				lanes = append(lanes, lane{node.key, "zen", g.cfg.Upstream.Zen, proxy.client})
+			}
 		}
 	}
 	result := probeResult{reason: "no_probe_channel"}

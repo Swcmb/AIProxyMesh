@@ -153,3 +153,12 @@ type Selector interface {
 - 前端构建产物提交在 `mesh/internal/webui/dist`，保证无 Node.js 环境也能直接 `go build`；发布 Dockerfile 仍会从源码重建前端。
 - 许可证：`mesh/LICENSE`（GPL-3.0 全文，与 o2a 一致）+ `mesh/NOTICE`（Resin MIT 完整声明、opencode2api 来源、Go/前端依赖许可）。
 - 升级演练：同一配置/状态目录切换 v0.1.0 二进制，节点状态恢复、健康版本正确；回滚依赖上一版二进制与 `config.json.bak`/手动备份，状态库迁移只向前。
+
+---
+
+## D-20 轮转/刷新/探测纳入统一出口（v0.1.1 后）
+
+- 轮转别名请求原先直接使用 Go Key 的旧代理绑定；现改为与普通推理相同的出口选择器，并上报成功/失败用于节点冷却与 `U_i`。
+- 轮转请求的总尝试次数纳入 `retry.max_attempts`；同一模型的多次重试共享 exclude 集合；上游共识时停止切换模型。
+- 模型目录刷新与免费模型可用性探测优先使用出口池客户端；这类诊断/目录请求不把模型级 4xx 归因到出口，避免误冷却。
+- 验证：`TestRotationFailoverUsesEgress`（429 → 切换模型 → 健康出口成功、单节点冷却、上游 2 次调用）；全量 `go test -race ./...` 通过。

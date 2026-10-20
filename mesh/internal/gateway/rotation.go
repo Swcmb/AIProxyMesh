@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/config"
+	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/routing"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/identity"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/jsonutil"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/models"
@@ -58,6 +59,7 @@ func quotaError(status int, body string) bool {
 type groupAttempt struct {
 	err              error
 	quota, committed bool
+	upstreamWide     bool
 	pause            time.Duration
 	reason           string
 }
@@ -86,7 +88,8 @@ func (g *Gateway) handleRotation(w http.ResponseWriter, r *http.Request, externa
 			continue
 		}
 		counted := false
-		for n := 1; n <= 3 && ctx.Err() == nil; n++ {
+		exclude := make(map[string]struct{})
+		for n := 1; n <= 3 && ctx.Err() == nil && total < g.cfg.Retry.MaxAttempts; n++ {
 			total++
 			if meta != nil {
 				meta.Model = token.Model
@@ -96,7 +99,7 @@ func (g *Gateway) handleRotation(w http.ResponseWriter, r *http.Request, externa
 				meta.Usage = wire.Usage{}
 				meta.UsageReported = false
 			}
-			result := g.rotationAttempt(ctx, w, r, external, payload, alias, route, ids, total)
+			result := g.rotationAttempt(ctx, w, r, external, payload, alias, route, ids, total, exclude)
 			outcome := result.reason
 			if result.err == nil {
 				outcome = "success"
@@ -118,6 +121,11 @@ func (g *Gateway) handleRotation(w http.ResponseWriter, r *http.Request, externa
 				return
 			}
 			if result.err == nil {
+				return
+			}
+			if result.upstreamWide {
+				wire.WriteError(w, external, http.StatusServiceUnavailable,
+					"OpenCode 上游整体故障，已停止尝试其他模型", "upstream_unavailable", ids.Request)
 				return
 			}
 			if result.committed {
@@ -147,6 +155,9 @@ func (g *Gateway) handleRotation(w http.ResponseWriter, r *http.Request, externa
 				g.rotation.Fail(token, 15*time.Second, result.reason)
 			}
 		}
+		if total >= g.cfg.Retry.MaxAttempts {
+			break
+		}
 		if ordinaryModels >= 3 {
 			break
 		}
@@ -163,7 +174,7 @@ func (g *Gateway) handleRotation(w http.ResponseWriter, r *http.Request, externa
 	wire.WriteError(w, external, status, message, "rotation_unavailable", ids.Request)
 }
 
-func (g *Gateway) rotationAttempt(parent context.Context, w http.ResponseWriter, original *http.Request, external wire.Protocol, payload map[string]any, alias string, route models.Route, ids identity.RequestIDs, attempt int) groupAttempt {
+func (g *Gateway) rotationAttempt(parent context.Context, w http.ResponseWriter, original *http.Request, external wire.Protocol, payload map[string]any, alias string, route models.Route, ids identity.RequestIDs, attempt int, exclude map[string]struct{}) groupAttempt {
 	result := groupAttempt{reason: "upstream_error", pause: 60 * time.Second}
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
@@ -193,24 +204,64 @@ func (g *Gateway) rotationAttempt(parent context.Context, w http.ResponseWriter,
 		result.err = errors.New("no Go key")
 		return result
 	}
-	proxy := g.goNodes.Proxy(node)
-	if proxy == nil {
-		result.err = errors.New("no proxy")
-		return result
+	keyID := config.KeyDisplayID(node.key)
+	var client *http.Client
+	var egressAttempt *routing.Attempt
+	var proxy *proxyTransport
+	if g.egressEnabled() {
+		target, targetErr := g.egressTarget(g.cfg.Upstream.Go)
+		if targetErr != nil {
+			result.err = targetErr
+			result.reason = "invalid_upstream"
+			return result
+		}
+		egressAttempt, err = g.selectEgress(ctx, target, exclude, keyID)
+		if err != nil {
+			result.err = err
+			result.reason = "proxy_unavailable"
+			return result
+		}
+		exclude[egressAttempt.NodeID] = struct{}{}
+		client = egressAttempt.Client()
+		setRequestCredentialEgress(parent, config.TierGo, keyID, "key", false, egressAttempt)
+	} else {
+		proxy = g.goNodes.Proxy(node)
+		if proxy == nil {
+			result.err = errors.New("no proxy")
+			return result
+		}
+		client = proxy.client
+		setRequestCredential(parent, config.TierGo, keyID, "key", false, proxy)
 	}
 	req, err := newUpstreamRequest(ctx, g.cfg.Upstream.Go, route.Protocol, body, ids, node.key)
 	if err != nil {
+		if egressAttempt != nil {
+			egressAttempt.Release()
+		}
 		result.err = err
 		return result
 	}
 	// A reused connection must not cause net/http to implicitly replay POSTs.
 	req.GetBody = nil
-	client := *proxy.client
-	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	setRequestCredential(parent, config.TierGo, config.KeyDisplayID(node.key), "key", false, proxy)
+	clientCopy := *client
+	clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	started := time.Now()
-	resp, err := client.Do(req)
-	g.recordUpstreamAttempt(parent, route, ids, attempt, config.KeyDisplayID(node.key), "key", false, proxyTrace(proxy), resp, err, time.Since(started))
+	resp, err := clientCopy.Do(req)
+	duration := time.Since(started)
+	if egressAttempt != nil {
+		classification := g.reportEgressAttempt(parent, route, ids, attempt, keyID, "key", false, egressAttempt, resp, err, duration)
+		switch classification.Kind {
+		case routing.Success, routing.Neutral:
+			g.goNodes.MarkSuccess(node)
+		case routing.KeyFailure, routing.UpstreamFailure:
+			if classification.UpstreamWide {
+				result.upstreamWide = true
+				g.goNodes.MarkFailure(node, resp, err)
+			}
+		}
+	} else {
+		g.recordUpstreamAttempt(parent, route, ids, attempt, keyID, "key", false, proxyTrace(proxy), resp, err, duration)
+	}
 	if resp != nil {
 		defer resp.Body.Close()
 	}

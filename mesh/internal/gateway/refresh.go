@@ -183,22 +183,20 @@ func (g *Gateway) StartModelRefresh(ctx context.Context) {
 }
 
 func (g *Gateway) refreshProtocolCapabilities(ctx context.Context) (modelcatalog.Capabilities, error) {
-	if g.transports == nil || len(g.transports.items) == 0 {
+	clients := g.discoveryClients()
+	if len(clients) == 0 {
 		return modelcatalog.FetchCapabilities(ctx, &http.Client{Timeout: 30 * time.Second}, modelcatalog.CapabilitiesURL)
 	}
 	var lastErr error
-	for _, proxy := range g.transports.items {
-		if proxy == nil || !proxy.healthy.Load() {
-			continue
-		}
-		capabilities, err := modelcatalog.FetchCapabilities(ctx, proxy.client, modelcatalog.CapabilitiesURL)
+	for _, client := range clients {
+		capabilities, err := modelcatalog.FetchCapabilities(ctx, client, modelcatalog.CapabilitiesURL)
 		if err == nil {
 			return capabilities, nil
 		}
 		lastErr = err
 	}
 	if lastErr == nil {
-		lastErr = errors.New("no healthy proxy available for OpenCode capability catalog")
+		lastErr = errors.New("no available exit for OpenCode capability catalog")
 	}
 	return modelcatalog.Capabilities{}, lastErr
 }
@@ -214,6 +212,9 @@ func (g *Gateway) refreshZen(ctx context.Context) []string {
 }
 
 func (g *Gateway) refreshAnonymousTier(ctx context.Context, base string) []string {
+	if g.egressEnabled() {
+		return g.refreshViaEgress(ctx, base, anonymousZenKey)
+	}
 	cursor := g.anonymous.CursorFor("")
 	limit := g.anonymous.Len()
 	for attempt := 1; attempt <= limit; attempt++ {
@@ -242,6 +243,14 @@ func (g *Gateway) refreshAnonymousTier(ctx context.Context, base string) []strin
 }
 
 func (g *Gateway) refreshTier(ctx context.Context, base string, nodes *nodePool) []string {
+	if g.egressEnabled() {
+		key := ""
+		keyCursor := nodes.Cursor()
+		if node := keyCursor.Next(); node != nil {
+			key = node.key
+		}
+		return g.refreshViaEgress(ctx, base, key)
+	}
 	cursor := nodes.Cursor()
 	for attempt := 0; attempt < g.cfg.Retry.MaxAttempts; attempt++ {
 		node := cursor.Next()
@@ -263,6 +272,36 @@ func (g *Gateway) refreshTier(ctx context.Context, base string, nodes *nodePool)
 		}
 		nodes.MarkFailure(node, nil, err)
 		g.logger.Debug("model catalog refresh attempt failed", "component", "models", "event", "refresh_attempt_failed", "upstream", config.RedactURL(base), "attempt", attempt+1, "error", err)
+	}
+	g.logger.Warn("model catalog refresh failed", "component", "models", "event", "refresh_failed", "upstream", config.RedactURL(base))
+	return nil
+}
+
+// refreshViaEgress fetches a model list through the exit pool without
+// attributing catalog-level failures to the exit or key.
+func (g *Gateway) refreshViaEgress(ctx context.Context, base, key string) []string {
+	target, err := g.egressTarget(base)
+	if err != nil {
+		return nil
+	}
+	exclude := make(map[string]struct{})
+	for attempt := 0; attempt < g.cfg.Retry.MaxAttempts; attempt++ {
+		selected, selErr := g.selectEgress(ctx, target, exclude, key)
+		if selErr != nil {
+			break
+		}
+		exclude[selected.NodeID] = struct{}{}
+		refreshCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		models, status, fetchErr := modelcatalog.FetchModels(refreshCtx, selected.Client(), base, key)
+		if fetchErr != nil && status == 404 {
+			models, status, fetchErr = modelcatalog.FetchModels(refreshCtx, selected.Client(), modelcatalog.LegacyZenBase, key)
+		}
+		cancel()
+		selected.Release()
+		if fetchErr == nil {
+			return models
+		}
+		g.logger.Debug("model catalog refresh attempt failed", "component", "models", "event", "refresh_attempt_failed", "upstream", config.RedactURL(base), "attempt", attempt+1, "exit", selected.NodeName, "status", status, "error", fetchErr)
 	}
 	g.logger.Warn("model catalog refresh failed", "component", "models", "event", "refresh_failed", "upstream", config.RedactURL(base))
 	return nil

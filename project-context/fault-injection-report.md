@@ -22,7 +22,8 @@
 | 9 | 客户端取消 | 不冷却、不计数重试 | `TestClientCancelDoesNotPenalize` | 状态不变 |
 | 10 | 同轮重复节点 | 不得重复尝试同一节点 | `TestSelectRequiresEligibleNode`（exclude） | 排除后返回 `ErrNoEligible` |
 | 11 | 冷却到期恢复 | 到期后重新参加调度 | `TestCooldownBackoffAndRetryAfter`、`TestEnginePersistsNodeState` | 到期后可选中；重启后冷却仍在 |
-| 12 | 并发请求 | 无数据竞争、预算独立 | `go test -race ./...` | 通过 |
+| 12 | 轮转别名 429 | 模型切换；故障出口冷却，下一模型使用健康出口；总尝试不超预算 | `TestRotationFailoverUsesEgress` | 200；`X-Resolved-Model` 切换；1 个出口冷却；上游 2 次调用 |
+| 13 | 并发请求 | 无数据竞争、预算独立 | `go test -race ./...` | 通过 |
 
 ## 2. 预算与分层断言
 
@@ -32,6 +33,7 @@
 - **冷却分层**：节点层冷却仅由 `ProxyFailure` / 单出口 `ExitFailure` 触发；`KeyFailure` 与 `UpstreamWide` 仅触发 Key 冷却；`ClientCancel` 与 `Neutral` 不触发任何冷却。
 - **direct 语义**：无代理跳的直连传输失败归为 `UpstreamFailure`（上游不可达），不冷却 direct 节点。
 - **重试边界**：SSE 首输出前才允许重试；客户端取消/请求上下文过期时释放出口槽位但不记结果。
+- **轮转路径**：sota/sweet 别名请求经同一出口选择器；同一模型的多次重试共享 exclude 集合，总尝试次数受 `retry.max_attempts` 约束；上游整体故障时停止切换模型。
 
 ## 3. 运行命令
 

@@ -28,7 +28,7 @@
 | 1 | o2a 功能完整性 | `feature-matrix.md` 逐项更新；协议、Key、模型、管理 API、前端均有实现或测试 | ✅（见 §4 缺口） |
 | 2 | API 兼容性 | `TestGatewayEndToEndProtocols`：`GET /v1/models`、`/v1/chat/completions`、`/v1/responses`、`/v1/messages`；`TestSystemOnePassesThroughVerbatim`：`/v1/systemone` 字节级透传 | ✅ |
 | 3 | 协议转换 | 同一 Chat 上游响应经 Responses / Anthropic 入口转换；多模态 `image_url` 与 `tools` 抵达上游；SSE 流正常返回 | ✅ |
-| 4 | Key 与模型路由 | `TestGatewayKeyRotation`：401 后切换到第二个 Key；`TestAnonymousLaneUsesPublicCredential`：`Bearer public`；模型目录来自上游 `/v1/models` | ✅ |
+| 4 | Key 与模型路由 | `TestGatewayKeyRotation`：401 后切换到第二个 Key；`TestAnonymousLaneUsesPublicCredential`：`Bearer public`；`TestRotationFailoverUsesEgress`：sota 首个模型 429 → 切换下一模型并经健康出口成功；模型目录来自上游 `/v1/models` | ✅ |
 | 5 | 代理资源 | `TestEngineImportDedupProbeSmoke`：legacy `direct` 与远程订阅去重为 1 个节点、双引用；`sync.Once` 状态共享 | ✅ |
 | 6 | 节点故障切换 | `TestEgressFailoverToHealthyExit`（故障代理→direct）、`TestEgressAllNodesFailWithinBudget`（全故障不超预算）、`TestAffinityIsStickyButRespectsHealth` | ✅ |
 | 7 | 上游故障判断 | `TestEgressUpstreamWideStopsWithoutCoolingNodes`：两个出口同 5xx → 停止、节点不冷却；`TestExitFailureConsensusBecomesUpstreamWide` | ✅ |
@@ -73,7 +73,7 @@
 
 ## 5. 结论
 
-在可离线复现的范围内，§9 的 13 项均有代码与测试证据；协议、Key 轮换、匿名通道、出口切换、429、上游共识、预算上限、持久化与 WebUI 13 页均通过。剩余缺口集中在需要真实 OpenCode 凭据/网络的在线行为，发布阶段需用真实配置完成一次冒烟。
+在可离线复现的范围内，§9 的 13 项均有代码与测试证据；协议、Key 轮换、匿名通道、出口切换、429、上游共识、预算上限、持久化与 WebUI 13 页均通过。v0.1.1 之后又修复了轮转别名请求绕过出口池的问题：轮转、模型目录刷新与可用性探测现在都使用统一出口池，轮转请求同样受 `retry.max_attempts` 总预算约束。剩余缺口集中在需要真实 OpenCode 凭据/网络的在线行为，发布阶段需用真实配置完成一次冒烟。
 
 UI 证据：
 
