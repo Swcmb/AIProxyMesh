@@ -173,6 +173,80 @@ export interface MonitorSnapshot {
   upstream: UpstreamSnapshot;
 }
 
+export interface RequestLogRecord {
+  id: number;
+  request_id: string;
+  time: string;
+  session?: string;
+  server_key_id?: string;
+  model: string;
+  tier?: string;
+  key_id?: string;
+  channel?: string;
+  anonymous: boolean;
+  proxy_node?: string;
+  exit_node?: string;
+  exit_id?: string;
+  attempts: number;
+  status: number;
+  duration_ms: number;
+  success: boolean;
+  outcome?: string;
+}
+
+export interface RequestLogAttempt {
+  id: number;
+  request_id: string;
+  time: string;
+  attempt: number;
+  model?: string;
+  tier?: string;
+  key_id?: string;
+  channel?: string;
+  anonymous: boolean;
+  proxy_node?: string;
+  exit_node?: string;
+  exit_id?: string;
+  status?: number;
+  duration_ms: number;
+  success: boolean;
+  outcome?: string;
+}
+
+export interface RequestLogStats {
+  enabled: boolean;
+  path?: string;
+  requests: number;
+  attempts: number;
+  oldest?: string;
+  newest?: string;
+  size_bytes: number;
+  dropped: number;
+  retention_days: number;
+  max_rows: number;
+}
+
+export interface RequestLogFacets {
+  model?: string[];
+  channel?: string[];
+  tier?: string[];
+  exit_id?: string[];
+}
+
+export interface RequestLogResponse {
+  enabled: boolean;
+  requests: RequestLogRecord[];
+  facets: RequestLogFacets;
+  next_cursor?: number;
+  has_more: boolean;
+  stats: RequestLogStats;
+}
+
+export interface RequestLogDetail {
+  request: RequestLogRecord;
+  attempts: RequestLogAttempt[];
+}
+
 export interface MonitorResponse {
   version: string;
   metrics: MonitorSnapshot;

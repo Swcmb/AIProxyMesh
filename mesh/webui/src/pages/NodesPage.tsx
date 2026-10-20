@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, RefreshCw, X, Zap } from "lucide-react";
 import { api } from "../lib/api";
@@ -83,6 +83,7 @@ function flagEmoji(code: string): string {
 
 export function NodesPage() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const filters = useMemo(() => readFilters(params), [params]);
   const [keyword, setKeyword] = useState(filters.keyword);
@@ -466,6 +467,9 @@ export function NodesPage() {
                 <p className="mono">{detailId}</p>
               </div>
               <div className="drawer-header-actions">
+                <Button size="sm" variant="secondary" onClick={() => navigate(`/requests?exit=${encodeURIComponent(detailId)}`)}>
+                  查看该节点请求
+                </Button>
                 <Button size="sm" variant="secondary" disabled={probe.isPending} onClick={() => probe.mutate(detailId)}>
                   <Zap size={13} /> 立即探测
                 </Button>
