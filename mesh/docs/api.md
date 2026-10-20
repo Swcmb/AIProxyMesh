@@ -80,7 +80,7 @@ WebUI 监听器同源提供。认证使用 HttpOnly Session Cookie `mesh_session
 | 方法 | 路径 | 说明 |
 | :--- | :--- | :--- |
 | GET | `/api/egress` | 快照：计数、节点、订阅状态；未启用时 `{enabled:false}` |
-| GET | `/api/egress/nodes` | 节点池分页查询；参数 `keyword`、`status`、`subscription`、`protocol`、`sort_by`、`sort_order`、`offset`、`limit`（默认 50，上限 5000）。响应含 `nodes`、`total`（筛选后条数）、`pool`（池内总数）、`counts`、`facets`、`subscription_names` |
+| GET | `/api/egress/nodes` | 节点池分页查询；参数 `keyword`、`status`、`subscription`、`protocol`、`region`、`sort_by`、`sort_order`、`offset`、`limit`（默认 50，上限 5000）。响应含 `nodes`、`total`（筛选后条数）、`pool`（池内总数）、`counts`、`facets`、`subscription_names` |
 | GET | `/api/egress/nodes/{id}` | 单节点详情，含 `status`、`score`（H/L/R/U）与 `eligible` |
 | POST | `/api/egress/nodes/{id}/enabled` | `{enabled:bool}` 手动启停 |
 | POST | `/api/egress/nodes/{id}/probe` | 立即探测并返回刷新后的节点 |
@@ -95,6 +95,16 @@ WebUI 监听器同源提供。认证使用 HttpOnly Session Cookie `mesh_session
 | GET | `/api/egress/diagnose` | `target=` 指定上游 URL；返回每个节点的资格、原因与 H/L/R/U 分数 |
 
 `status` 取值：`healthy`、`cooling`、`error`、`unprobed`、`disabled`、`unsupported`；`sort_by` 取值：`score`（默认）、`name`、`latency`、`health`、`failures`、`last_probe_at`、`created_at`。
+
+### 地区解析 `/api/egress/geoip*`
+
+| 方法 | 路径 | 说明 |
+| :--- | :--- | :--- |
+| GET | `/api/egress/geoip` | 国家库状态；未启用时 `{enabled:false}` |
+| POST | `/api/egress/geoip/update` | 立即下载并校验数据库，成功后热替换 |
+| GET | `/api/egress/geoip/lookup?ip=` | 查询单个 IP 的国家归属 |
+
+节点视图在有库时附带 `region`（ISO 3166-1 国家码）与 `region_name`（中文名），`facets.regions` 列出当前筛选可选的国家，`facets.geoip_enabled` 表示是否启用。
 
 节点 ID 为 32 位十六进制配置哈希；同一出口出现在多个订阅时共享同一 ID 与健康状态，并在 `aliases` 中列出每个订阅给它的名字。
 

@@ -73,6 +73,21 @@
 | `probe.targets` | 留空时从 `upstream.zen/go/anonymous` 派生；探测只到 origin |
 | `state_path` | SQLite 路径；默认 `config.json.egress.db` |
 | `max_latency_entries` | 每节点延迟表上限（1–4096） |
+| `geoip` | 国家地区库配置；该段存在即启用地区解析，`{"enabled": false}` 关闭 |
+| `geoip.url` | 数据库下载地址，仅 http/https；默认 MetaCubeX meta-rules-dat 的 `country.mmdb` 镜像 |
+| `geoip.sha256` | 期望摘要（64 位十六进制）；留空则只校验格式与大小 |
+| `geoip.path` | 本地库路径；默认 `<state_path>.geoip.mmdb` |
+| `geoip.refresh_days` | 自动更新周期（0–365 天），默认 7 天 |
+
+### `egress.geoip`
+
+地区解析用 MaxMind 兼容的 `country.mmdb`：
+
+- 启动时若本地已有可用库则直接加载；缺失或超过 `refresh_days` 时后台下载。
+- 下载先写临时文件，校验摘要、大小（≥1 MiB）并能以 MaxMind 格式打开后才原子替换，坏下载不会让已生效的库下线。
+- 解析结果用于节点池的 `region` / `region_name` 字段与地区筛选；数据库缺失时该列为空，节点仍全部照常展示。
+- 地址与路径只来自本配置，不接受 API 传入，因此该下载链路不会被请求方指向任意主机。
+- 管理端可在节点池页查看库状态、手动触发更新与查询单个 IP 的归属。
 
 ## `rotation` 与 `ranking`
 

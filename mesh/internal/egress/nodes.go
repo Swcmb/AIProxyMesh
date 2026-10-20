@@ -26,6 +26,7 @@ type NodeQuery struct {
 	Status       string
 	Subscription string
 	Protocol     string
+	Region       string
 	SortBy       string
 	SortDesc     bool
 	Offset       int
@@ -36,9 +37,11 @@ type NodeQuery struct {
 // the primary upstream target.
 type NodeView struct {
 	node.Snapshot
-	Status   string        `json:"status"`
-	Score    routing.Score `json:"score"`
-	Eligible bool          `json:"eligible"`
+	Status     string        `json:"status"`
+	Region     string        `json:"region,omitempty"`
+	RegionName string        `json:"region_name,omitempty"`
+	Score      routing.Score `json:"score"`
+	Eligible   bool          `json:"eligible"`
 }
 
 // NodePage is a filtered view of the whole pool. Total counts the filtered
@@ -59,6 +62,8 @@ type NodeFacets struct {
 	Protocols     []string `json:"protocols"`
 	Subscriptions []string `json:"subscriptions"`
 	Statuses      []string `json:"statuses"`
+	Regions       []string `json:"regions"`
+	GeoIP         bool     `json:"geoip_enabled"`
 }
 
 const (
@@ -75,6 +80,8 @@ type nodeMatch struct {
 	name       string
 	protocol   string
 	status     string
+	region     string
+	regionName string
 	latency    float64
 	hasLatency bool
 	health     float64
@@ -115,9 +122,11 @@ func (e *Engine) Nodes(query NodeQuery) NodePage {
 
 	protocols := map[string]struct{}{}
 	subscriptions := map[string]struct{}{}
+	regions := map[string]struct{}{}
 	keyword := strings.ToLower(strings.TrimSpace(query.Keyword))
 	entries := e.pool.List()
 	page.Pool = len(entries)
+	page.Facets.GeoIP = e.GeoIPEnabled()
 	matches := make([]nodeMatch, 0, len(entries))
 	for _, entry := range entries {
 		status := entryStatus(entry, now)
@@ -130,6 +139,10 @@ func (e *Engine) Nodes(query NodeQuery) NodePage {
 			health:    entry.HealthScore(),
 			failures:  int(entry.Failures()),
 			createdAt: entry.CreatedAt,
+		}
+		if result, ok := e.regionFor(entry.Options.Server); ok {
+			match.region = result.Country
+			match.regionName = result.Name
 		}
 		if at := entry.LastProbeAt(); at > 0 {
 			match.lastProbe = time.Unix(0, at).UTC()
@@ -144,6 +157,9 @@ func (e *Engine) Nodes(query NodeQuery) NodePage {
 		}
 
 		protocols[match.protocol] = struct{}{}
+		if match.region != "" {
+			regions[match.region] = struct{}{}
+		}
 		for _, id := range entry.SubscriptionIDs() {
 			subscriptions[id] = struct{}{}
 		}
@@ -166,6 +182,7 @@ func (e *Engine) Nodes(query NodeQuery) NodePage {
 
 	page.Facets.Protocols = sortedKeys(protocols)
 	page.Facets.Subscriptions = sortedKeys(subscriptions)
+	page.Facets.Regions = sortedKeys(regions)
 	page.Counts.Total = len(matches)
 	sortMatches(matches, query)
 	page.Total = len(matches)
@@ -183,10 +200,12 @@ func (e *Engine) Nodes(query NodeQuery) NodePage {
 	targetString := targetURLString(target)
 	for _, match := range matches[offset:end] {
 		page.Nodes = append(page.Nodes, NodeView{
-			Snapshot: match.entry.Snapshot(targetString, now),
-			Status:   match.status,
-			Score:    match.score,
-			Eligible: match.eligible,
+			Snapshot:   match.entry.Snapshot(targetString, now),
+			Status:     match.status,
+			Region:     match.region,
+			RegionName: match.regionName,
+			Score:      match.score,
+			Eligible:   match.eligible,
 		})
 	}
 	return page
@@ -217,6 +236,9 @@ func matchesQuery(match nodeMatch, entry *node.Entry, query NodeQuery, keyword s
 	if query.Protocol != "" && query.Protocol != "all" && match.protocol != query.Protocol {
 		return false
 	}
+	if query.Region != "" && query.Region != "all" && !strings.EqualFold(match.region, query.Region) {
+		return false
+	}
 	subscriptions := entry.SubscriptionIDs()
 	if query.Subscription != "" && query.Subscription != "all" {
 		found := false
@@ -233,7 +255,7 @@ func matchesQuery(match nodeMatch, entry *node.Entry, query NodeQuery, keyword s
 	if keyword == "" {
 		return true
 	}
-	for _, candidate := range []string{match.name, match.id, entry.Options.Server, entry.Options.RawType, match.protocol} {
+	for _, candidate := range []string{match.name, match.id, entry.Options.Server, entry.Options.RawType, match.protocol, match.region, match.regionName} {
 		if strings.Contains(strings.ToLower(candidate), keyword) {
 			return true
 		}
@@ -308,6 +330,10 @@ func (e *Engine) NodeDetail(id string) (NodeView, bool) {
 	target := e.PrimaryTarget()
 	now := time.Now()
 	view := NodeView{Snapshot: entry.Snapshot(targetURLString(target), now), Status: entryStatus(entry, now)}
+	if result, ok := e.regionFor(entry.Options.Server); ok {
+		view.Region = result.Country
+		view.RegionName = result.Name
+	}
 	if target != nil {
 		for _, candidate := range e.router.Diagnose(target, nil) {
 			if candidate.ID == view.ID {

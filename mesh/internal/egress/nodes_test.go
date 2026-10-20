@@ -208,3 +208,39 @@ func TestEngineInlineSubscriptionAndCleanup(t *testing.T) {
 		t.Fatal("unknown subscription must be rejected")
 	}
 }
+
+func TestEngineNodesReportsGeoIPState(t *testing.T) {
+	feed := feedServer(t, "http://1.1.1.1:8080#remote-node\n")
+	cfg := testEgressConfig(t)
+	cfg.ImportLegacyProxies = boolPtr(false)
+	cfg.GeoIP = &config.EgressGeoIP{}
+	cfg.Subscriptions = []config.EgressSubscription{{ID: "alpha", Name: "订阅甲", URL: feed.URL, Enabled: true, RefreshSeconds: 3600}}
+	engine, err := New(testOptions(t, cfg, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	engine.RefreshAll(context.Background())
+
+	page := engine.Nodes(NodeQuery{Limit: 50})
+	if !page.Facets.GeoIP {
+		t.Fatal("geoip must be reported as enabled")
+	}
+	// No database has been downloaded yet, so nothing is classified and the
+	// region filter matches nothing.
+	if len(page.Facets.Regions) != 0 {
+		t.Fatalf("regions = %v, want empty without a database", page.Facets.Regions)
+	}
+	if filtered := engine.Nodes(NodeQuery{Region: "US", Limit: 50}); filtered.Total != 0 {
+		t.Fatalf("region filter total = %d, want 0", filtered.Total)
+	}
+	if _, ok := engine.GeoIPStatus(); !ok {
+		t.Fatal("status must be available while geoip is enabled")
+	}
+
+	cfg.GeoIP = nil
+	engine.Apply(cfg, config.UpstreamConfig{Zen: "https://api.example.com/zen"}, "")
+	if engine.GeoIPEnabled() {
+		t.Fatal("removing the section must disable region resolution")
+	}
+}

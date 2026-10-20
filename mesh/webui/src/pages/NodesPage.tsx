@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, RefreshCw, X, Zap } from "lucide-react";
 import { api } from "../lib/api";
-import type { EgressNode, EgressNodePage } from "../lib/types";
+import type { EgressNode, EgressNodePage, GeoIPLookupResponse, GeoIPStatusResponse } from "../lib/types";
 import { EmptyState, ErrorNotice, Loading, PageHeader, StatCard } from "../components/Common";
 import { Button } from "../components/ui/Button";
 import { Input } from "../components/ui/Input";
@@ -37,6 +37,7 @@ type Filters = {
   status: string;
   subscription: string;
   protocol: string;
+  region: string;
   sort_by: string;
   sort_order: "asc" | "desc";
   offset: number;
@@ -48,6 +49,7 @@ const defaultFilters: Filters = {
   status: "all",
   subscription: "all",
   protocol: "all",
+  region: "all",
   sort_by: "score",
   sort_order: "desc",
   offset: 0,
@@ -63,11 +65,20 @@ function readFilters(params: URLSearchParams): Filters {
     status: params.get("status") ?? "all",
     subscription: params.get("subscription") ?? "all",
     protocol: params.get("protocol") ?? "all",
+    region: params.get("region") ?? "all",
     sort_by: params.get("sort_by") ?? "score",
     sort_order: params.get("sort_order") === "asc" ? "asc" : "desc",
     offset: Number.isFinite(offset) && offset > 0 ? offset : 0,
     limit: pageSizes.includes(limit) ? limit : 50,
   };
+}
+
+// flagEmoji turns an ISO 3166-1 alpha-2 code into its regional-indicator pair.
+function flagEmoji(code: string): string {
+  if (code.length !== 2) return "";
+  const base = code.toUpperCase().charCodeAt(0) - 65 + 0x1f1e6;
+  const second = code.toUpperCase().charCodeAt(1) - 65 + 0x1f1e6;
+  return String.fromCodePoint(base, second);
 }
 
 export function NodesPage() {
@@ -97,6 +108,7 @@ export function NodesPage() {
       if (merged.status !== "all") search.set("status", merged.status);
       if (merged.subscription !== "all") search.set("subscription", merged.subscription);
       if (merged.protocol !== "all") search.set("protocol", merged.protocol);
+      if (merged.region !== "all") search.set("region", merged.region);
       if (merged.sort_by !== defaultFilters.sort_by) search.set("sort_by", merged.sort_by);
       if (merged.sort_order !== defaultFilters.sort_order) search.set("sort_order", merged.sort_order);
       if (merged.offset > 0) search.set("offset", String(merged.offset));
@@ -176,6 +188,7 @@ export function NodesPage() {
     filters.status !== "all" ||
     filters.subscription !== "all" ||
     filters.protocol !== "all" ||
+    filters.region !== "all" ||
     filters.sort_by !== defaultFilters.sort_by;
 
   const sortBy = (column: string) =>
@@ -267,6 +280,17 @@ export function NodesPage() {
             </Select>
           </label>
           <label className="field-group">
+            <span className="field-label">地区</span>
+            <Select value={filters.region} onChange={(event) => patch({ region: event.target.value, offset: 0 })} disabled={(page.facets?.regions ?? []).length === 0}>
+              <option value="all">{(page.facets?.regions ?? []).length === 0 ? "未启用 GeoIP" : "全部地区"}</option>
+              {(page.facets?.regions ?? []).map((item) => (
+                <option key={item} value={item}>
+                  {flagEmoji(item)} {item}
+                </option>
+              ))}
+            </Select>
+          </label>
+          <label className="field-group">
             <span className="field-label">每页条数</span>
             <Select value={String(filters.limit)} onChange={(event) => patch({ limit: Number(event.target.value), offset: 0 })}>
               {pageSizes.map((size) => (
@@ -297,6 +321,7 @@ export function NodesPage() {
                     <SortHeader column="name" filters={filters} onSort={sortBy} label="节点" />
                   </th>
                   <th>协议</th>
+                  <th>地区</th>
                   <th>订阅与别名</th>
                   <th>状态</th>
                   <th>
@@ -334,6 +359,16 @@ export function NodesPage() {
                     <td>
                       <span className="tag">{node.protocol}</span>
                       {node.raw_type && node.raw_type !== node.protocol ? <div className="muted">{node.raw_type}</div> : null}
+                    </td>
+                    <td>
+                      {node.region ? (
+                        <>
+                          <span title={node.region}>{flagEmoji(node.region)}</span> {node.region}
+                          {node.region_name ? <div className="muted">{node.region_name}</div> : null}
+                        </>
+                      ) : (
+                        <span className="muted">-</span>
+                      )}
                     </td>
                     <td>
                       {(node.subscriptions ?? []).length === 0 ? (
@@ -420,6 +455,8 @@ export function NodesPage() {
         ) : null}
       </div>
 
+      <GeoIPPanel enabled={Boolean(page.facets?.geoip_enabled)} />
+
       {detailId ? (
         <div className="drawer-overlay" onClick={() => setDetailId(null)} role="presentation">
           <div className="card drawer-panel" onClick={(event) => event.stopPropagation()}>
@@ -446,6 +483,104 @@ export function NodesPage() {
         </div>
       ) : null}
     </>
+  );
+}
+
+function GeoIPPanel({ enabled }: { enabled: boolean }) {
+  const queryClient = useQueryClient();
+  const [probe, setProbe] = useState("");
+  const [answer, setAnswer] = useState<GeoIPLookupResponse | null>(null);
+  const status = useQuery({
+    queryKey: ["egress", "geoip"],
+    queryFn: () => api.get<GeoIPStatusResponse>("/api/egress/geoip"),
+    enabled,
+    refetchInterval: 60_000,
+  });
+  const update = useMutation({
+    mutationFn: () => api.post<GeoIPStatusResponse>("/api/egress/geoip/update"),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["egress", "geoip"] }),
+  });
+  const lookup = useMutation({
+    mutationFn: (ip: string) => api.get<GeoIPLookupResponse>(`/api/egress/geoip/lookup?ip=${encodeURIComponent(ip)}`),
+    onSuccess: (data) => setAnswer(data),
+  });
+
+  if (!enabled) {
+    return (
+      <div className="card panel">
+        <div className="panel-head">
+          <h3>地区解析（GeoIP）</h3>
+          <span className="badge badge-muted">未启用</span>
+        </div>
+        <p className="muted">在配置的 <span className="mono">egress.geoip</span> 中启用后，节点会显示所属国家并可按地区筛选。</p>
+      </div>
+    );
+  }
+
+  const info = status.data?.status;
+  return (
+    <div className="card panel">
+      <div className="panel-head">
+        <h3>地区解析（GeoIP）</h3>
+        <span className={`badge ${info?.loaded ? "badge-success" : "badge-warning"}`}>{info?.loaded ? "已加载" : "未加载"}</span>
+      </div>
+      <dl className="node-detail-list">
+        <div>
+          <dt>库文件</dt>
+          <dd className="mono">{info?.path ?? "-"}</dd>
+        </div>
+        <div>
+          <dt>来源</dt>
+          <dd className="mono">{info?.url ?? "-"}</dd>
+        </div>
+        <div>
+          <dt>大小</dt>
+          <dd>{info?.size_bytes ? `${(info.size_bytes / 1024 / 1024).toFixed(1)} MiB` : "-"}</dd>
+        </div>
+        <div>
+          <dt>SHA256</dt>
+          <dd className="mono">{info?.sha256 ? `${info.sha256.slice(0, 16)}…` : "-"}</dd>
+        </div>
+        <div>
+          <dt>最近更新</dt>
+          <dd>{info?.last_update ? formatDateTime(info.last_update) : "从未"}</dd>
+        </div>
+        <div>
+          <dt>下次更新</dt>
+          <dd>{info?.next_update ? formatDateTime(info.next_update) : "-"}</dd>
+        </div>
+        <div>
+          <dt>刷新周期</dt>
+          <dd>{info?.refresh_days ?? "-"} 天</dd>
+        </div>
+        <div>
+          <dt>错误</dt>
+          <dd className="pre-wrap">{info?.last_error || "-"}</dd>
+        </div>
+      </dl>
+      <div className="field-inline" style={{ marginTop: 12 }}>
+        <Button variant="secondary" disabled={update.isPending} onClick={() => update.mutate()}>
+          <RefreshCw size={14} /> 立即更新库
+        </Button>
+        <Input value={probe} onChange={(event) => setProbe(event.target.value)} placeholder="查询 IP 归属，如 1.1.1.1" style={{ width: 240 }} />
+        <Button variant="secondary" disabled={!probe.trim() || lookup.isPending} onClick={() => lookup.mutate(probe.trim())}>
+          查询
+        </Button>
+      </div>
+      {answer ? (
+        <p className="muted">
+          <span className="mono">{answer.ip}</span>{" "}
+          {answer.found ? (
+            <>
+              {flagEmoji(answer.country ?? "")} {answer.country} {answer.name}
+            </>
+          ) : (
+            "未找到归属"
+          )}
+        </p>
+      ) : null}
+      {update.isError || lookup.isError ? <ErrorNotice message={formatApiErrorMessage(update.error ?? lookup.error)} /> : null}
+    </div>
   );
 }
 
@@ -489,6 +624,12 @@ function NodeDetail({ node, names }: { node: EgressNode; names: Record<string, s
             <dd>
               {node.protocol}
               {node.raw_type && node.raw_type !== node.protocol ? `（原始 ${node.raw_type}）` : ""}
+            </dd>
+          </div>
+          <div>
+            <dt>地区</dt>
+            <dd>
+              {node.region ? `${flagEmoji(node.region)} ${node.region}${node.region_name ? ` · ${node.region_name}` : ""}` : "-"}
             </dd>
           </div>
           <div>
@@ -607,6 +748,7 @@ function queryString(filters: Filters): string {
   if (filters.status !== "all") params.set("status", filters.status);
   if (filters.subscription !== "all") params.set("subscription", filters.subscription);
   if (filters.protocol !== "all") params.set("protocol", filters.protocol);
+  if (filters.region !== "all") params.set("region", filters.region);
   params.set("sort_by", filters.sort_by);
   params.set("sort_order", filters.sort_order);
   params.set("offset", String(filters.offset));

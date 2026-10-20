@@ -45,6 +45,7 @@ func (a *Server) handleEgressNodes(w http.ResponseWriter, r *http.Request) {
 		Status:       query.Get("status"),
 		Subscription: query.Get("subscription"),
 		Protocol:     query.Get("protocol"),
+		Region:       query.Get("region"),
 		SortBy:       query.Get("sort_by"),
 		SortDesc:     query.Get("sort_order") == "desc",
 		Offset:       max(offset, 0),

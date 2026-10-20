@@ -110,6 +110,13 @@
       "concurrency": 8
     },
     "state_path": "/data/egress.db",
-    "max_latency_entries": 128
+    "max_latency_entries": 128,
+    "geoip": {
+      "enabled": true,
+      "url": "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country.mmdb",
+      "sha256": "",
+      "path": "/data/country.mmdb",
+      "refresh_days": 7
+    }
   }
 }

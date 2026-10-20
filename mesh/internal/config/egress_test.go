@@ -177,3 +177,55 @@ func TestSubscriptionSourceValidation(t *testing.T) {
 		t.Fatal("inline subscriptions must not carry a refresh schedule")
 	}
 }
+
+func TestGeoIPSectionDefaultsAndValidation(t *testing.T) {
+	egress := &EgressConfig{Enabled: true, StatePath: "/var/lib/mesh/egress.db"}
+	if err := egress.normalize("/etc/mesh/config.json"); err != nil {
+		t.Fatal(err)
+	}
+	if egress.GeoIP != nil {
+		t.Fatal("geoip stays absent until the operator adds it")
+	}
+	var absent *EgressGeoIP
+	if absent.IsEnabled() {
+		t.Fatal("an absent section must be disabled")
+	}
+	if !(&EgressGeoIP{Enabled: nil}).IsEnabled() {
+		t.Fatal("present section defaults to enabled")
+	}
+
+	off := false
+	if (&EgressGeoIP{Enabled: &off}).IsEnabled() {
+		t.Fatal("explicit false must disable geoip")
+	}
+
+	bad := &EgressConfig{Enabled: true, StatePath: "/var/lib/mesh/egress.db", GeoIP: &EgressGeoIP{RefreshDays: 900}}
+	if err := bad.normalize(""); err == nil {
+		t.Fatal("refresh_days above 365 must be rejected")
+	}
+	badURL := &EgressConfig{Enabled: true, StatePath: "/x.db", GeoIP: &EgressGeoIP{URL: "ftp://mirror/country.mmdb"}}
+	if err := badURL.normalize(""); err == nil {
+		t.Fatal("non-http url must be rejected")
+	}
+	badDigest := &EgressConfig{Enabled: true, StatePath: "/x.db", GeoIP: &EgressGeoIP{SHA256: "deadbeef"}}
+	if err := badDigest.normalize(""); err == nil {
+		t.Fatal("a short digest must be rejected")
+	}
+
+	// The database path defaults to one beside the state database.
+	pathed := &EgressConfig{Enabled: true, StatePath: "/var/lib/mesh/egress.db", GeoIP: &EgressGeoIP{}}
+	if err := pathed.normalize(""); err != nil {
+		t.Fatal(err)
+	}
+	if pathed.GeoIP.Path != filepath.Clean("/var/lib/mesh/egress.db.geoip.mmdb") {
+		t.Fatalf("geoip path = %q", pathed.GeoIP.Path)
+	}
+
+	// Clone must not share the section.
+	source := &EgressConfig{Enabled: true, StatePath: "/x.db", GeoIP: &EgressGeoIP{URL: "https://mirror/country.mmdb"}}
+	clone := cloneEgress(source)
+	clone.GeoIP.URL = "https://other/country.mmdb"
+	if source.GeoIP.URL != "https://mirror/country.mmdb" {
+		t.Fatal("cloneEgress shared the geoip section")
+	}
+}
