@@ -1,82 +1,162 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, RefreshCw, Search } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, RefreshCw, X, Zap } from "lucide-react";
 import { api } from "../lib/api";
-import type { EgressCandidate, EgressNode, EgressSnapshot } from "../lib/types";
+import type { EgressNode, EgressNodePage } from "../lib/types";
 import { EmptyState, ErrorNotice, Loading, PageHeader, StatCard } from "../components/Common";
 import { Button } from "../components/ui/Button";
 import { Input } from "../components/ui/Input";
 import { Select } from "../components/ui/Select";
 import { Switch } from "../components/ui/Switch";
-import { formatDateTime, formatPercent } from "../lib/time";
+import { formatDateTime, formatPercent, formatRelativeTime } from "../lib/time";
 import { formatApiErrorMessage } from "../lib/error-message";
+
+const statusLabels: Record<string, string> = {
+  healthy: "健康",
+  cooling: "冷却",
+  error: "最近失败",
+  unprobed: "待测",
+  disabled: "停用",
+  unsupported: "不支持",
+};
+
+const statusTone: Record<string, string> = {
+  healthy: "badge-success",
+  cooling: "badge-warning",
+  error: "badge-danger",
+  unprobed: "badge-neutral",
+  disabled: "badge-muted",
+  unsupported: "badge-muted",
+};
+
+const pageSizes = [20, 50, 100, 200, 500];
+
+type Filters = {
+  keyword: string;
+  status: string;
+  subscription: string;
+  protocol: string;
+  sort_by: string;
+  sort_order: "asc" | "desc";
+  offset: number;
+  limit: number;
+};
+
+const defaultFilters: Filters = {
+  keyword: "",
+  status: "all",
+  subscription: "all",
+  protocol: "all",
+  sort_by: "score",
+  sort_order: "desc",
+  offset: 0,
+  limit: 50,
+};
+
+function readFilters(params: URLSearchParams): Filters {
+  const offset = Number.parseInt(params.get("offset") ?? "0", 10);
+  const limit = Number.parseInt(params.get("limit") ?? "50", 10);
+  return {
+    ...defaultFilters,
+    keyword: params.get("keyword") ?? "",
+    status: params.get("status") ?? "all",
+    subscription: params.get("subscription") ?? "all",
+    protocol: params.get("protocol") ?? "all",
+    sort_by: params.get("sort_by") ?? "score",
+    sort_order: params.get("sort_order") === "asc" ? "asc" : "desc",
+    offset: Number.isFinite(offset) && offset > 0 ? offset : 0,
+    limit: pageSizes.includes(limit) ? limit : 50,
+  };
+}
 
 export function NodesPage() {
   const queryClient = useQueryClient();
-  const [search, setSearch] = useState("");
-  const [status, setStatus] = useState("all");
-  const [detail, setDetail] = useState<EgressNode | null>(null);
+  const [params, setParams] = useSearchParams();
+  const filters = useMemo(() => readFilters(params), [params]);
+  const [keyword, setKeyword] = useState(filters.keyword);
+  const [detailId, setDetailIdState] = useState<string | null>(params.get("node"));
 
-  const snapshot = useQuery({
-    queryKey: ["egress", "summary"],
-    queryFn: () => api.get<EgressSnapshot>("/api/egress"),
-    refetchInterval: 10_000,
-  });
-  const diagnose = useQuery({
-    queryKey: ["egress", "diagnose"],
-    queryFn: () =>
-      api.get<{ target: string; candidates: EgressCandidate[] }>("/api/egress/diagnose"),
+  // The open drawer is part of the URL so a node view can be shared directly.
+  const setDetailId = useCallback(
+    (id: string | null) => {
+      setDetailIdState(id);
+      const search = new URLSearchParams(window.location.search);
+      if (id) search.set("node", id);
+      else search.delete("node");
+      setParams(search, { replace: true });
+    },
+    [setParams],
+  );
+
+  const patch = useCallback(
+    (next: Partial<Filters>) => {
+      const merged = { ...filters, ...next };
+      const search = new URLSearchParams();
+      if (merged.keyword) search.set("keyword", merged.keyword);
+      if (merged.status !== "all") search.set("status", merged.status);
+      if (merged.subscription !== "all") search.set("subscription", merged.subscription);
+      if (merged.protocol !== "all") search.set("protocol", merged.protocol);
+      if (merged.sort_by !== defaultFilters.sort_by) search.set("sort_by", merged.sort_by);
+      if (merged.sort_order !== defaultFilters.sort_order) search.set("sort_order", merged.sort_order);
+      if (merged.offset > 0) search.set("offset", String(merged.offset));
+      if (merged.limit !== defaultFilters.limit) search.set("limit", String(merged.limit));
+      const node = new URLSearchParams(window.location.search).get("node");
+      if (node) search.set("node", node);
+      setParams(search, { replace: true });
+    },
+    [filters, setParams],
+  );
+
+  useEffect(() => {
+    if (keyword === filters.keyword) return;
+    const timer = setTimeout(() => patch({ keyword, offset: 0 }), 300);
+    return () => clearTimeout(timer);
+  }, [keyword, filters.keyword, patch]);
+
+  const query = useQuery({
+    queryKey: ["egress", "nodes", filters],
+    queryFn: () => api.get<EgressNodePage>(`/api/egress/nodes?${queryString(filters)}`),
     refetchInterval: 15_000,
+  });
+  const detail = useQuery({
+    queryKey: ["egress", "node", detailId],
+    queryFn: () => api.get<{ node: EgressNode }>(`/api/egress/nodes/${detailId}`),
+    enabled: Boolean(detailId),
+    refetchInterval: detailId ? 5_000 : false,
   });
 
   const toggle = useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
       api.post(`/api/egress/nodes/${id}/enabled`, { enabled }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["egress", "summary"] });
-      queryClient.invalidateQueries({ queryKey: ["egress", "diagnose"] });
-    },
+    onSuccess: () => invalidate(queryClient),
   });
   const probe = useMutation({
     mutationFn: (id: string) => api.post(`/api/egress/nodes/${id}/probe`),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["egress", "summary"] });
-      queryClient.invalidateQueries({ queryKey: ["egress", "diagnose"] });
+    onSuccess: (_result, id) => {
+      invalidate(queryClient);
+      queryClient.invalidateQueries({ queryKey: ["egress", "node", id] });
     },
   });
 
-  const candidates = useMemo(() => {
-    const map = new Map<string, EgressCandidate>();
-    for (const item of diagnose.data?.candidates ?? []) {
-      map.set(item.id, item);
-    }
-    return map;
-  }, [diagnose.data]);
+  useEffect(() => {
+    if (!detailId) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setDetailId(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [detailId]);
 
-  const nodes = snapshot.data?.nodes ?? [];
-  const filtered = nodes.filter((node) => {
-    const matchesSearch =
-      !search.trim() ||
-      node.name.toLowerCase().includes(search.trim().toLowerCase()) ||
-      node.id.includes(search.trim()) ||
-      (node.server ?? "").includes(search.trim());
-    const candidate = candidates.get(node.id);
-    const matchesStatus =
-      status === "all" ||
-      (status === "eligible" && candidate?.eligible) ||
-      (status === "cooling" && node.cooldown_until) ||
-      (status === "disabled" && !node.enabled) ||
-      (status === "unsupported" && !node.supported);
-    return matchesSearch && matchesStatus;
-  });
-
-  if (snapshot.isLoading && !snapshot.data) {
+  if (query.isLoading && !query.data) {
     return <Loading label="读取节点池…" />;
   }
-  if (snapshot.isError) {
-    return <ErrorNotice message={formatApiErrorMessage(snapshot.error)} />;
+  if (query.isError) {
+    return <ErrorNotice message={formatApiErrorMessage(query.error)} />;
   }
-  if (!snapshot.data?.enabled) {
+  const page = query.data;
+  if (!page) return <EmptyState />;
+  if (!page.enabled) {
     return (
       <>
         <PageHeader eyebrow="Egress" title="代理节点池" description="统一出口调度。当前未启用。" />
@@ -85,128 +165,457 @@ export function NodesPage() {
     );
   }
 
+  const names = page.subscription_names ?? {};
+  const nodes = page.nodes ?? [];
+  const totalPages = Math.max(1, Math.ceil(page.total / filters.limit));
+  const currentPage = Math.floor(filters.offset / filters.limit) + 1;
+  const from = page.total === 0 ? 0 : filters.offset + 1;
+  const to = Math.min(filters.offset + filters.limit, page.total);
+  const dirty =
+    filters.keyword !== "" ||
+    filters.status !== "all" ||
+    filters.subscription !== "all" ||
+    filters.protocol !== "all" ||
+    filters.sort_by !== defaultFilters.sort_by;
+
+  const sortBy = (column: string) =>
+    patch({
+      sort_by: column,
+      sort_order: filters.sort_by === column && filters.sort_order === "desc" ? "asc" : "desc",
+      offset: 0,
+    });
+
   return (
     <>
       <PageHeader
         eyebrow="Egress"
         title="代理节点池"
-        description={diagnose.data?.target ? `评分目标：${diagnose.data.target}` : "按上游目标计算健康、延迟、负载与成功率。"}
+        description="全量节点按条件分页展示；健康、延迟与综合分来自出口状态库与实时调度。"
         actions={
-          <Button variant="secondary" onClick={() => queryClient.invalidateQueries({ queryKey: ["egress"] })}>
-            <RefreshCw size={15} /> 刷新
-          </Button>
+          <>
+            {dirty ? (
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  setKeyword("");
+                  patch({ ...defaultFilters });
+                }}
+              >
+                <X size={14} /> 重置筛选
+              </Button>
+            ) : null}
+            <Button variant="secondary" onClick={() => invalidate(queryClient)}>
+              <RefreshCw size={15} /> 刷新
+            </Button>
+          </>
         }
       />
 
       <div className="stats-grid">
-        <StatCard label="节点总数" value={snapshot.data.counts?.total ?? nodes.length} />
-        <StatCard label="可用" value={snapshot.data.counts?.eligible ?? 0} tone={(snapshot.data.counts?.eligible ?? 0) > 0 ? "success" : "danger"} />
-        <StatCard label="冷却中" value={snapshot.data.counts?.cooling ?? 0} tone="warning" />
-        <StatCard label="停用 / 不支持" value={`${snapshot.data.counts?.disabled ?? 0} / ${snapshot.data.counts?.unsupported ?? 0}`} />
+        <StatCard label="节点总数" value={page.pool} hint={`当前筛选 ${page.total} 个`} />
+        <StatCard
+          label="可调度"
+          value={page.counts.eligible}
+          tone={page.counts.eligible > 0 ? "success" : "danger"}
+          hint="进入候选池且未被排除"
+        />
+        <StatCard label="冷却中" value={page.counts.cooling} tone={page.counts.cooling ? "warning" : undefined} />
+        <StatCard label="停用 / 不支持" value={`${page.counts.disabled} / ${page.counts.unsupported}`} hint="保留展示，不参与调度" />
+      </div>
+
+      <div className="card panel">
+        <div className="panel-head">
+          <h3>筛选与排序</h3>
+          <span className="badge badge-neutral">筛选条件写入地址栏，可直接分享</span>
+        </div>
+        <div className="form-grid-tight">
+          <label className="field-group">
+            <span className="field-label">关键字</span>
+            <Input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="名称 / 别名 / ID / 地址 / 订阅" />
+          </label>
+          <label className="field-group">
+            <span className="field-label">状态</span>
+            <Select value={filters.status} onChange={(event) => patch({ status: event.target.value, offset: 0 })}>
+              <option value="all">全部状态</option>
+              {(page.facets?.statuses ?? []).map((item) => (
+                <option key={item} value={item}>
+                  {statusLabels[item] ?? item}
+                </option>
+              ))}
+            </Select>
+          </label>
+          <label className="field-group">
+            <span className="field-label">订阅</span>
+            <Select value={filters.subscription} onChange={(event) => patch({ subscription: event.target.value, offset: 0 })}>
+              <option value="all">全部订阅</option>
+              {(page.facets?.subscriptions ?? []).map((item) => (
+                <option key={item} value={item}>
+                  {names[item] ? `${names[item]}（${item}）` : item}
+                </option>
+              ))}
+            </Select>
+          </label>
+          <label className="field-group">
+            <span className="field-label">协议</span>
+            <Select value={filters.protocol} onChange={(event) => patch({ protocol: event.target.value, offset: 0 })}>
+              <option value="all">全部协议</option>
+              {(page.facets?.protocols ?? []).map((item) => (
+                <option key={item} value={item}>
+                  {item}
+                </option>
+              ))}
+            </Select>
+          </label>
+          <label className="field-group">
+            <span className="field-label">每页条数</span>
+            <Select value={String(filters.limit)} onChange={(event) => patch({ limit: Number(event.target.value), offset: 0 })}>
+              {pageSizes.map((size) => (
+                <option key={size} value={size}>
+                  {size}
+                </option>
+              ))}
+            </Select>
+          </label>
+        </div>
       </div>
 
       <div className="card panel">
         <div className="panel-head">
           <h3>节点列表</h3>
-          <div className="field-inline">
-            <Search size={15} className="muted" />
-            <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索名称 / ID / 地址" />
-            <Select value={status} onChange={(event) => setStatus(event.target.value)}>
-              <option value="all">全部状态</option>
-              <option value="eligible">可调度</option>
-              <option value="cooling">冷却中</option>
-              <option value="disabled">已停用</option>
-              <option value="unsupported">不支持</option>
-            </Select>
-          </div>
+          <span className="badge badge-neutral">
+            第 {currentPage}/{totalPages} 页 · 显示 {from}-{to} / {page.total}
+          </span>
         </div>
-
-        {filtered.length === 0 ? (
-          <EmptyState title="没有匹配的节点" />
+        {nodes.length === 0 ? (
+          <EmptyState title="没有匹配的节点" hint="调整筛选条件，或先在订阅页添加订阅" />
         ) : (
           <div className="data-table-wrap scroll-x">
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>节点</th>
+                  <th>
+                    <SortHeader column="name" filters={filters} onSort={sortBy} label="节点" />
+                  </th>
                   <th>协议</th>
-                  <th>订阅</th>
-                  <th>健康</th>
-                  <th>延迟</th>
-                  <th>综合分</th>
+                  <th>订阅与别名</th>
+                  <th>状态</th>
+                  <th>
+                    <SortHeader column="health" filters={filters} onSort={sortBy} label="健康" />
+                  </th>
+                  <th>
+                    <SortHeader column="latency" filters={filters} onSort={sortBy} label="延迟" />
+                  </th>
+                  <th>
+                    <SortHeader column="score" filters={filters} onSort={sortBy} label="综合分" />
+                  </th>
+                  <th>
+                    <SortHeader column="failures" filters={filters} onSort={sortBy} label="连续失败" />
+                  </th>
+                  <th>
+                    <SortHeader column="last_probe_at" filters={filters} onSort={sortBy} label="上次探测" />
+                  </th>
                   <th>冷却至</th>
+                  <th>
+                    <SortHeader column="created_at" filters={filters} onSort={sortBy} label="创建时间" />
+                  </th>
                   <th>启用</th>
                   <th>操作</th>
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((node) => {
-                  const candidate = candidates.get(node.id);
-                  return (
-                    <tr key={node.id}>
-                      <td>
-                        <button className="link-button" onClick={() => setDetail(node)}>
-                          {node.name}
-                        </button>
-                        <div className="muted mono">{node.id.slice(0, 12)}…</div>
-                      </td>
-                      <td>
-                        <span className="tag">{node.protocol}</span>
-                        {!node.supported ? <span className="badge badge-muted">unsupported</span> : null}
-                      </td>
-                      <td className="mono">{(node.subscriptions ?? []).join(", ") || "-"}</td>
-                      <td>{formatPercent(node.health_score)}</td>
-                      <td>{node.has_latency ? `${Math.round(node.latency_ms ?? 0)} ms` : "-"}</td>
-                      <td>
-                        {candidate ? (
-                          <>
-                            <strong>{candidate.score.total.toFixed(1)}</strong>
-                            <div className="muted">H {candidate.score.health.toFixed(2)} · L {candidate.score.latency.toFixed(2)}</div>
-                          </>
-                        ) : (
-                          "-"
-                        )}
-                      </td>
-                      <td>{node.cooldown_until ? formatDateTime(node.cooldown_until) : "-"}</td>
-                      <td>
-                        <Switch
-                          checked={node.enabled}
-                          onChange={(event) => toggle.mutate({ id: node.id, enabled: event.target.checked })}
-                          aria-label={`切换 ${node.name}`}
-                        />
-                      </td>
-                      <td>
-                        <div className="table-actions">
-                          <Button size="sm" variant="secondary" disabled={probe.isPending} onClick={() => probe.mutate(node.id)}>
-                            <Activity size={13} /> 探测
-                          </Button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
+                {nodes.map((node) => (
+                  <tr key={node.id}>
+                    <td>
+                      <button className="link-button" onClick={() => setDetailId(node.id)}>
+                        {node.name}
+                      </button>
+                      <div className="muted mono">{node.id.slice(0, 12)}…</div>
+                    </td>
+                    <td>
+                      <span className="tag">{node.protocol}</span>
+                      {node.raw_type && node.raw_type !== node.protocol ? <div className="muted">{node.raw_type}</div> : null}
+                    </td>
+                    <td>
+                      {(node.subscriptions ?? []).length === 0 ? (
+                        "-"
+                      ) : (
+                        (node.subscriptions ?? []).map((id) => (
+                          <div key={id} className="muted">
+                            {names[id] ?? id}
+                            {aliasFor(node, id) ? <span className="mono"> · {aliasFor(node, id)}</span> : null}
+                          </div>
+                        ))
+                      )}
+                    </td>
+                    <td>
+                      <span className={`badge ${statusTone[node.status] ?? "badge-neutral"}`}>{statusLabels[node.status] ?? node.status}</span>
+                      {node.eligible ? <div className="muted">可调度</div> : null}
+                    </td>
+                    <td>{formatPercent(node.health_score, 1)}</td>
+                    <td>
+                      <span className={latencyClass(node)}>{node.has_latency ? `${Math.round(node.latency_ms ?? 0)} ms` : "-"}</span>
+                    </td>
+                    <td>
+                      <strong>{(node.score?.total ?? 0).toFixed(2)}</strong>
+                      <div className="muted">
+                        H {(node.score?.health ?? 0).toFixed(2)} · L {(node.score?.latency ?? 0).toFixed(2)} · U{" "}
+                        {(node.score?.upstream ?? 0).toFixed(2)}
+                      </div>
+                    </td>
+                    <td>{node.failures || "-"}</td>
+                    <td>{node.last_probe_at ? formatRelativeTime(node.last_probe_at) : "未探测"}</td>
+                    <td>{node.cooldown_until ? formatDateTime(node.cooldown_until) : "-"}</td>
+                    <td>{formatDateTime(node.created_at)}</td>
+                    <td>
+                      <Switch
+                        checked={node.enabled}
+                        disabled={toggle.isPending}
+                        onChange={(event) => toggle.mutate({ id: node.id, enabled: event.target.checked })}
+                        aria-label={`切换 ${node.name}`}
+                      />
+                    </td>
+                    <td>
+                      <div className="table-actions">
+                        <Button size="sm" variant="secondary" onClick={() => setDetailId(node.id)}>
+                          详情
+                        </Button>
+                        <Button size="sm" variant="secondary" disabled={probe.isPending} onClick={() => probe.mutate(node.id)}>
+                          <Zap size={13} /> 探测
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
         )}
-        {toggle.isError || probe.isError ? (
-          <ErrorNotice message={formatApiErrorMessage(toggle.error ?? probe.error)} />
+        <div className="pager-row">
+          <Button variant="secondary" disabled={filters.offset <= 0} onClick={() => patch({ offset: Math.max(0, filters.offset - filters.limit) })}>
+            <ChevronLeft size={14} /> 上一页
+          </Button>
+          <Button variant="secondary" disabled={to >= page.total} onClick={() => patch({ offset: filters.offset + filters.limit })}>
+            下一页 <ChevronRight size={14} />
+          </Button>
+          <span className="muted">跳转到第</span>
+          <Input
+            type="number"
+            min={1}
+            max={totalPages}
+            defaultValue={currentPage}
+            key={currentPage}
+            style={{ width: 76 }}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter") return;
+              const target = Number((event.target as HTMLInputElement).value);
+              if (!Number.isFinite(target)) return;
+              const next = Math.min(Math.max(1, Math.trunc(target)), totalPages);
+              patch({ offset: (next - 1) * filters.limit });
+            }}
+          />
+          <span className="muted">/ {totalPages} 页</span>
+        </div>
+        {toggle.isError || probe.isError || detail.isError ? (
+          <ErrorNotice message={formatApiErrorMessage(toggle.error ?? probe.error ?? detail.error)} />
         ) : null}
       </div>
 
-      {detail ? (
-        <div className="modal-overlay" role="dialog" aria-modal="true" onClick={() => setDetail(null)}>
-          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
-            <div className="panel-head">
-              <h3>{detail.name}</h3>
-              <Button variant="ghost" size="sm" onClick={() => setDetail(null)}>
-                关闭
-              </Button>
+      {detailId ? (
+        <div className="drawer-overlay" onClick={() => setDetailId(null)} role="presentation">
+          <div className="card drawer-panel" onClick={(event) => event.stopPropagation()}>
+            <div className="drawer-header">
+              <div>
+                <h3>{detail.data?.node.name ?? "节点详情"}</h3>
+                <p className="mono">{detailId}</p>
+              </div>
+              <div className="drawer-header-actions">
+                <Button size="sm" variant="secondary" disabled={probe.isPending} onClick={() => probe.mutate(detailId)}>
+                  <Zap size={13} /> 立即探测
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setDetailId(null)} aria-label="关闭详情">
+                  <X size={14} />
+                </Button>
+              </div>
             </div>
-            <pre className="json-block">{JSON.stringify(detail, null, 2)}</pre>
+            {detail.data?.node ? (
+              <NodeDetail node={detail.data.node} names={names} />
+            ) : (
+              <Loading label="读取节点详情…" />
+            )}
           </div>
         </div>
       ) : null}
     </>
   );
+}
+
+function SortHeader({
+  column,
+  label,
+  filters,
+  onSort,
+}: {
+  column: string;
+  label: string;
+  filters: Filters;
+  onSort: (column: string) => void;
+}) {
+  const active = filters.sort_by === column;
+  return (
+    <button className="sort-header" type="button" onClick={() => onSort(column)}>
+      {label}
+      {active ? filters.sort_order === "desc" ? <ArrowDown size={12} /> : <ArrowUp size={12} /> : null}
+    </button>
+  );
+}
+
+function NodeDetail({ node, names }: { node: EgressNode; names: Record<string, string> }) {
+  const aliases = node.aliases?.length
+    ? node.aliases
+    : (node.subscriptions ?? []).map((id) => ({ subscription: id, tag: "" }));
+  return (
+    <div className="platform-drawer-layout">
+      <section className="platform-drawer-section">
+        <div className="platform-drawer-section-head">
+          <h4>节点状态</h4>
+          <p>
+            <span className={`badge ${statusTone[node.status] ?? "badge-neutral"}`}>{statusLabels[node.status] ?? node.status}</span>{" "}
+            {node.eligible ? "当前参与调度" : "当前不参与调度"}
+          </p>
+        </div>
+        <dl className="node-detail-list">
+          <div>
+            <dt>协议</dt>
+            <dd>
+              {node.protocol}
+              {node.raw_type && node.raw_type !== node.protocol ? `（原始 ${node.raw_type}）` : ""}
+            </dd>
+          </div>
+          <div>
+            <dt>地址</dt>
+            <dd className="mono">
+              {node.server ? `${node.server}${node.port ? `:${node.port}` : ""}` : node.protocol === "direct" ? "本机直连" : "-"}
+              {node.tls ? " · tls" : ""}
+            </dd>
+          </div>
+          <div>
+            <dt>健康分</dt>
+            <dd>{formatPercent(node.health_score, 1)}</dd>
+          </div>
+          <div>
+            <dt>参考延迟</dt>
+            <dd>{node.has_latency ? `${Math.round(node.latency_ms ?? 0)} ms` : "-"}</dd>
+          </div>
+          <div>
+            <dt>连续失败</dt>
+            <dd>{node.failures}</dd>
+          </div>
+          <div>
+            <dt>上次探测</dt>
+            <dd>{node.last_probe_at ? `${formatRelativeTime(node.last_probe_at)}（${formatDateTime(node.last_probe_at)}）` : "未探测"}</dd>
+          </div>
+          <div>
+            <dt>冷却至</dt>
+            <dd>{node.cooldown_until ? formatDateTime(node.cooldown_until) : "-"}</dd>
+          </div>
+          <div>
+            <dt>创建时间</dt>
+            <dd>{formatDateTime(node.created_at)}</dd>
+          </div>
+          <div>
+            <dt>手动启用</dt>
+            <dd>{node.enabled ? "是" : "否"}</dd>
+          </div>
+          <div>
+            <dt>支持调度</dt>
+            <dd>{node.supported ? "是" : "否"}</dd>
+          </div>
+          <div>
+            <dt>最近错误</dt>
+            <dd className="pre-wrap">{node.last_error || "-"}</dd>
+          </div>
+        </dl>
+      </section>
+
+      <section className="platform-drawer-section">
+        <div className="platform-drawer-section-head">
+          <h4>调度评分</h4>
+          <p>针对主上游目标实时计算的 H / L / R / U 分项</p>
+        </div>
+        <dl className="node-detail-list">
+          <div>
+            <dt>综合</dt>
+            <dd>{(node.score?.total ?? 0).toFixed(3)}</dd>
+          </div>
+          <div>
+            <dt>健康 H</dt>
+            <dd>{(node.score?.health ?? 0).toFixed(3)}</dd>
+          </div>
+          <div>
+            <dt>延迟 L</dt>
+            <dd>{(node.score?.latency ?? 0).toFixed(3)}</dd>
+          </div>
+          <div>
+            <dt>路由 R</dt>
+            <dd>{(node.score?.routing ?? 0).toFixed(3)}</dd>
+          </div>
+          <div>
+            <dt>上游成功率 U</dt>
+            <dd>{(node.score?.upstream ?? 0).toFixed(3)}</dd>
+          </div>
+        </dl>
+      </section>
+
+      <section className="platform-drawer-section">
+        <div className="platform-drawer-section-head">
+          <h4>订阅别名</h4>
+          <p>同一出口在多个订阅里的名字全部列出</p>
+        </div>
+        {aliases.length === 0 ? (
+          <EmptyState title="无订阅引用" />
+        ) : (
+          <div className="timeline">
+            {aliases.map((alias) => (
+              <div className="timeline-item" key={alias.subscription}>
+                <span className="tag">{names[alias.subscription] ?? alias.subscription}</span>
+                <span className="mono">{alias.tag || node.name}</span>
+                <span className="muted mono">{alias.subscription}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function aliasFor(node: EgressNode, subscription: string): string {
+  return node.aliases?.find((item) => item.subscription === subscription)?.tag ?? "";
+}
+
+function latencyClass(node: EgressNode): string {
+  if (!node.has_latency) return "muted";
+  const latency = node.latency_ms ?? 0;
+  if (latency < 400) return "badge badge-success";
+  if (latency < 1000) return "badge badge-warning";
+  return "badge badge-danger";
+}
+
+function queryString(filters: Filters): string {
+  const params = new URLSearchParams();
+  if (filters.keyword) params.set("keyword", filters.keyword);
+  if (filters.status !== "all") params.set("status", filters.status);
+  if (filters.subscription !== "all") params.set("subscription", filters.subscription);
+  if (filters.protocol !== "all") params.set("protocol", filters.protocol);
+  params.set("sort_by", filters.sort_by);
+  params.set("sort_order", filters.sort_order);
+  params.set("offset", String(filters.offset));
+  params.set("limit", String(filters.limit));
+  return params.toString();
+}
+
+function invalidate(queryClient: ReturnType<typeof useQueryClient>) {
+  queryClient.invalidateQueries({ queryKey: ["egress", "nodes"] });
+  queryClient.invalidateQueries({ queryKey: ["egress", "node"] });
+  queryClient.invalidateQueries({ queryKey: ["egress", "summary"] });
 }

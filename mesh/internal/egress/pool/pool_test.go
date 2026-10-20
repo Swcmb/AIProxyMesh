@@ -118,3 +118,47 @@ func TestUnsupportedVisibleButNotSupported(t *testing.T) {
 		t.Fatal("unsupported node must remain visible in the pool")
 	}
 }
+
+func TestSharedExitKeepsEverySubscriptionAlias(t *testing.T) {
+	p := New(8)
+	shared := httpNode("1.1.1.1", 8080, "tokyo")
+	entry, _ := p.Add("sub-a", input(shared))
+	p.Add("sub-b", input(httpNode("1.1.1.1", 8080, "東京")))
+	if got := entry.Name(); got != "tokyo" {
+		t.Fatalf("primary name = %s", got)
+	}
+	tags := map[string]string{}
+	for _, alias := range entry.Aliases() {
+		tags[alias.Subscription] = alias.Tag
+	}
+	if tags["sub-a"] != "tokyo" || tags["sub-b"] != "東京" {
+		t.Fatalf("aliases = %+v", entry.Aliases())
+	}
+
+	p.ReplaceSubscription("sub-b", nil)
+	if len(entry.Aliases()) != 1 || entry.Aliases()[0].Subscription != "sub-a" {
+		t.Fatalf("aliases after removal = %+v", entry.Aliases())
+	}
+}
+
+func TestPruneSubscriptionsDropsOrphanedNodes(t *testing.T) {
+	p := New(8)
+	p.Add("keep", input(httpNode("1.1.1.1", 8080, "kept")))
+	shared, _ := p.Add("keep", input(httpNode("2.2.2.2", 8080, "shared")))
+	p.Add("gone", input(httpNode("2.2.2.2", 8080, "shared")))
+	p.Add("gone", input(httpNode("3.3.3.3", 8080, "orphan")))
+
+	removed := p.PruneSubscriptions(map[string]struct{}{"keep": {}})
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1", removed)
+	}
+	if p.Len() != 2 {
+		t.Fatalf("pool size = %d, want 2", p.Len())
+	}
+	if got := shared.SubscriptionIDs(); len(got) != 1 || got[0] != "keep" {
+		t.Fatalf("shared subscriptions = %v", got)
+	}
+	if len(shared.Aliases()) != 1 || shared.Aliases()[0].Subscription != "keep" {
+		t.Fatalf("shared aliases = %+v", shared.Aliases())
+	}
+}

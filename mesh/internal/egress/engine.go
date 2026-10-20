@@ -101,7 +101,29 @@ func New(opts Options) (*Engine, error) {
 		_ = store.Close()
 		return nil, err
 	}
+	e.pruneOrphanedReferences()
 	return e, nil
+}
+
+// pruneOrphanedReferences drops node references left behind by subscriptions
+// that are no longer configured, and persists the result. The state database is
+// a cache of health, not a source of subscriptions: without this, deleting a
+// subscription would keep its exits in the pool forever.
+func (e *Engine) pruneOrphanedReferences() {
+	keep := map[string]struct{}{}
+	for _, source := range e.sources() {
+		keep[source.ID] = struct{}{}
+	}
+	removed := e.pool.PruneSubscriptions(keep)
+	if removed == 0 {
+		return
+	}
+	if e.logger != nil {
+		e.logger.Info("egress orphan cleanup", "component", "egress", "event", "orphan_nodes_removed", "nodes", removed)
+	}
+	if err := e.save(context.Background()); err != nil && e.logger != nil {
+		e.logger.Warn("egress state save failed", "component", "egress", "event", "state_save_failed", "error", err)
+	}
 }
 
 // Start launches subscription refresh, probing, periodic persistence and the
@@ -191,6 +213,7 @@ func (e *Engine) Apply(egress *config.EgressConfig, upstream config.UpstreamConf
 	e.router.Configure(routerConfig(egress))
 	e.probe.Configure(probeConfig(egress, upstream))
 	e.subs.Reconcile()
+	e.pruneOrphanedReferences()
 	if e.ctx != nil {
 		go e.subs.RefreshAll(e.ctx)
 	}
@@ -257,18 +280,6 @@ func (e *Engine) ProbeNode(ctx context.Context, id string) (node.Snapshot, error
 }
 
 // Node returns one node snapshot by ID.
-func (e *Engine) Node(id string, target string) (node.Snapshot, bool) {
-	hash, err := node.ParseHex(id)
-	if err != nil {
-		return node.Snapshot{}, false
-	}
-	entry := e.pool.Get(hash)
-	if entry == nil {
-		return node.Snapshot{}, false
-	}
-	return entry.Snapshot(target, time.Now()), true
-}
-
 // SetNodeEnabled flips the manual switch on one node.
 func (e *Engine) SetNodeEnabled(id string, enabled bool) error {
 	hash, err := node.ParseHex(id)

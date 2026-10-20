@@ -69,6 +69,7 @@ func (p *Pool) Add(subID string, input Input) (*node.Entry, bool) {
 		p.entries[h] = entry
 	}
 	entry.AddSubscriptionID(subID)
+	entry.SetAlias(subID, input.Options.Tag)
 	p.refs[h] = addRef(p.refs[h], subID)
 	return entry, !exists
 }
@@ -96,6 +97,7 @@ func (p *Pool) ReplaceSubscription(subID string, inputs []Input) Diff {
 			diff.Updated++
 		}
 		entry.AddSubscriptionID(subID)
+		entry.SetAlias(subID, input.Options.Tag)
 		p.refs[h] = addRef(p.refs[h], subID)
 		if !input.Options.Supported() {
 			diff.Unsupported++
@@ -126,6 +128,34 @@ func (p *Pool) ReplaceSubscription(subID string, inputs []Input) Diff {
 }
 
 // RemoveSubscription drops every reference from one subscription.
+// PruneSubscriptions drops references to subscriptions that are no longer
+// configured. Nodes left without any reference are removed, which stops a
+// deleted subscription from keeping its exits in the pool forever.
+func (p *Pool) PruneSubscriptions(keep map[string]struct{}) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	removed := 0
+	for h, subscriptions := range p.refs {
+		for subID := range subscriptions {
+			if _, ok := keep[subID]; ok {
+				continue
+			}
+			delete(subscriptions, subID)
+			if entry := p.entries[h]; entry != nil {
+				entry.RemoveSubscriptionID(subID)
+			}
+		}
+		if len(subscriptions) == 0 {
+			delete(p.refs, h)
+			delete(p.entries, h)
+			removed++
+			continue
+		}
+		p.refs[h] = subscriptions
+	}
+	return removed
+}
+
 func (p *Pool) RemoveSubscription(subID string) int {
 	p.mu.Lock()
 	defer p.mu.Unlock()

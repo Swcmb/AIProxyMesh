@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -142,6 +143,7 @@ type Entry struct {
 
 	mu              sync.RWMutex
 	subscriptionIDs []string
+	aliases         map[string]string
 	lastError       string
 	cooldownReason  string
 
@@ -215,6 +217,33 @@ func (e *Entry) AddSubscriptionID(id string) {
 	e.subscriptionIDs = append(e.subscriptionIDs, id)
 }
 
+// SetAlias records the name one subscription gives this node. One exit shared
+// by several subscriptions keeps every name, so the pool view can show them
+// all instead of only the first one seen.
+func (e *Entry) SetAlias(subscription, tag string) {
+	if subscription == "" || tag == "" {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.aliases == nil {
+		e.aliases = map[string]string{}
+	}
+	e.aliases[subscription] = tag
+}
+
+// Aliases returns every subscription-scoped name, ordered by subscription ID.
+func (e *Entry) Aliases() []Alias {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	result := make([]Alias, 0, len(e.aliases))
+	for subscription, tag := range e.aliases {
+		result = append(result, Alias{Subscription: subscription, Tag: tag})
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Subscription < result[j].Subscription })
+	return result
+}
+
 // RemoveSubscriptionID drops a reference and reports whether none remain.
 func (e *Entry) RemoveSubscriptionID(id string) bool {
 	e.mu.Lock()
@@ -225,6 +254,7 @@ func (e *Entry) RemoveSubscriptionID(id string) bool {
 			break
 		}
 	}
+	delete(e.aliases, id)
 	return len(e.subscriptionIDs) == 0
 }
 
@@ -426,6 +456,7 @@ type Snapshot struct {
 	Enabled       bool       `json:"enabled"`
 	Supported     bool       `json:"supported"`
 	Subscriptions []string   `json:"subscriptions"`
+	Aliases       []Alias    `json:"aliases,omitempty"`
 	Failures      int        `json:"failures"`
 	CooldownUntil *time.Time `json:"cooldown_until,omitempty"`
 	HealthScore   float64    `json:"health_score"`
@@ -434,6 +465,12 @@ type Snapshot struct {
 	LastError     string     `json:"last_error,omitempty"`
 	LastProbeAt   *time.Time `json:"last_probe_at,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
+}
+
+// Alias is the name one subscription gives to a shared exit.
+type Alias struct {
+	Subscription string `json:"subscription"`
+	Tag          string `json:"tag,omitempty"`
 }
 
 // Snapshot builds a management view. target supplies the upstream host whose
@@ -450,6 +487,7 @@ func (e *Entry) Snapshot(target string, now time.Time) Snapshot {
 		Enabled:       e.Enabled(),
 		Supported:     e.Options.Supported(),
 		Subscriptions: e.SubscriptionIDs(),
+		Aliases:       e.Aliases(),
 		Failures:      e.Failures(),
 		HealthScore:   e.HealthScore(),
 		LastError:     e.LastError(),

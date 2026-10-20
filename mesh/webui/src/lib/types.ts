@@ -340,6 +340,19 @@ export interface EgressCounts {
   disabled: number;
 }
 
+export interface EgressNodeAlias {
+  subscription: string;
+  tag?: string;
+}
+
+export interface EgressNodeScore {
+  health: number;
+  latency: number;
+  routing: number;
+  upstream: number;
+  total: number;
+}
+
 export interface EgressNode {
   id: string;
   name: string;
@@ -351,6 +364,7 @@ export interface EgressNode {
   enabled: boolean;
   supported: boolean;
   subscriptions: string[];
+  aliases?: EgressNodeAlias[];
   failures: number;
   cooldown_until?: string;
   health_score: number;
@@ -359,6 +373,23 @@ export interface EgressNode {
   last_error?: string;
   last_probe_at?: string;
   created_at: string;
+  status: string;
+  score: EgressNodeScore;
+  eligible: boolean;
+}
+
+export interface EgressNodePage {
+  enabled: boolean;
+  nodes: EgressNode[];
+  total: number;
+  pool: number;
+  counts: EgressCounts;
+  facets: {
+    protocols: string[];
+    subscriptions: string[];
+    statuses: string[];
+  };
+  subscription_names: Record<string, string>;
 }
 
 export interface EgressSubscription {
