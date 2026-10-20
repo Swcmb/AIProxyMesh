@@ -14,13 +14,13 @@ import (
 // Inline subscriptions report only a line count; the full content is served by
 // the single-subscription endpoint.
 type EgressSubscriptionView struct {
-	ID           string `json:"id"`
-	Name         string `json:"name,omitempty"`
-	URL          string `json:"url,omitempty"`
-	Inline       bool   `json:"inline,omitempty"`
-	ContentLines int    `json:"content_lines,omitempty"`
-	Enabled      bool   `json:"enabled"`
-	RefreshSeconds int  `json:"refresh_seconds,omitempty"`
+	ID             string `json:"id"`
+	Name           string `json:"name,omitempty"`
+	URL            string `json:"url,omitempty"`
+	Inline         bool   `json:"inline,omitempty"`
+	ContentLines   int    `json:"content_lines,omitempty"`
+	Enabled        bool   `json:"enabled"`
+	RefreshSeconds int    `json:"refresh_seconds,omitempty"`
 }
 
 // EgressView is the management representation of the exit-pool section.

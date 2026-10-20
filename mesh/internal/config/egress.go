@@ -25,9 +25,9 @@ type EgressConfig struct {
 
 // EgressSubscription is one remote subscription source.
 type EgressSubscription struct {
-	ID             string `json:"id"`
-	Name           string `json:"name,omitempty"`
-	URL            string `json:"url,omitempty"`
+	ID   string `json:"id"`
+	Name string `json:"name,omitempty"`
+	URL  string `json:"url,omitempty"`
 	// Content is an inline feed (pasted proxy list). A subscription carries
 	// either a URL or inline content, never both.
 	Content        string `json:"content,omitempty"`
@@ -183,7 +183,7 @@ func (e *EgressConfig) normalize(configPath string) error {
 			return fmt.Errorf("egress.subscriptions[%q] refresh_seconds must be at least 30", sub.ID)
 		}
 		if sub.Content != "" && sub.RefreshSeconds > 0 {
-			return fmt.Errorf("egress.subscriptions[%q] is inline content and has no refresh schedule", sub.ID)
+			return fmt.Errorf("egress.subscriptions[%q] uses inline content and must not set refresh_seconds", sub.ID)
 		}
 	}
 	seen := make(map[string]struct{}, len(e.Subscriptions))

@@ -540,6 +540,8 @@ export interface ConfigView {
       id: string;
       name?: string;
       url?: string;
+      inline?: boolean;
+      content_lines?: number;
       enabled: boolean;
       refresh_seconds?: number;
     }[];

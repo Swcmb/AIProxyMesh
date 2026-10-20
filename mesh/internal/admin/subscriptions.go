@@ -77,13 +77,20 @@ func (a *Server) handleEgressSubscriptionCreate(w http.ResponseWriter, r *http.R
 				return fmt.Errorf("订阅 %q 已存在", id)
 			}
 		}
+		enabled := boolValue(input.Enabled, true)
+		refreshSeconds := intValue(input.RefreshSeconds, 3600)
+		content := stringValue(input.Content)
+		if content != "" {
+			// An inline feed is parsed once and never re-fetched on a timer.
+			refreshSeconds = 0
+		}
 		egress.Subscriptions = append(egress.Subscriptions, config.EgressSubscription{
 			ID:             id,
 			Name:           stringValue(input.Name),
 			URL:            stringValue(input.URL),
-			Content:        stringValue(input.Content),
-			Enabled:        boolValue(input.Enabled, true),
-			RefreshSeconds: intValue(input.RefreshSeconds, 3600),
+			Content:        content,
+			Enabled:        enabled,
+			RefreshSeconds: refreshSeconds,
 		})
 		return nil
 	})
@@ -124,6 +131,7 @@ func (a *Server) handleEgressSubscriptionUpdate(w http.ResponseWriter, r *http.R
 			if input.Content != nil && strings.TrimSpace(*input.Content) != "" {
 				sub.Content = *input.Content
 				sub.URL = ""
+				sub.RefreshSeconds = 0
 			}
 			if input.Enabled != nil {
 				sub.Enabled = *input.Enabled

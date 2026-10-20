@@ -60,7 +60,8 @@
 | `enabled` | 是否启用统一出口池 |
 | `subscriptions[].id` | 唯一 ID；跨订阅同节点按配置哈希去重 |
 | `subscriptions[].url` | 订阅 URL，仅支持 http/https；支持纯 URI、Base64、Clash 最小子集、sing-box/Clash JSON |
-| `subscriptions[].refresh_seconds` | 0 表示仅手动刷新；>0 时最小 30 秒 |
+| `subscriptions[].content` | 粘贴的节点清单，与 `url` 互斥；粘贴源不定时刷新，保存时解析一次 |
+| `subscriptions[].refresh_seconds` | 0 表示仅手动刷新；>0 时最小 30 秒；粘贴源必须为 0 |
 | `import_legacy_proxies` | 默认 true；把 `proxies` / `proxyfile` 作为 `legacy` 源导入 |
 | `schedule.*` | H/L/R/U 权重，自动归一化；全零使用默认值 |
 | `protocols.*` | 关闭的协议保留节点可见但不参与调度 |
