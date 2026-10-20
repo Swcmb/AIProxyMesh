@@ -74,6 +74,8 @@ func (a *Server) Handler() http.Handler {
 	mux.Handle("GET /api/logs/stream", a.authenticate(http.HandlerFunc(a.handleLogStream)))
 	mux.Handle("GET /api/egress", a.authenticate(http.HandlerFunc(a.handleEgressSummary)))
 	mux.Handle("GET /api/egress/nodes", a.authenticate(http.HandlerFunc(a.handleEgressNodes)))
+	mux.Handle("GET /api/egress/nodes/{id}", a.authenticate(http.HandlerFunc(a.handleEgressNodeDetail)))
+	mux.Handle("POST /api/egress/nodes/{id}/probe", a.authenticate(a.csrf(http.HandlerFunc(a.handleEgressProbe))))
 	mux.Handle("GET /api/egress/subscriptions", a.authenticate(http.HandlerFunc(a.handleEgressSubscriptions)))
 	mux.Handle("POST /api/egress/subscriptions/{id}/refresh", a.authenticate(a.csrf(http.HandlerFunc(a.handleEgressRefresh))))
 	mux.Handle("POST /api/egress/nodes/{id}/enabled", a.authenticate(a.csrf(http.HandlerFunc(a.handleEgressToggle))))
@@ -132,6 +134,7 @@ type ConfigView struct {
 	Logging     config.LoggingConfig     `json:"logging"`
 	Prefer      config.Tier              `json:"prefer"`
 	Reasoning   config.ReasoningConfig   `json:"reasoning"`
+	Egress      *EgressView              `json:"egress,omitempty"`
 	WebUI       WebUIView                `json:"webui"`
 	Effective   EffectiveView            `json:"effective"`
 	Restart     []string                 `json:"restart_required_fields,omitempty"`
@@ -172,6 +175,7 @@ type ConfigUpdate struct {
 	// A pointer distinguishes an omitted field (legacy clients should keep the
 	// current reasoning configuration) from an explicit empty object (clear it).
 	Reasoning *config.ReasoningConfig `json:"reasoning,omitempty"`
+	Egress    *EgressUpdate           `json:"egress,omitempty"`
 	WebUI     WebUIView               `json:"webui"`
 }
 
@@ -211,16 +215,19 @@ func (a *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	if update.Reasoning != nil {
 		reasoning = *update.Reasoning
 	}
+	egress, err := resolveEgressUpdate(update.Egress, current.Egress)
+	if err != nil {
+		writeAdminError(w, http.StatusBadRequest, "invalid_egress", err.Error())
+		return
+	}
 	candidate := config.Config{
 		ServerKeyMetadata: current.ServerKeyMetadata,
 		Rotation:          current.Rotation,
 		Listen:            update.Listen, ServerKeys: serverKeys, ZenKeys: zenKeys, GoKeys: goKeys, Anonymous: update.Anonymous, Proxies: proxies, ProxyFile: update.ProxyFile,
 		Upstream: update.Upstream, Retry: update.Retry, Models: update.Models, Performance: update.Performance, Logging: update.Logging, Prefer: update.Prefer,
 		Reasoning: reasoning,
-		// Egress editing is not part of the legacy config form yet; preserve the
-		// section so an unrelated save cannot silently drop the exit pool.
-		Egress: current.Egress,
-		WebUI:  config.WebUIConfig{Enabled: update.WebUI.Enabled, Listen: update.WebUI.Listen, Username: current.WebUI.Username, PasswordHash: current.WebUI.PasswordHash, SessionTTLMinutes: update.WebUI.SessionTTLMinutes},
+		Egress:    egress,
+		WebUI:     config.WebUIConfig{Enabled: update.WebUI.Enabled, Listen: update.WebUI.Listen, Username: current.WebUI.Username, PasswordHash: current.WebUI.PasswordHash, SessionTTLMinutes: update.WebUI.SessionTTLMinutes},
 	}
 	result, err := a.manager.Apply(candidate, true)
 	if err != nil {
@@ -346,6 +353,7 @@ func (a *Server) configView() ConfigView {
 		Listen: cfg.Listen, ServerKeys: maskSecrets(cfg.ServerKeys, false), ZenKeys: maskSecrets(cfg.ZenKeys, false), GoKeys: maskSecrets(cfg.GoKeys, false), Anonymous: cfg.Anonymous,
 		Proxies: maskSecrets(cfg.Proxies, true), ProxyFile: cfg.ProxyFile, Upstream: cfg.Upstream, Retry: cfg.Retry, Models: cfg.Models,
 		Performance: cfg.Performance, Logging: cfg.Logging, Prefer: cfg.Prefer, Reasoning: cfg.Reasoning,
+		Egress:    egressView(cfg.Egress),
 		WebUI:     WebUIView{Enabled: cfg.WebUI.Enabled, Listen: cfg.WebUI.Listen, Username: cfg.WebUI.Username, SessionTTLMinutes: cfg.WebUI.SessionTTLMinutes},
 		Effective: EffectiveView{Listen: effective.API, WebUIListen: effective.WebUI, WebUIEnabled: effective.WebUIEnabled},
 		Restart:   restart,

@@ -94,6 +94,40 @@ func (a *Server) handleEgressToggle(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+func (a *Server) handleEgressNodeDetail(w http.ResponseWriter, r *http.Request) {
+	engine := a.egressEngine()
+	if engine == nil {
+		writeEgressDisabled(w)
+		return
+	}
+	target := ""
+	if primary := engine.PrimaryTarget(); primary != nil {
+		target = primary.String()
+	}
+	node, ok := engine.Node(r.PathValue("id"), target)
+	if !ok {
+		writeAdminError(w, http.StatusNotFound, "node_not_found", "node not found")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"node": node})
+}
+
+func (a *Server) handleEgressProbe(w http.ResponseWriter, r *http.Request) {
+	engine := a.egressEngine()
+	if engine == nil {
+		writeEgressDisabled(w)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	node, err := engine.ProbeNode(ctx, r.PathValue("id"))
+	if err != nil {
+		writeAdminError(w, http.StatusNotFound, "node_probe_failed", err.Error())
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"node": node})
+}
+
 func (a *Server) handleEgressEvents(w http.ResponseWriter, r *http.Request) {
 	engine := a.egressEngine()
 	if engine == nil {

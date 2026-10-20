@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -235,6 +236,37 @@ func (e *Engine) Events(ctx context.Context, limit int) ([]state.Event, error) {
 // RefreshSubscription synchronously refreshes one configured subscription.
 func (e *Engine) RefreshSubscription(ctx context.Context, id string) error {
 	return e.subs.Refresh(ctx, id)
+}
+
+// ProbeNode actively probes one node and returns its refreshed snapshot.
+func (e *Engine) ProbeNode(ctx context.Context, id string) (node.Snapshot, error) {
+	hash, err := node.ParseHex(id)
+	if err != nil {
+		return node.Snapshot{}, err
+	}
+	entry := e.pool.Get(hash)
+	if entry == nil {
+		return node.Snapshot{}, fmt.Errorf("node %s not found", id)
+	}
+	e.probe.ProbeEntry(ctx, entry)
+	target := ""
+	if current := e.settings.Load(); current != nil {
+		target = current.upstream.Zen
+	}
+	return entry.Snapshot(target, time.Now()), nil
+}
+
+// Node returns one node snapshot by ID.
+func (e *Engine) Node(id string, target string) (node.Snapshot, bool) {
+	hash, err := node.ParseHex(id)
+	if err != nil {
+		return node.Snapshot{}, false
+	}
+	entry := e.pool.Get(hash)
+	if entry == nil {
+		return node.Snapshot{}, false
+	}
+	return entry.Snapshot(target, time.Now()), true
 }
 
 // SetNodeEnabled flips the manual switch on one node.

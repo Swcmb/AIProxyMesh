@@ -130,3 +130,16 @@ type Selector interface {
 | 时间 | 变更 |
 | :--- | :--- |
 | 2026-10-20 | 初版：D-01 ~ D-11 落盘（阶段 1 完成） |
+
+---
+
+## 阶段 2–4 实施记录（2026-10-20）
+
+- **D-12 出口池实现**：`internal/egress/{node,parser,pool,outbound,routing,probe,subscription,state}` + `engine`；Tier A 出站与解析零新依赖；Tier 外协议入库标记 `unsupported`。
+- **D-13 状态库**：`modernc.org/sqlite v1.45.0` + `golang-migrate v4.19.1`（嵌入迁移 `000001_init`），已在本机 Windows 完成建库/写入/重载测试；表覆盖节点、订阅引用、延迟、上游归因计数与切换事件。迁移驱动要求 `golang.org/x/crypto v0.45.0`（高于 o2a 基线 v0.41.0），已回钉 `go 1.25.5` 并用该版本构建通过。
+- **D-14 亲和选择**：网关以 Key 指纹（匿名通道用 Session）做 rendezvous 亲和；亲和节点仍须通过资格过滤，且得分不得低于最佳候选 50%，否则回退加权选择。该机制替代 o2a 的 key→proxy 静态绑定，不依赖租约。
+- **D-15 单一预算池落地**：匿名阶段与每个 tier 循环共享 `retry.max_attempts`；tier 在预算耗尽时停止，保留上一 tier 的响应而不是用“预算耗尽”覆盖。换出口消耗一次尝试，同轮通过 exclude 集合禁止重复节点。
+- **D-16 归因与冷却落地**：连接失败（非 direct）→ 节点层；direct 连接失败视为上游不可达，不冷却节点；401/403 → 通道层（Key 冷却）；单出口 429/5xx → 节点层；多出口同 Key 同状态类且窗口内无成功 → 上游共识，停止遍历并只触发通道层。`Retry-After` 直接决定节点冷却（上限 24h），不再被 `cooldown.max_seconds` 截短；仅当请求剩余时限可容纳等待时才等待。
+- **D-17 可观测性**：遥测与持久化事件均记录出口节点 ID/名称、状态码、尝试序号与切换原因；模型目录刷新优先经出口池客户端。
+- **D-18 管理接口**：`/api/egress` 摘要、`/nodes`、`/nodes/{id}`、`/nodes/{id}/enabled`、`/nodes/{id}/probe`、`/subscriptions`、`/subscriptions/{id}/refresh`、`/events`、`/diagnose`；全部沿用 session + CSRF。`/api/config` 增补 `egress` 读写，订阅 URL 以 `scheme://host/***` 脱敏，提交脱敏 URL 或空 URL 时按 ID 复用原值。
+- **验证证据（2026-10-20）**：`go build ./...`、`go vet ./...`、`go test -race ./internal/gateway ./internal/egress/... ./internal/admin ./internal/config` 全部通过；关键用例：跨订阅去重→探测→评分、故障出口→直连切换、单一预算上限、429 冷却、上游共识不冷却节点、SQLite 重开恢复。

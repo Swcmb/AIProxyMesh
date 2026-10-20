@@ -136,6 +136,66 @@ func TestEgressRefreshSubscription(t *testing.T) {
 	}
 }
 
+func TestEgressNodeDetailAndProbe(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	engine, err := egress.New(egress.Options{
+		Egress: &config.EgressConfig{
+			Enabled:             true,
+			ImportLegacyProxies: boolPtr(true),
+			Schedule:            config.EgressSchedule{HealthWeight: 0.30, LatencyWeight: 0.15, RoutingWeight: 0.15, UpstreamSuccessWeight: 0.40},
+			Protocols:           config.EgressProtocols{HTTP: boolPtr(true), HTTPS: boolPtr(true), SOCKS5: boolPtr(true), SOCKS5H: boolPtr(true)},
+			Cooldown:            config.EgressCooldown{BaseSeconds: 30, MaxSeconds: 900, RecoveryProbe: boolPtr(true)},
+			Failover:            config.EgressFailover{HonorRetryAfter: boolPtr(true)},
+			Probe:               config.EgressProbe{IntervalSeconds: 60, TimeoutSeconds: 2, Concurrency: 2},
+			StatePath:           filepath.Join(t.TempDir(), "state.db"),
+			MaxLatencyEntries:   8,
+		},
+		Upstream: config.UpstreamConfig{Zen: upstream.URL},
+		Legacy:   "direct",
+		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine.RefreshAll(context.Background())
+	t.Cleanup(func() { _ = engine.Close() })
+	server := newTestServer(engine)
+
+	nodes := engine.Snapshot().Nodes
+	if len(nodes) != 1 {
+		t.Fatalf("nodes = %+v", nodes)
+	}
+	id := nodes[0].ID
+
+	request := httptest.NewRequest(http.MethodGet, "/api/egress/nodes/"+id, nil)
+	request.SetPathValue("id", id)
+	recorder := httptest.NewRecorder()
+	server.handleEgressNodeDetail(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("detail = %d %s", recorder.Code, recorder.Body.String())
+	}
+	detail := decodeBody(t, recorder)["node"].(map[string]any)
+	if detail["id"] != id {
+		t.Fatalf("detail = %v", detail)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/egress/nodes/"+id+"/probe", nil)
+	request.SetPathValue("id", id)
+	recorder = httptest.NewRecorder()
+	server.handleEgressProbe(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("probe = %d %s", recorder.Code, recorder.Body.String())
+	}
+	probed := decodeBody(t, recorder)["node"].(map[string]any)
+	if probed["last_probe_at"] == nil {
+		t.Fatalf("probe did not record a timestamp: %v", probed)
+	}
+}
+
 func TestEgressDiagnose(t *testing.T) {
 	engine := testEngine(t)
 	server := newTestServer(engine)
