@@ -1,4 +1,4 @@
-// Command opencode2api starts the API gateway and its management interface.
+// Command mesh starts the API gateway and its management interface.
 package main
 
 import (

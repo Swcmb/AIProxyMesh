@@ -280,6 +280,58 @@ export interface RotationSnapshot {
   first_output_seconds: number;
 }
 
+export interface RankingPreset {
+  task_type: string;
+  label: string;
+  description: string;
+  capability_weight: number;
+  economy_weight: number;
+  availability_weight: number;
+  fitness_weight: number;
+  needs_tools: boolean;
+  needs_vision: boolean;
+  min_context_tokens: number;
+  context_target: number;
+  output_target: number;
+}
+
+export interface RankingResult {
+  provider: string;
+  model_id: string;
+  task_type: string;
+  gate: boolean;
+  gate_reasons?: string[];
+  capability_score?: number;
+  economy_score?: number;
+  availability_score?: number;
+  fit_score?: number;
+  final_score: number;
+  capability_parts?: { l?: number; b?: number; i?: number };
+  availability_parts?: { success_rate?: number; latency_score?: number; quota_headroom?: number };
+  fit_parts?: { modality?: number; context?: number; tools?: number };
+  cost_per_task?: number;
+  quota_cost_per_task?: number;
+  cost_reference?: number;
+  success_rate?: number;
+  p95_latency_ms?: number;
+  quota_headroom?: number;
+  sample_count: number;
+  confidence: number;
+  updated_at: string;
+}
+
+export interface RankingsResponse {
+  task_type: string;
+  preset: RankingPreset;
+  generated_at: string;
+  sample_hours: number;
+  routes: RankingResult[];
+}
+
+export interface RankingTasksResponse {
+  tasks: RankingPreset[];
+}
+
 export interface EgressCounts {
   total: number;
   eligible: number;

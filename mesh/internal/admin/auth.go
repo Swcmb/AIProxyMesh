@@ -17,7 +17,7 @@ import (
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/httpx"
 )
 
-const adminCookieName = "opencode2api_session"
+const adminCookieName = "mesh_session"
 
 type adminSession struct {
 	Username    string

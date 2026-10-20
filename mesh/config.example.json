@@ -37,6 +37,24 @@
   },
   "prefer": "go",
   "reasoning": {},
+  "rotation": {
+    "sota": { "alias": "sota" },
+    "sweet": { "alias": "sweet" },
+    "first_output_seconds": 30
+  },
+  "ranking": {
+    "sota_task": "agent-coding",
+    "sweet_task": "general-text",
+    "latency_good_ms": 2000,
+    "latency_bad_ms": 15000,
+    "standard_input_tokens": 60000,
+    "standard_output_tokens": 8000,
+    "standard_cached_tokens": 20000,
+    "go_monthly_cost_usd": 10,
+    "go_monthly_tasks": 1000,
+    "quota_headroom": { "zen": 100, "go": 100 },
+    "capabilities": {}
+  },
   "webui": {
     "enabled": true,
     "listen": "0.0.0.0:8081",

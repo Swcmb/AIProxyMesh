@@ -68,9 +68,9 @@ func fetchQuota(ctx context.Context, endpoint, key string) (map[string]quotaWind
 		return nil, errors.New("额度查询地址无效")
 	}
 	req.Header.Set("Authorization", "Bearer "+key)
-	req.Header.Set("User-Agent", "opencode2api-admin/1.0")
+	req.Header.Set("User-Agent", "mesh-admin/1.0")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("x-opencode-session", "opencode2api-quota-"+config.Fingerprint(key))
+	req.Header.Set("x-opencode-session", "mesh-quota-"+config.Fingerprint(key))
 	client := &http.Client{Timeout: 12 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := client.Do(req)
 	if err != nil {

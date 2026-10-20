@@ -1,4 +1,4 @@
-/* Mesh-specific additions on top of the Resin-derived base theme. */
+/* Mesh-specific additions on top of the base theme. */
 
 .muted {
   color: var(--text-muted);
@@ -353,4 +353,17 @@
 
 .sidebar-bottom {
   gap: 6px;
+}
+
+/* Ranking score cells keep the number and its bar on one line. */
+.score-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 84px;
+}
+
+.score-cell .quota-bar {
+  flex: 1;
+  margin: 0;
 }

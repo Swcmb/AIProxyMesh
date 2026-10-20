@@ -17,19 +17,27 @@ import (
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/jsonutil"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/models"
 	wire "github.com/Swcmb/AIProxyMesh/mesh/internal/protocol"
+	"github.com/Swcmb/AIProxyMesh/mesh/internal/ranking"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/rotation"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/telemetry"
 )
 
 func (g *Gateway) syncRotation() {
-	available := map[string]bool{}
-	for _, model := range g.catalog.List() {
-		if route, err := g.catalog.RouteForTier(model, config.TierGo, false, g.goNodes.Len() > 0); err == nil && route.Protocol != wire.SystemOne {
-			available[model] = true
-		}
-	}
-	g.rotation.Sync(available)
+	orders, available := g.rotationPlan()
+	g.rotation.Apply(orders, available)
 }
+
+func (m *RuntimeManager) RankingTasks() []ranking.Preset { return ranking.Presets() }
+
+// Rankings scores all provider+model routes for one task preset.
+func (m *RuntimeManager) Rankings(task string) (ranking.Preset, []ranking.Result, error) {
+	r := m.current.Load()
+	if r == nil {
+		return ranking.Preset{}, nil, errors.New("runtime not ready")
+	}
+	return r.gateway.Rankings(task)
+}
+
 func (m *RuntimeManager) RotationSnapshot() rotation.Snapshot {
 	r := m.current.Load()
 	r.gateway.syncRotation()

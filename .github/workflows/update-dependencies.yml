@@ -1,0 +1,92 @@
+name: Update dependencies
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: update-dependencies
+  cancel-in-progress: false
+
+jobs:
+  update:
+    name: Refresh Go and WebUI dependencies
+    runs-on: ubuntu-latest
+    env:
+      GIT_AUTHOR_NAME: github-actions[bot]
+      GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+      GIT_COMMITTER_NAME: github-actions[bot]
+      GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: mesh/go.mod
+          cache: true
+          cache-dependency-path: mesh/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: mesh/webui/package-lock.json
+
+      - name: Update Go modules
+        working-directory: mesh
+        run: |
+          go get -u=patch ./...
+          go mod tidy
+
+      - name: Verify Go build and tests
+        working-directory: mesh
+        run: |
+          go vet ./...
+          go test ./...
+
+      - name: Update WebUI dependencies and rebuild
+        working-directory: mesh/webui
+        run: |
+          npm update --package-lock-only
+          npm ci
+          npm run build
+
+      - name: Commit and push
+        id: update
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No dependency updates."
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          git status --short
+          git add mesh/go.mod mesh/go.sum mesh/webui/package-lock.json mesh/internal/webui/dist
+          git commit -m "chore: 更新依赖到兼容范围内的最新版本"
+          git push origin HEAD:main
+
+      - name: Trigger checks workflow
+        if: steps.update.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run checks.yml --repo "$GITHUB_REPOSITORY" --ref main
+
+  notify:
+    name: Notify on failure
+    needs: update
+    if: failure()
+    uses: ./.github/workflows/notify-failure.yml
+    with:
+      workflow_name: Update dependencies
+      run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    secrets: inherit

@@ -12,7 +12,7 @@ import (
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/node"
 )
 
-// Config mirrors the performance knobs opencode2api already exposes so pooled
+// Config mirrors the performance knobs the gateway exposes so pooled
 // exits behave like the legacy transports.
 type Config struct {
 	MaxIdleConns          int

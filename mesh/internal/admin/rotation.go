@@ -1,11 +1,10 @@
 package admin
 
 import (
-	"fmt"
+	"net/http"
+
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/config"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/httpx"
-	"net/http"
-	"slices"
 )
 
 func (a *Server) handleRotation(w http.ResponseWriter, r *http.Request) {
@@ -21,21 +20,6 @@ func (a *Server) handleSaveRotation(w http.ResponseWriter, r *http.Request) {
 	_, err := a.manager.Update(func(cfg *config.Config) error {
 		if err := input.Validate(nil); err != nil {
 			return err
-		}
-		state := a.manager.RotationSnapshot()
-		for i, g := range state.Groups {
-			order := input.SOTA.Order
-			if i == 1 {
-				order = input.Sweet.Order
-			}
-			if len(order) != len(g.Order) {
-				return fmt.Errorf("模型列表已更新，请刷新后重新排序")
-			}
-			for _, v := range order {
-				if !slices.Contains(g.Order, v) {
-					return fmt.Errorf("只能调整组内模型的顺序")
-				}
-			}
 		}
 		cfg.Rotation = input
 		return nil

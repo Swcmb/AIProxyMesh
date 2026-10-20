@@ -43,6 +43,7 @@ func testConfig(zenURL string, zenKeys []string) config.Config {
 		Prefer:  config.TierZen,
 	}
 	cfg.Rotation.Defaults()
+	cfg.Ranking.Defaults()
 	return cfg
 }
 

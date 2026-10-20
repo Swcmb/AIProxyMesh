@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"sync"
 	"time"
 )
@@ -86,71 +85,81 @@ func (m *Manager) Configure(cfg config.RotationConfig) {
 			m.state.Groups = append(m.state.Groups, &Group{ID: id})
 		}
 		g := m.state.Groups[i]
-		previous := m.cfg.SOTA
-		if i == 1 {
-			previous = m.cfg.Sweet
-		}
-		order := slices.Clone(g.Order)
-		if len(order) == 0 || !slices.Equal(previous.Order, c.Order) {
-			order = slices.Clone(c.Order)
-			for _, v := range g.Order {
-				if !slices.Contains(order, v) {
-					order = append(order, v)
-				}
-			}
-		}
-		if !slices.Equal(order, g.Order) || g.Alias != c.Alias {
+		if g.Alias != c.Alias {
 			g.Generation++
 		}
-		g.Order = order
 		g.Alias = c.Alias
 		if g.Paused == nil {
 			g.Paused = map[string]time.Time{}
-		}
-		if !slices.Contains(g.Order, g.Current) && len(g.Order) > 0 {
-			g.Current = g.Order[0]
-			g.Generation++
 		}
 	}
 	m.cfg = cfg
 	m.state.FirstOutputSeconds = cfg.FirstOutputSeconds
 	m.saveLocked()
 }
-func (m *Manager) Sync(available map[string]bool) {
+
+// Apply replaces each group's order with the ranking result. The current model
+// stays selected while it remains eligible; otherwise the first usable model
+// in the new order takes over.
+func (m *Manager) Apply(orders map[string][]string, available map[string]bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	changed := false
 	for _, g := range m.state.Groups {
+		order := dedupe(orders[g.ID])
 		g.Available = map[string]bool{}
-		for model := range available {
-			if config.IsSOTA(model) == (g.ID == "sota") {
+		for _, model := range order {
+			if available[model] {
 				g.Available[model] = true
 			}
 		}
-		added := []string{}
-		for model := range g.Available {
-			if !slices.Contains(g.Order, model) {
-				added = append(added, model)
-			}
-		}
-		sort.Strings(added)
-		if len(g.Order) == 0 && slices.Contains(added, "glm-5.3-flash") {
-			added = append([]string{"glm-5.3-flash"}, slices.Delete(added, slices.Index(added, "glm-5.3-flash"), slices.Index(added, "glm-5.3-flash")+1)...)
-		}
-		if len(added) > 0 {
-			g.Order = append(g.Order, added...)
-			changed = true
-		}
-		if g.Current == "" && len(g.Order) > 0 {
-			g.Current = g.Order[0]
+		if !slices.Equal(order, g.Order) {
+			g.Order = order
 			g.Generation++
 			changed = true
 		}
+		if g.Current != "" && slices.Contains(g.Order, g.Current) && usable(g, g.Current) {
+			continue
+		}
+		next := ""
+		for _, model := range g.Order {
+			if usable(g, model) {
+				next = model
+				break
+			}
+		}
+		if next == g.Current {
+			continue
+		}
+		if next == "" {
+			g.Current = ""
+			g.Generation++
+		} else {
+			m.switchLocked(g, next, "综合排名更新")
+		}
+		changed = true
 	}
 	if changed {
 		m.saveLocked()
 	}
 }
+
+func dedupe(models []string) []string {
+	if len(models) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(models))
+	result := make([]string, 0, len(models))
+	for _, model := range models {
+		if model == "" || seen[model] {
+			continue
+		}
+		seen[model] = true
+		result = append(result, model)
+	}
+	return result
+}
+
 func (m *Manager) GroupID(alias string) string {
 	m.mu.Lock()
 	defer m.mu.Unlock()

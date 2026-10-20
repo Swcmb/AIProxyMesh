@@ -20,6 +20,8 @@
 | `logging` | object | `level`、`ring_size`、`dump_request_bodies` |
 | `prefer` | string | `zen` 或 `go` |
 | `reasoning` | object | `effort` / `effort_by_model` 强制推理强度 |
+| `rotation` | object | 两个模型别名的名称与首个输出超时；顺序由排名生成 |
+| `ranking` | object | 模型综合排名的成本口径、延迟阈值与基准分 |
 | `webui` | object | 管理端启用、监听、用户名、密码、会话时长 |
 | `egress` | object | 统一出口调度；缺省表示不启用 |
 
@@ -71,9 +73,53 @@
 | `state_path` | SQLite 路径；默认 `config.json.egress.db` |
 | `max_latency_entries` | 每节点延迟表上限（1–4096） |
 
+## `rotation` 与 `ranking`
+
+```jsonc
+{
+  "rotation": {
+    "sota": { "alias": "sota" },
+    "sweet": { "alias": "sweet" },
+    "first_output_seconds": 30
+  },
+  "ranking": {
+    "sota_task": "agent-coding",
+    "sweet_task": "general-text",
+    "min_context_tokens": 0,
+    "latency_good_ms": 2000,
+    "latency_bad_ms": 15000,
+    "standard_input_tokens": 60000,
+    "standard_output_tokens": 8000,
+    "standard_cached_tokens": 20000,
+    "go_monthly_cost_usd": 10,
+    "go_monthly_tasks": 1000,
+    "quota_headroom": { "go": 100, "zen": 100 },
+    "capabilities": {
+      "glm-5.3": { "l": 88, "b": 82, "i": 79 },
+      "go:kimi-k3": { "l": 91 }
+    }
+  }
+}
+```
+
+| 字段 | 说明 |
+| :--- | :--- |
+| `rotation.*.alias` | 对外别名；`first_output_seconds` 为单次尝试等待首个有效输出的上限（1–300 秒） |
+| 模型顺序 | 无需配置，由排名引擎按 `ranking.*_task` 对应的任务预设自动生成 |
+| `sota_task` / `sweet_task` | `agent-coding`（默认）、`general-text`、`vision` |
+| `min_context_tokens` | 大于 0 时覆盖任务预设的上下文硬门槛 |
+| `latency_good_ms` / `latency_bad_ms` | P95 延迟线性打分区间，需满足 `0 < good < bad` |
+| `standard_*_tokens` | 标准任务的输入 / 输出 / 缓存读取 Token 数，用于把公开价格换算成单任务成本 |
+| `go_monthly_cost_usd` / `go_monthly_tasks` | Go 订阅费按月分摊；为 0 时改用发布价格估算 |
+| `quota_headroom` | 各提供商 0–100 的额度余量，缺省 100 |
+| `capabilities` | 模型基准分 `l`（排行榜）、`b`（专项基准）、`i`（内部实测），0–100；`provider:model` 键优先于裸模型 ID |
+
+综合得分 `S = G × (wQ·Q + wE·E + wA·A + wF·F)`；三套预设权重与准入条件见 `project-context/specs/model-ranking.md`。缺失的基准分按剩余权重归一化，未测量维度按中性 50 分计入并降低置信度，样本量不足不会冲到榜首。
+
 ## 兼容与迁移
 
 - 旧 `proxies` / `proxyfile` 不需要改写：启用 egress 且 `import_legacy_proxies` 为 true 时自动进入节点池。
+- `rotation.sota.order` / `rotation.sweet.order` 已移除：手写顺序由排名引擎取代，旧配置文件里保留该字段会启动失败，请删除。
 - 不新增目标域名配置；调度与探测均使用 `upstream.*`。
 - 订阅 URL 在管理 API 中只暴露 `scheme://host/***`；提交空值或该脱敏值时按订阅 ID 复用原 URL。
 - 配置与节点状态分离：订阅刷新、健康变化不会重写 `config.json`。

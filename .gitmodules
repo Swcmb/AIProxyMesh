@@ -1,8 +1,0 @@
-[submodule "Resin"]
-	path = Resin
-	url = https://github.com/Resinat/Resin.git
-	branch = master
-[submodule "opencode2api"]
-	path = opencode2api
-	url = https://github.com/jasonxu114514/opencode2api.git
-	branch = main

@@ -18,7 +18,7 @@
 
 ## 2. 管理 API
 
-WebUI 监听器同源提供。认证使用 HttpOnly Session Cookie `opencode2api_session`；除登录外均需会话。所有写操作还需请求头 `X-CSRF-Token`，并校验 `Origin`（若提供）。
+WebUI 监听器同源提供。认证使用 HttpOnly Session Cookie `mesh_session`；除登录外均需会话。所有写操作还需请求头 `X-CSRF-Token`，并校验 `Origin`（若提供）。
 
 错误响应：
 
@@ -91,8 +91,16 @@ WebUI 监听器同源提供。认证使用 HttpOnly Session Cookie `opencode2api
 
 节点 ID 为 32 位十六进制配置哈希；同一出口出现在多个订阅时共享同一 ID 与健康状态。
 
-## 3. 兼容性说明
+## 3. 排名 API
 
-- 原 opencode2api 的 24 条管理路由全部保留，路径、认证与响应语义不变。
-- 新增 `/api/egress/*` 使用同一 session + CSRF，不使用 Resin 的 Bearer `/api/v1` 体系。
-- 未提供 Platform、Request Header Rules、Sticky Leases、Resin Endpoints 等已删除模块的接口。
+| 方法 | 路径 | 说明 |
+| :--- | :--- | :--- |
+| GET | `/api/rankings` | 模型×接入路线综合排名；`task=agent-coding\|general-text\|vision`，缺省 `agent-coding` |
+| GET | `/api/rankings/tasks` | 可用任务预设、权重与准入条件 |
+
+排名对象是「提供商 + 模型 + 任务」组合。响应包含 `gate`、`Q/E/A/F`、`final_score`、`sample_count`、`confidence` 与明细分量；`gate=false` 的路线保留展示但不参与排序。
+
+## 4. 兼容性说明
+
+- 管理路由统一使用 `mesh_session` + CSRF，无第二套认证体系。
+- 已删除的多接入点、请求头规则、粘性租约、反向代理等模块不提供接口。
