@@ -1,10 +1,28 @@
-# 真实凭据（含 RESIN_ADMIN_TOKEN / RESIN_PROXY_TOKEN），模板见 .env.example
-deploy/resin/.env
+# 本地配置与密钥
+.env
+.env.*
+mesh/config.json
+mesh/config.json.*
+mesh/data/
 
-# 真实凭据：由 deploy/opencode2api/generate_configs.py 生成，不入库
-deploy/opencode2api/credentials.json
-deploy/opencode2api/instance-*/config.json
+# 运行时状态（节点/订阅/健康/事件）
+mesh/*.db
+mesh/*.db-*
+mesh/*.sqlite
+mesh/*.sqlite-*
+mesh/*.log
 
-# 运行时数据：容器挂载点与抓取到的代理清单
-deploy/resin/data/
-deploy/opencode2api/proxies/proxies-*.txt
+# 构建与临时产物
+mesh/mesh
+mesh/mesh.exe
+mesh/bin/
+mesh/coverage.out
+dist/
+
+# 前端依赖（内嵌产物 dist 已提交，供 go build 使用）
+mesh/webui/node_modules/
+
+# 编辑器
+.idea/
+.vscode/
+.DS_Store

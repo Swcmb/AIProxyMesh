@@ -9,7 +9,7 @@ import (
 )
 
 // EgressConfig is the optional exit-pool section. A nil pointer means the
-// feature is absent and opencode2api keeps its legacy proxy behaviour.
+// feature is absent and the gateway keeps its legacy proxy behaviour.
 type EgressConfig struct {
 	Enabled             bool                 `json:"enabled"`
 	Subscriptions       []EgressSubscription `json:"subscriptions,omitempty"`

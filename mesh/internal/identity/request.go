@@ -61,7 +61,7 @@ func DeriveRequestIDs(r *http.Request, body map[string]any) RequestIDs {
 	// used as a local correlation hint and is no longer forwarded upstream.
 	projectSignal := jsonutil.FirstString(r.Header.Get("x-opencode-project"), jsonutil.StringAt(body, "metadata", "project_id"))
 	if projectSignal == "" {
-		projectSignal = "opencode2api:default-project"
+		projectSignal = "mesh:default-project"
 	}
 	parentSession := jsonutil.FirstString(
 		r.Header.Get("x-parent-session-id"),
