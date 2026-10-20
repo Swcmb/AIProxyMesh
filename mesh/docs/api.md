@@ -108,6 +108,18 @@ WebUI 监听器同源提供。认证使用 HttpOnly Session Cookie `mesh_session
 
 节点 ID 为 32 位十六进制配置哈希；同一出口出现在多个订阅时共享同一 ID 与健康状态，并在 `aliases` 中列出每个订阅给它的名字。
 
+### 请求日志 `/api/logs/requests`
+
+| 方法 | 路径 | 说明 |
+| :--- | :--- | :--- |
+| GET | `/api/logs/requests` | 分页查询持久请求，返回 `enabled`、`requests`、`facets`、`next_cursor`、`has_more`、`stats` |
+| GET | `/api/logs/requests/detail?request_id=` | 单条请求及其完整尝试链 |
+| DELETE | `/api/logs/requests` | 清空请求库（含 VACUUM），返回 `removed` |
+
+查询参数：`limit`（1–1000，默认 50）、`before`（游标，取上一页返回的 `next_cursor`）、`model`、`channel`、`tier`、`key`、`server_key`、`exit_id`、`request_id`、`status`、`success`、`anonymous`、`since`/`until`（RFC3339）、`keyword`（匹配请求号/模型/渠道/Tier/Key/出口/结果）、`outcome=failed`。
+
+游标按 `id` 倒序翻页，因此翻页过程中有新请求写入也不会重复或漏项。无法解析的参数返回 400，而不是被静默忽略成"无结果"。持久化关闭时列表返回 `{enabled:false}` 空页，详情与清空返回 404。
+
 ## 3. 排名 API
 
 | 方法 | 路径 | 说明 |
