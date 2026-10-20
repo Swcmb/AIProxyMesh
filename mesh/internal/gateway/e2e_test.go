@@ -503,12 +503,14 @@ func TestFreeModelAvailabilityProbeUsesEgress(t *testing.T) {
 }
 
 func TestRotationFailoverUsesEgress(t *testing.T) {
+	ranked := []string{"model-a", "model-b", "model-c"}
+	capability := func(value float64) *float64 { return &value }
 	upstream := newFakeUpstream(t)
 	upstream.reply = func(w http.ResponseWriter, r *http.Request, body []byte) bool {
 		var payload map[string]any
 		_ = json.Unmarshal(body, &payload)
 		model, _ := payload["model"].(string)
-		if model == config.SOTAModels[0] {
+		if model == ranked[0] {
 			w.Header().Set("Retry-After", "0")
 			w.WriteHeader(http.StatusTooManyRequests)
 			_, _ = io.WriteString(w, `{"error":"quota_exceeded"}`)
@@ -524,15 +526,27 @@ func TestRotationFailoverUsesEgress(t *testing.T) {
 	cfg.ServerKeys = []string{localTestKey}
 	cfg.GoKeys = []string{"go-key-rotation"}
 	cfg.Models.Protocols = map[string]string{}
-	for _, model := range config.SOTAModels {
+	for _, model := range ranked {
 		cfg.Models.Protocols[model] = "chat"
+	}
+	// Descending benchmark inputs make the ranking order model-a > model-b > model-c.
+	cfg.Ranking.Capabilities = map[string]config.RankingCapability{
+		"model-a": {L: capability(90)},
+		"model-b": {L: capability(80)},
+		"model-c": {L: capability(70)},
 	}
 	g, err := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), telemetry.NewMonitor())
 	if err != nil {
 		t.Fatal(err)
 	}
 	g.SetEgress(engine)
-	g.catalog.ReplaceWithCapabilities(nil, append([]string(nil), config.SOTAModels...), nil, nil, nil)
+	metadata := map[config.Tier]map[string]models.Metadata{config.TierGo: {}}
+	for _, model := range ranked {
+		metadata[config.TierGo][model] = models.Metadata{
+			ToolCall: true, ContextWindow: 200000, MaxOutput: 16000, InputModalities: []string{"text"},
+		}
+	}
+	g.catalog.ReplaceWithCapabilities(nil, append([]string(nil), ranked...), nil, nil, metadata)
 	manager, err := rotation.New("", cfg.Rotation)
 	if err != nil {
 		t.Fatal(err)
@@ -546,8 +560,8 @@ func TestRotationFailoverUsesEgress(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("rotation = %d %s", recorder.Code, recorder.Body.String())
 	}
-	if resolved := recorder.Header().Get("X-Resolved-Model"); resolved != config.SOTAModels[1] {
-		t.Fatalf("resolved model = %q, want %q", resolved, config.SOTAModels[1])
+	if resolved := recorder.Header().Get("X-Resolved-Model"); resolved != ranked[1] {
+		t.Fatalf("resolved model = %q, want %q", resolved, ranked[1])
 	}
 	var document map[string]any
 	if err := json.Unmarshal(recorder.Body.Bytes(), &document); err != nil {
@@ -557,7 +571,7 @@ func TestRotationFailoverUsesEgress(t *testing.T) {
 		t.Fatalf("response model alias = %v", document["model"])
 	}
 	snapshot := manager.Snapshot()
-	if snapshot.Groups[0].Current != config.SOTAModels[1] {
+	if snapshot.Groups[0].Current != ranked[1] {
 		t.Fatalf("rotation current = %s", snapshot.Groups[0].Current)
 	}
 	now := time.Now()

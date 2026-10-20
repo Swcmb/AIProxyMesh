@@ -17,6 +17,7 @@ import (
 
 type Config struct {
 	Rotation          RotationConfig               `json:"rotation"`
+	Ranking           RankingConfig                `json:"ranking"`
 	Listen            string                       `json:"listen"`
 	ServerKeys        []string                     `json:"server_keys"`
 	ServerKeyMetadata map[string]ServerKeyMetadata `json:"server_key_metadata,omitempty"`
@@ -162,6 +163,10 @@ func Load(path string) (Config, error) {
 func Normalize(path string, cfg Config) (Config, error) {
 	cfg.Rotation.Defaults()
 	if err := cfg.Rotation.Validate(nil); err != nil {
+		return Config{}, err
+	}
+	cfg.Ranking.Defaults()
+	if err := cfg.Ranking.Validate(); err != nil {
 		return Config{}, err
 	}
 	trimList(&cfg.ServerKeys)
@@ -346,8 +351,6 @@ func (cfg *Config) PasswordForSave() {
 }
 
 func Clone(cfg Config) Config {
-	cfg.Rotation.SOTA.Order = append([]string(nil), cfg.Rotation.SOTA.Order...)
-	cfg.Rotation.Sweet.Order = append([]string(nil), cfg.Rotation.Sweet.Order...)
 	cfg.ServerKeys = append([]string(nil), cfg.ServerKeys...)
 	metadata := make(map[string]ServerKeyMetadata, len(cfg.ServerKeyMetadata))
 	for id, item := range cfg.ServerKeyMetadata {
@@ -371,6 +374,20 @@ func Clone(cfg Config) Config {
 			efforts[model] = effort
 		}
 		cfg.Reasoning.EffortByModel = efforts
+	}
+	if cfg.Ranking.QuotaHeadroom != nil {
+		headroom := make(map[string]float64, len(cfg.Ranking.QuotaHeadroom))
+		for provider, value := range cfg.Ranking.QuotaHeadroom {
+			headroom[provider] = value
+		}
+		cfg.Ranking.QuotaHeadroom = headroom
+	}
+	if cfg.Ranking.Capabilities != nil {
+		capabilities := make(map[string]RankingCapability, len(cfg.Ranking.Capabilities))
+		for model, capability := range cfg.Ranking.Capabilities {
+			capabilities[model] = capability
+		}
+		cfg.Ranking.Capabilities = capabilities
 	}
 	cfg.Egress = cloneEgress(cfg.Egress)
 	return cfg

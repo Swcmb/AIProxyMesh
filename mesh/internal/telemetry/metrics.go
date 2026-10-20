@@ -143,6 +143,10 @@ const (
 	monitorRecentRequestCapacity = 10000
 	monitorRecentAttemptCapacity = 20000
 	monitorRecentOutputLimit     = 500
+	// Requests feed the ranking availability score, which needs a day of
+	// history. The ring itself is capacity-bound, so a long retention window
+	// costs nothing beyond the fixed buffer.
+	monitorRequestRetention = 24 * time.Hour
 )
 
 type upstreamRequestRing struct {
@@ -353,7 +357,7 @@ func (m *Monitor) Record(endpoint string, status int, duration time.Duration, me
 			if meta.Outcome != "" {
 				request.Outcome = meta.Outcome
 			}
-			m.recentRequests.PruneBefore(request.Time.Add(-time.Hour))
+			m.recentRequests.PruneBefore(request.Time.Add(-monitorRequestRetention))
 			m.recentRequests.Add(request)
 		}
 	}
@@ -462,6 +466,18 @@ func (m *Monitor) ServerKeyUsage() (lifetime, window map[string]ServerKeyUsage) 
 	return lifetime, window
 }
 
+// RequestSamples returns the upstream requests inside window, newest last.
+// The ranking availability score reads a 24h window from here; the ring is
+// capacity-bound, so a busy gateway only keeps the most recent samples.
+func (m *Monitor) RequestSamples(window time.Duration) []UpstreamRequest {
+	if window <= 0 {
+		window = monitorRequestRetention
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.recentRequests.Snapshot(time.Now().Add(-window), monitorRecentRequestCapacity)
+}
+
 func (m *Monitor) Snapshot() MonitorSnapshot {
 	nowMinute := time.Now().Unix() / 60
 	window := MetricSummary{}
@@ -512,9 +528,8 @@ func (m *Monitor) Snapshot() MonitorSnapshot {
 	usageLifetime := cloneUsagePeriod(m.lifetimeUsage)
 	upstreamLifetime := cloneAttemptAggregate(m.attemptLifetime)
 	cutoff := time.Now().Add(-time.Hour)
-	m.recentRequests.PruneBefore(cutoff)
-	m.recentAttempts.PruneBefore(cutoff)
 	recentRequests = m.recentRequests.Snapshot(cutoff, monitorRecentOutputLimit)
+	m.recentAttempts.PruneBefore(cutoff)
 	recentAttempts = m.recentAttempts.Snapshot(cutoff, monitorRecentOutputLimit)
 	m.mu.Unlock()
 	finalizeUsagePeriod(&usageLifetime)
