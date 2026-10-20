@@ -22,7 +22,7 @@
 | 9 | 客户端取消 | 不冷却、不计数重试 | `TestClientCancelDoesNotPenalize` | 状态不变 |
 | 10 | 同轮重复节点 | 不得重复尝试同一节点 | `TestSelectRequiresEligibleNode`（exclude） | 排除后返回 `ErrNoEligible` |
 | 11 | 冷却到期恢复 | 到期后重新参加调度 | `TestCooldownBackoffAndRetryAfter`、`TestEnginePersistsNodeState` | 到期后可选中；重启后冷却仍在 |
-| 12 | 轮转别名 429 | 模型切换；故障出口冷却，下一模型使用健康出口；总尝试不超预算 | `TestRotationFailoverUsesEgress` | 200；`X-Resolved-Model` 切换；1 个出口冷却；上游 2 次调用 |
+| 12 | 轮转别名 429 | 模型切换；故障出口冷却，下一模型使用健康出口；总尝试不超预算；流式输出安全 | `TestRotationFailoverUsesEgress` | JSON 与 SSE 均 200；`X-Resolved-Model` 切换；1 个出口冷却；上游 2 次调用 |
 | 13 | 并发请求 | 无数据竞争、预算独立 | `go test -race ./...` | 通过 |
 
 ## 2. 预算与分层断言

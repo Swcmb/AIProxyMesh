@@ -57,7 +57,7 @@
 | # | 功能项 | 证据位置 | 阶段 0 现状 | 整合后验证方式 | 状态 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | D1 | 轮转状态机 | `internal/rotation/state.go`（Manager） | 存在 | 阶段 4：迁入统一存储，状态语义不变 | ✅ |
-| D2 | 轮转事件流（提交前缓存 ≤256 事件） | `internal/protocol/rotation_stream.go` | 存在 | 阶段 5 回归（SSE 提交语义） | ⬜ |
+| D2 | 轮转事件流（提交前缓存 ≤256 事件） | `internal/protocol/rotation_stream.go` | 存在 | 阶段 5 回归（SSE 提交语义） | ✅ |
 | D3 | 轮转配置读写与当前项选择 | `config/rotation.go`；`admin/rotation.go`；`server.go:61-63` | 存在（GET/PUT/POST current） | 阶段 6 回归 | ✅ |
 
 ## E. 管理 API（24 条路由全表）
@@ -180,3 +180,4 @@
 阶段 7 追加：E5/E6/E7/E8/E15/G9 已用真实进程 + CSRF 完成写接口回归（配置保存保留 egress、热重载、密钥揭示、账号更新、轮转顺序保存）。
 v0.1.1 后追加：轮转别名请求已接入统一出口池（含同轮节点去重与总预算），`TestRotationFailoverUsesEgress` 覆盖 429→切换模型→健康出口成功；模型目录刷新与可用性探测优先使用出口池客户端。
 补充：`TestFreeModelAvailabilityProbeUsesEgress` 验证免费模型探测经出口池且诊断失败不冷却节点；`TestEngineApplyReconcilesSubscriptions` 验证订阅新增/替换/删除的热更新。
+补充：`TestModelCatalogRefreshUsesEgress` 验证目录刷新经出口代理；`TestRotationFailoverUsesEgress` 同时覆盖轮转非流式与 SSE。

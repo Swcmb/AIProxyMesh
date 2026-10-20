@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -422,6 +423,44 @@ func runKeyAttempt(t *testing.T, g *Gateway) (*http.Response, error, int, *telem
 	return resp, err, used, meta
 }
 
+func TestModelCatalogRefreshUsesEgress(t *testing.T) {
+	fake := newFakeUpstream(t)
+	fake.reply = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
+		if r.URL.Path != "/v1/models" {
+			return false
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":[{"id":"catalog-model"}]}`)
+		return true
+	}
+	var hits atomic.Int32
+	proxy := forwardingProxy(t, func(w http.ResponseWriter, r *http.Request) bool {
+		hits.Add(1)
+		return false
+	})
+	engine := testEgressEngine(t, testConfig(fake.server.URL, nil), proxy.URL+"#refresh")
+	cfg := e2eConfig(fake.server.URL, []string{"zen-key-refresh"})
+	g, err := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), telemetry.NewMonitor())
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.SetEgress(engine)
+
+	models := g.refreshTier(context.Background(), fake.server.URL, g.zenNodes)
+	if len(models) != 1 || models[0] != "catalog-model" {
+		t.Fatalf("models = %v", models)
+	}
+	if hits.Load() == 0 {
+		t.Fatal("catalog refresh did not use the egress proxy")
+	}
+	now := time.Now()
+	for _, entry := range engine.Pool().List() {
+		if entry.Cooling(now) {
+			t.Fatalf("catalog refresh must not cool exit %s", entry.Name())
+		}
+	}
+}
+
 func TestFreeModelAvailabilityProbeUsesEgress(t *testing.T) {
 	fake := newFakeUpstream(t)
 	proxy := forwardingProxy(t, nil)
@@ -526,6 +565,20 @@ func TestRotationFailoverUsesEgress(t *testing.T) {
 	hits, paths, _ := upstream.snapshot()
 	if len(hits) != 2 || paths[0] != "/v1/chat/completions" {
 		t.Fatalf("upstream hits = %d paths=%v", len(hits), paths)
+	}
+
+	stream := postInference(t, g.Handler(), "/v1/chat/completions", map[string]any{
+		"model": "sota", "stream": true,
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	})
+	if stream.Code != http.StatusOK {
+		t.Fatalf("rotation stream = %d %s", stream.Code, stream.Body.String())
+	}
+	if contentType := stream.Header().Get("Content-Type"); !strings.Contains(contentType, "text/event-stream") {
+		t.Fatalf("rotation stream content-type = %q", contentType)
+	}
+	if !strings.Contains(stream.Body.String(), "hello ") || !strings.Contains(stream.Body.String(), "[DONE]") {
+		t.Fatalf("rotation stream body = %s", stream.Body.String())
 	}
 }
 
