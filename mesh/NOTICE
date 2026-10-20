@@ -1,0 +1,83 @@
+Mesh — 统一 OpenCode 网关与代理出口调度
+Copyright (C) 2026 Swcmb and contributors
+SPDX-License-Identifier: GPL-3.0-or-later
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. See LICENSE for the full text.
+
+--------------------------------------------------------------------------------
+Upstream projects
+--------------------------------------------------------------------------------
+
+opencode2api
+  Source: https://github.com/jasonxu114514/opencode2api
+  Baseline: a6601da673c03832bf78ce04b100dee8c8a92385
+  License: GPL-3.0-or-later
+  The gateway, protocol conversion, key pools, model catalog, rotation,
+  management API and most of the original WebUI behaviour are derived from
+  opencode2api. The complete GPL-3.0 text is shipped in LICENSE.
+
+Resin
+  Source: https://github.com/Resinat/Resin
+  Baseline: 1a6954e71b0f25058d14f18d31a7a82276243f2f
+  License: MIT
+  Copyright (c) 2026 Resinat and contributors
+  The egress node model, subscription/health/latency/routing concepts and the
+  WebUI design language (theme.css and the base UI components under
+  mesh/webui/src/components/ui) are adapted from Resin. The MIT permission
+  notice is reproduced below.
+
+  MIT License
+
+  Copyright (c) 2026 Resinat and contributors
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+
+--------------------------------------------------------------------------------
+Go dependencies (build graph of cmd/mesh)
+--------------------------------------------------------------------------------
+
+github.com/golang-migrate/migrate/v4 v4.19.1        MIT
+github.com/dustin/go-humanize v1.0.1               MIT
+github.com/mattn/go-isatty v0.0.24                 MIT
+github.com/ncruces/go-strftime v1.0.0              MIT
+github.com/remyoudompheng/bigfft                   BSD-3-Clause
+golang.org/x/crypto v0.45.0                        BSD-3-Clause
+golang.org/x/exp                                  BSD-3-Clause
+golang.org/x/sys v0.38.0                           BSD-3-Clause
+modernc.org/sqlite v1.45.0                         BSD-3-Clause
+modernc.org/libc v1.67.6                           BSD-3-Clause
+modernc.org/mathutil v1.7.1                        BSD-3-Clause
+modernc.org/memory v1.11.0                         BSD-3-Clause
+
+--------------------------------------------------------------------------------
+Frontend dependencies
+--------------------------------------------------------------------------------
+
+react, react-dom, react-router-dom, @tanstack/react-query, recharts, clsx   MIT
+lucide-react                                                                 ISC
+@fontsource/manrope, @fontsource/sora                                       OFL-1.1
+vite, @vitejs/plugin-react                                                  MIT
+typescript                                                                  Apache-2.0 (build only)
+
+Full license texts for these packages are available in their published npm
+archives. They are not bundled into the Go binary except for the compiled CSS
+and font files emitted by Vite.

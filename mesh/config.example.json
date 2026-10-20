@@ -1,0 +1,97 @@
+{
+  "listen": "0.0.0.0:8080",
+  "server_keys": ["sk-local-change-me-please-123456"],
+  "zen_keys": ["sk-zen-change-me"],
+  "go_keys": [],
+  "anonymous": false,
+  "proxies": ["direct"],
+  "proxyfile": "",
+  "upstream": {
+    "zen": "https://opencode.ai/zen",
+    "go": "https://opencode.ai/zen/go",
+    "anonymous": "https://opencode.ai/inference"
+  },
+  "retry": {
+    "max_attempts": 3,
+    "timeout_seconds": 300
+  },
+  "models": {
+    "refresh_seconds": 300,
+    "protocols": {},
+    "free_only": false
+  },
+  "performance": {
+    "max_idle_conns": 2048,
+    "max_idle_conns_per_host": 256,
+    "max_conns_per_host": 0,
+    "idle_conn_timeout_seconds": 120,
+    "connect_timeout_seconds": 5,
+    "failure_cooldown_seconds": 15,
+    "attempt_timeout_seconds": 0,
+    "first_event_timeout_seconds": 0
+  },
+  "logging": {
+    "level": "info",
+    "ring_size": 2000,
+    "dump_request_bodies": false
+  },
+  "prefer": "go",
+  "reasoning": {},
+  "webui": {
+    "enabled": true,
+    "listen": "0.0.0.0:8081",
+    "username": "admin",
+    "password": "change-me-please",
+    "session_ttl_minutes": 720
+  },
+  "egress": {
+    "enabled": true,
+    "subscriptions": [
+      {
+        "id": "primary",
+        "name": "primary",
+        "url": "https://example.com/subscription",
+        "enabled": true,
+        "refresh_seconds": 3600
+      }
+    ],
+    "import_legacy_proxies": true,
+    "schedule": {
+      "health_weight": 0.3,
+      "latency_weight": 0.15,
+      "routing_weight": 0.15,
+      "upstream_success_weight": 0.4
+    },
+    "protocols": {
+      "http": true,
+      "https": true,
+      "socks5": true,
+      "socks5h": true
+    },
+    "cooldown": {
+      "base_seconds": 30,
+      "max_seconds": 900,
+      "recovery_probe": true
+    },
+    "failover": {
+      "status_policy": {
+        "429": "switch-or-wait",
+        "401": "key-rotation",
+        "403": "key-rotation",
+        "5xx": "retry-or-switch"
+      },
+      "request_method_policy": {
+        "default": "retry-allowed"
+      },
+      "honor_retry_after": true
+    },
+    "probe": {
+      "targets": [],
+      "interval_seconds": 60,
+      "timeout_seconds": 10,
+      "concurrency": 8
+    },
+    "state_path": "/data/egress.db",
+    "max_latency_entries": 128
+  }
+}
