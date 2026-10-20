@@ -162,3 +162,20 @@ func TestPruneSubscriptionsDropsOrphanedNodes(t *testing.T) {
 		t.Fatalf("shared aliases = %+v", shared.Aliases())
 	}
 }
+
+func TestPruneCoolingDropsOnlyCoolingReferences(t *testing.T) {
+	p := New(8)
+	cooling, _ := p.Add("sub-a", input(httpNode("1.1.1.1", 8080, "cooling")))
+	healthy, _ := p.Add("sub-a", input(httpNode("2.2.2.2", 8080, "healthy")))
+	cooling.RestoreCooldown(3, time.Now().Add(time.Minute).UnixNano())
+
+	if dropped := p.PruneCooling("sub-a", time.Now()); dropped != 1 {
+		t.Fatalf("dropped = %d, want 1", dropped)
+	}
+	if p.Len() != 1 || p.Get(healthy.Hash) == nil {
+		t.Fatalf("pool after prune = %d", p.Len())
+	}
+	if p.PruneCooling("sub-a", time.Now()) != 0 {
+		t.Fatal("second prune must be a no-op")
+	}
+}

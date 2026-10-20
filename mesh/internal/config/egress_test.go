@@ -148,3 +148,32 @@ func TestCloneEgressIsDeep(t *testing.T) {
 		t.Fatal("clone must not alias status policy")
 	}
 }
+
+func TestSubscriptionSourceValidation(t *testing.T) {
+	base := func(subs []EgressSubscription) *EgressConfig {
+		return &EgressConfig{Enabled: true, Subscriptions: subs}
+	}
+
+	inline := base([]EgressSubscription{{ID: "local", Content: "http://1.1.1.1:8080#a\ndirect", Enabled: true}})
+	if err := inline.normalize(""); err != nil {
+		t.Fatalf("inline subscription rejected: %v", err)
+	}
+	if inline.Subscriptions[0].Name != "local" {
+		t.Fatalf("name default = %q", inline.Subscriptions[0].Name)
+	}
+
+	both := base([]EgressSubscription{{ID: "x", URL: "https://feed.example/a", Content: "direct"}})
+	if err := both.normalize(""); err == nil {
+		t.Fatal("url and content together must be rejected")
+	}
+
+	neither := base([]EgressSubscription{{ID: "x"}})
+	if err := neither.normalize(""); err == nil {
+		t.Fatal("subscription without a source must be rejected")
+	}
+
+	scheduled := base([]EgressSubscription{{ID: "x", Content: "direct", RefreshSeconds: 3600}})
+	if err := scheduled.normalize(""); err == nil {
+		t.Fatal("inline subscriptions must not carry a refresh schedule")
+	}
+}

@@ -280,6 +280,27 @@ func (e *Engine) ProbeNode(ctx context.Context, id string) (node.Snapshot, error
 }
 
 // Node returns one node snapshot by ID.
+// CleanupSubscription drops one subscription's cooling exits and refreshes it,
+// so healthy nodes come back with cleared counters. It returns how many nodes
+// left the pool.
+func (e *Engine) CleanupSubscription(ctx context.Context, id string) (int, error) {
+	found := false
+	for _, source := range e.sources() {
+		if source.ID == id {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return 0, fmt.Errorf("subscription %q is not configured", id)
+	}
+	removed := e.pool.PruneCooling(id, time.Now())
+	if err := e.RefreshSubscription(ctx, id); err != nil {
+		return removed, err
+	}
+	return removed, nil
+}
+
 // SetNodeEnabled flips the manual switch on one node.
 func (e *Engine) SetNodeEnabled(id string, enabled bool) error {
 	hash, err := node.ParseHex(id)
@@ -365,6 +386,7 @@ func (e *Engine) sources() []subscription.Source {
 			ID:      sub.ID,
 			Name:    sub.Name,
 			URL:     sub.URL,
+			Content: sub.Content,
 			Enabled: sub.Enabled,
 			Refresh: time.Duration(sub.RefreshSeconds) * time.Second,
 		})

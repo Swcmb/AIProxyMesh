@@ -27,7 +27,10 @@ type EgressConfig struct {
 type EgressSubscription struct {
 	ID             string `json:"id"`
 	Name           string `json:"name,omitempty"`
-	URL            string `json:"url"`
+	URL            string `json:"url,omitempty"`
+	// Content is an inline feed (pasted proxy list). A subscription carries
+	// either a URL or inline content, never both.
+	Content        string `json:"content,omitempty"`
 	Enabled        bool   `json:"enabled"`
 	RefreshSeconds int    `json:"refresh_seconds,omitempty"`
 }
@@ -155,21 +158,32 @@ func (e *EgressConfig) normalize(configPath string) error {
 		sub.ID = strings.TrimSpace(sub.ID)
 		sub.Name = strings.TrimSpace(sub.Name)
 		sub.URL = strings.TrimSpace(sub.URL)
+		sub.Content = strings.TrimSpace(sub.Content)
 		if sub.ID == "" {
 			return errors.New("egress.subscriptions id must not be empty")
 		}
 		if sub.Name == "" {
 			sub.Name = sub.ID
 		}
-		u, err := url.Parse(sub.URL)
-		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
-			return fmt.Errorf("egress.subscriptions[%q] url must be an http(s) URL", sub.ID)
+		switch {
+		case sub.URL != "" && sub.Content != "":
+			return fmt.Errorf("egress.subscriptions[%q] must have either url or content", sub.ID)
+		case sub.URL != "":
+			u, err := url.Parse(sub.URL)
+			if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+				return fmt.Errorf("egress.subscriptions[%q] url must be an http(s) URL", sub.ID)
+			}
+		case sub.Content == "":
+			return fmt.Errorf("egress.subscriptions[%q] needs a url or inline content", sub.ID)
 		}
 		if sub.RefreshSeconds < 0 {
 			return fmt.Errorf("egress.subscriptions[%q] refresh_seconds must not be negative", sub.ID)
 		}
 		if sub.RefreshSeconds > 0 && sub.RefreshSeconds < 30 {
 			return fmt.Errorf("egress.subscriptions[%q] refresh_seconds must be at least 30", sub.ID)
+		}
+		if sub.Content != "" && sub.RefreshSeconds > 0 {
+			return fmt.Errorf("egress.subscriptions[%q] is inline content and has no refresh schedule", sub.ID)
 		}
 	}
 	seen := make(map[string]struct{}, len(e.Subscriptions))
