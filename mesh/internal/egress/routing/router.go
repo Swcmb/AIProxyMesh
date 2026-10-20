@@ -370,7 +370,7 @@ func (r *Router) report(attempt *Attempt, outcome Outcome) Classification {
 
 	case ProxyFailure:
 		entry.RecordNetworkResult(false)
-		until := r.cooldown(entry, 0, cfg, now)
+		until := r.cooldown(entry, 0, cfg, now, "proxy_failure")
 		result.NodeCooldown = &until
 		result.Retryable = true
 		result.Reason = "transport_failure"
@@ -379,15 +379,17 @@ func (r *Router) report(attempt *Attempt, outcome Outcome) Classification {
 	case ExitFailure:
 		entry.RecordNetworkResult(true)
 		entry.RecordUpstreamResult(attempt.Target, false)
-		consensus := r.tracker.Record(attempt.Target, attempt.KeyID, statusClass(outcome.StatusCode), entry.ID(), now)
+		class := statusClass(outcome.StatusCode)
+		consensus, nodes := r.tracker.Record(attempt.Target, attempt.KeyID, class, entry.ID(), now)
 		if consensus {
+			r.clearExitCooldowns(nodes, class)
 			result.Kind = UpstreamFailure
 			result.UpstreamWide = true
 			result.Retryable = true
 			result.Reason = "upstream_consensus"
 			return result
 		}
-		until := r.cooldown(entry, outcome.RetryAfter, cfg, now)
+		until := r.cooldown(entry, outcome.RetryAfter, cfg, now, fmt.Sprintf("exit_class_%d", class))
 		result.NodeCooldown = &until
 		result.Retryable = true
 		result.Reason = fmt.Sprintf("exit_status_%d", outcome.StatusCode)
@@ -395,8 +397,10 @@ func (r *Router) report(attempt *Attempt, outcome Outcome) Classification {
 
 	case UpstreamFailure:
 		entry.RecordNetworkResult(true)
-		consensus := r.tracker.Record(attempt.Target, attempt.KeyID, statusClass(outcome.StatusCode), entry.ID(), now)
+		class := statusClass(outcome.StatusCode)
+		consensus, nodes := r.tracker.Record(attempt.Target, attempt.KeyID, class, entry.ID(), now)
 		if consensus {
+			r.clearExitCooldowns(nodes, class)
 			result.UpstreamWide = true
 			result.Retryable = true
 			result.Reason = "upstream_consensus"
@@ -406,7 +410,7 @@ func (r *Router) report(attempt *Attempt, outcome Outcome) Classification {
 			// Another exit reached the same upstream recently, so this failure
 			// belongs to the current exit.
 			entry.RecordUpstreamResult(attempt.Target, false)
-			until := r.cooldown(entry, outcome.RetryAfter, cfg, now)
+			until := r.cooldown(entry, outcome.RetryAfter, cfg, now, fmt.Sprintf("exit_class_%d", class))
 			result.Kind = ExitFailure
 			result.NodeCooldown = &until
 			result.Reason = "exit_specific_after_success"
@@ -433,7 +437,20 @@ func (r *Router) report(attempt *Attempt, outcome Outcome) Classification {
 	return result
 }
 
-func (r *Router) cooldown(entry *node.Entry, retryAfter time.Duration, cfg Config, now time.Time) time.Time {
+func (r *Router) clearExitCooldowns(nodeIDs []string, class int) {
+	reason := fmt.Sprintf("exit_class_%d", class)
+	for _, id := range nodeIDs {
+		hash, err := node.ParseHex(id)
+		if err != nil {
+			continue
+		}
+		if entry := r.pool.Get(hash); entry != nil {
+			entry.ClearCooldownFor(reason)
+		}
+	}
+}
+
+func (r *Router) cooldown(entry *node.Entry, retryAfter time.Duration, cfg Config, now time.Time, reason string) time.Time {
 	failures := entry.Failures() + 1
 	shift := min(failures-1, 10)
 	delay := cfg.CooldownBase * time.Duration(1<<shift)
@@ -450,7 +467,7 @@ func (r *Router) cooldown(entry *node.Entry, retryAfter time.Duration, cfg Confi
 		delay = retryAfter
 	}
 	until := now.Add(delay)
-	entry.RecordCooldown(until)
+	entry.RecordCooldownReason(until, reason)
 	return until
 }
 

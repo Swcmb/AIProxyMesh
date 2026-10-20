@@ -167,6 +167,9 @@ func TestExitFailureConsensusBecomesUpstreamWide(t *testing.T) {
 	if entry := p.Get(secondHash); entry == nil || entry.Cooling(time.Now()) {
 		t.Fatal("upstream-wide failures must not cool the node")
 	}
+	if entry := p.Get(firstHash); entry == nil || entry.Cooling(time.Now()) {
+		t.Fatal("consensus must clear the earlier exit-layer cooldown")
+	}
 	_ = a
 	_ = b
 }

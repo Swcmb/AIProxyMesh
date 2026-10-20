@@ -143,6 +143,7 @@ type Entry struct {
 	mu              sync.RWMutex
 	subscriptionIDs []string
 	lastError       string
+	cooldownReason  string
 
 	enabled       atomic.Bool
 	failures      atomic.Int32
@@ -265,19 +266,49 @@ func (e *Entry) RestoreCooldown(failures int32, untilNanos int64) {
 	e.cooldownUntil.Store(untilNanos)
 }
 
-// RecordSuccess clears the failure streak and cooldown.
+// RecordSuccess clears the failure streak, cooldown and its reason.
 func (e *Entry) RecordSuccess() {
 	e.failures.Store(0)
 	e.cooldownUntil.Store(0)
+	e.mu.Lock()
+	e.cooldownReason = ""
+	e.mu.Unlock()
 }
 
 // RecordCooldown starts a cooldown until the given deadline.
 func (e *Entry) RecordCooldown(until time.Time) {
+	e.RecordCooldownReason(until, "")
+}
+
+// RecordCooldownReason starts a cooldown and records why it was applied, so a
+// later upstream-consensus verdict can clear only the cooldowns it invalidates.
+func (e *Entry) RecordCooldownReason(until time.Time, reason string) {
 	e.failures.Add(1)
 	if until.IsZero() {
 		until = time.Now()
 	}
 	e.cooldownUntil.Store(until.UnixNano())
+	e.mu.Lock()
+	e.cooldownReason = reason
+	e.mu.Unlock()
+}
+
+// ClearCooldownFor resets the node penalty only when the active cooldown was
+// created for the given reason. It returns whether anything was cleared.
+func (e *Entry) ClearCooldownFor(reason string) bool {
+	if reason == "" {
+		return false
+	}
+	e.mu.Lock()
+	if e.cooldownReason != reason {
+		e.mu.Unlock()
+		return false
+	}
+	e.cooldownReason = ""
+	e.mu.Unlock()
+	e.failures.Store(0)
+	e.cooldownUntil.Store(0)
+	return true
 }
 
 // RecordNetworkResult feeds the health score. ok means the exit produced an

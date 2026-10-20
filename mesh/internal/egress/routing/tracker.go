@@ -48,10 +48,11 @@ func (t *UpstreamTracker) SetWindow(window time.Duration) {
 }
 
 // Record stores a failure and reports whether the bucket has reached
-// consensus. statusClass is the status code's hundreds digit (4 or 5).
-func (t *UpstreamTracker) Record(target, keyID string, statusClass int, nodeID string, at time.Time) bool {
+// consensus, along with the distinct exits represented in it. statusClass is
+// the status code's hundreds digit (4 or 5).
+func (t *UpstreamTracker) Record(target, keyID string, statusClass int, nodeID string, at time.Time) (bool, []string) {
 	if target == "" {
-		return false
+		return false, nil
 	}
 	bucket := target + "|" + keyID + "|" + statusKey(statusClass)
 	t.mu.Lock()
@@ -63,13 +64,17 @@ func (t *UpstreamTracker) Record(target, keyID string, statusClass int, nodeID s
 	for _, sample := range t.failures[bucket] {
 		distinct[sample.nodeID] = struct{}{}
 	}
+	nodes := make([]string, 0, len(distinct))
+	for id := range distinct {
+		nodes = append(nodes, id)
+	}
 	if len(distinct) < 2 {
-		return false
+		return false, nodes
 	}
 	if success, ok := t.lastSuccess[target]; ok && at.Sub(success.at) <= t.window {
-		return false
+		return false, nodes
 	}
-	return true
+	return true, nodes
 }
 
 // RecordSuccess clears failure history for a target.

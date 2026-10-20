@@ -15,7 +15,7 @@
 | 2 | 全部出口连接失败 | 尝试次数 ≤ `retry.max_attempts`，全部节点冷却 | `TestEgressAllNodesFailWithinBudget` | used=2 ≤ 3；上游 0 命中；两个节点冷却 |
 | 3 | 出口返回 429 + `Retry-After: 2` | 该出口冷却、切换健康出口；遵循等待语义 | `TestEgress429SwitchesExit` | 2 次尝试；上游仅 1 次；429 节点冷却；`Retry-After` 生效 |
 | 4 | `Retry-After` 大于冷却上限 | 不被 `cooldown.max_seconds` 截断 | `TestRetryAfterBeyondCooldownCap` | 1 小时 Retry-After → 冷却 1 小时 |
-| 5 | 两个不同出口对同一上游均 5xx | 上游共识、停止遍历、节点不冷却 | `TestEgressUpstreamWideStopsWithoutCoolingNodes` | used=2；返回 503；节点均未冷却 |
+| 5 | 两个不同出口对同一上游均 5xx | 上游共识、停止遍历、节点不冷却；若先前已按出口冷却则撤销 | `TestEgressUpstreamWideStopsWithoutCoolingNodes`、`TestExitFailureConsensusBecomesUpstreamWide` | used=2；返回 503；共识后两个节点均未冷却（先前 429 冷却被清除） |
 | 6 | 单出口 5xx 且无其他出口成功 | 不归因于出口（继续重试，不冷却节点） | `TestFiveHundredAttribution` | 无共识时无节点冷却 |
 | 7 | 401/403 | 只走 Key 通道冷却，不惩罚代理 | `TestKeyFailureDoesNotPenalizeExit`、`TestGatewayKeyRotation` | 401 后切换 Key；节点不冷却；第 2 个 Key 成功 |
 | 8 | 不可重试 400 | 立即返回，不轮换 Key/节点 | `TestNonRetryableClientResponseStopsImmediately` | used=1；上游 1 次 |
