@@ -3,9 +3,21 @@ package webui
 
 import (
 	"embed"
+	"io/fs"
 )
 
-// Assets contains the static management interface served by the admin listener.
+// embedded contains the compiled Vite output under internal/webui/dist.
 //
-//go:embed index.html app.js styles.css
-var Assets embed.FS
+//go:embed dist
+var embedded embed.FS
+
+// Assets is the embedded WebUI rooted at the dist directory.
+var Assets fs.FS
+
+func init() {
+	sub, err := fs.Sub(embedded, "dist")
+	if err != nil {
+		panic("webui: embedded dist is invalid: " + err.Error())
+	}
+	Assets = sub
+}

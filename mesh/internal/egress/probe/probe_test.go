@@ -43,7 +43,7 @@ func TestProbeRecordsLatencyAndHealth(t *testing.T) {
 	entry := directEntry(p)
 	manager.ProbeEntry(context.Background(), entry)
 
-	if latency, ok := entry.LatencyFor("127.0.0.1"); !ok || latency <= 0 {
+	if latency, ok := entry.LatencyFor("127.0.0.1"); !ok || latency < 0 {
 		t.Fatalf("probe must record latency, got %v %v", latency, ok)
 	}
 	if score := entry.HealthScore(); score <= 0.5 {

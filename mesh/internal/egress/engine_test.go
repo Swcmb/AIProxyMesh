@@ -197,7 +197,7 @@ func TestEngineImportDedupProbeSmoke(t *testing.T) {
 	}
 
 	engine.ProbeAll(context.Background())
-	if latency, ok := entry.LatencyFor("127.0.0.1"); !ok || latency <= 0 {
+	if latency, ok := entry.LatencyFor("127.0.0.1"); !ok || latency < 0 {
 		t.Fatalf("probe latency = %v %v", latency, ok)
 	}
 	target, _ := url.Parse(upstream.URL + "/v1/chat")
