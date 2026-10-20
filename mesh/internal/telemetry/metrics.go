@@ -247,6 +247,13 @@ func (ring *upstreamAttemptRing) Snapshot(cutoff time.Time, limit int) []Upstrea
 	return result
 }
 
+// RequestSink receives copies of the records the monitor keeps in memory, so a
+// persistent log can be written without the request path touching the store.
+type RequestSink interface {
+	PersistRequest(UpstreamRequest)
+	PersistAttempt(UpstreamAttempt)
+}
+
 type Monitor struct {
 	started         time.Time
 	active          atomic.Int64
@@ -254,6 +261,7 @@ type Monitor struct {
 	total           atomic.Uint64
 	success         atomic.Uint64
 	errors          atomic.Uint64
+	sink            atomic.Pointer[RequestSink]
 	mu              sync.Mutex
 	buckets         [60]metricBucket
 	lifetimeUsage   UsagePeriod
@@ -262,6 +270,29 @@ type Monitor struct {
 	attemptBuckets  [60]attemptBucket
 	recentRequests  upstreamRequestRing
 	recentAttempts  upstreamAttemptRing
+}
+
+// SetSink installs the persistent log destination. Passing nil removes it. The
+// sink is expected to be non-blocking; a slow implementation would stall the
+// request path.
+func (m *Monitor) SetSink(sink RequestSink) {
+	if sink == nil {
+		m.sink.Store(nil)
+		return
+	}
+	m.sink.Store(&sink)
+}
+
+func (m *Monitor) persistRequest(record UpstreamRequest) {
+	if sink := m.sink.Load(); sink != nil {
+		(*sink).PersistRequest(record)
+	}
+}
+
+func (m *Monitor) persistAttempt(record UpstreamAttempt) {
+	if sink := m.sink.Load(); sink != nil {
+		(*sink).PersistAttempt(record)
+	}
 }
 
 func NewMonitor() *Monitor {
@@ -292,6 +323,7 @@ func (m *Monitor) Record(endpoint string, status int, duration time.Duration, me
 		m.errors.Add(1)
 	}
 	minute := time.Now().Unix() / 60
+	var persistedRequest *UpstreamRequest
 	m.mu.Lock()
 	bucket := &m.buckets[minute%60]
 	if bucket.minute != minute {
@@ -359,9 +391,13 @@ func (m *Monitor) Record(endpoint string, status int, duration time.Duration, me
 			}
 			m.recentRequests.PruneBefore(request.Time.Add(-monitorRequestRetention))
 			m.recentRequests.Add(request)
+			persistedRequest = &request
 		}
 	}
 	m.mu.Unlock()
+	if persistedRequest != nil {
+		m.persistRequest(*persistedRequest)
+	}
 }
 
 // A stream can fail after HTTP headers have been sent. Preserve its HTTP
@@ -403,6 +439,7 @@ func (m *Monitor) RecordAttempt(attempt UpstreamAttempt) {
 	m.recentAttempts.PruneBefore(attempt.Time.Add(-time.Hour))
 	m.recentAttempts.Add(attempt)
 	m.mu.Unlock()
+	m.persistAttempt(attempt)
 }
 
 type MonitorSnapshot struct {

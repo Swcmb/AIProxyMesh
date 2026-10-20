@@ -19,6 +19,7 @@ import (
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/gateway"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/httpx"
+	"github.com/Swcmb/AIProxyMesh/mesh/internal/logstore"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/telemetry"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/webui"
 )
@@ -36,13 +37,14 @@ type Server struct {
 	quotaMu        sync.Mutex
 	quotaCache     map[string]quotaCacheEntry
 	egressProvider func() *egress.Engine
+	requestLogProvider func() *logstore.Service
 }
 
 func New(manager *gateway.RuntimeManager, monitor *telemetry.Monitor, logs *telemetry.LogHub, logger *slog.Logger) *Server {
 	return &Server{
 		manager: manager, monitor: monitor, logs: logs, logger: logger, sessions: make(map[string]adminSession),
 		attempts: make(map[string]loginWindow), debugAttempts: make(map[string]loginWindow),
-		egressProvider: manager.Egress,
+		egressProvider: manager.Egress, requestLogProvider: manager.RequestLogs,
 	}
 }
 
@@ -90,6 +92,9 @@ func (a *Server) Handler() http.Handler {
 	mux.Handle("GET /api/egress/geoip", a.authenticate(http.HandlerFunc(a.handleGeoIPStatus)))
 	mux.Handle("POST /api/egress/geoip/update", a.authenticate(a.csrf(http.HandlerFunc(a.handleGeoIPUpdate))))
 	mux.Handle("GET /api/egress/geoip/lookup", a.authenticate(http.HandlerFunc(a.handleGeoIPLookup)))
+	mux.Handle("GET /api/logs/requests", a.authenticate(http.HandlerFunc(a.handleRequestLogs)))
+	mux.Handle("GET /api/logs/requests/detail", a.authenticate(http.HandlerFunc(a.handleRequestLogDetail)))
+	mux.Handle("DELETE /api/logs/requests", a.authenticate(a.csrf(http.HandlerFunc(a.handlePurgeRequestLogs))))
 	mux.Handle("GET /api/egress/diagnose", a.authenticate(http.HandlerFunc(a.handleEgressDiagnose)))
 	mux.Handle("/", a.staticHandler())
 	return a.securityHeaders(telemetry.Recover(a.logger, mux))

@@ -12,6 +12,7 @@ import (
 
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/config"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress"
+	"github.com/Swcmb/AIProxyMesh/mesh/internal/logstore"
 	modelcatalog "github.com/Swcmb/AIProxyMesh/mesh/internal/models"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/protocol"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/rotation"
@@ -48,6 +49,9 @@ type RuntimeManager struct {
 	availabilityCancel context.CancelFunc
 	egressMu           sync.Mutex
 	egressEngine       *egress.Engine
+	requestLogsMu      sync.Mutex
+	requestLogs        *logstore.Service
+	requestLogSettings config.RequestsLogConfig
 }
 
 type effectiveListeners struct {
@@ -91,6 +95,7 @@ func NewRuntimeManager(root context.Context, configPath string, cfg config.Confi
 		return nil, err
 	}
 	manager.rotation = rotationManager
+	manager.syncRequestLogs(cfg)
 	if err := manager.ensureEgress(cfg); err != nil {
 		return nil, err
 	}
@@ -226,6 +231,7 @@ func (m *RuntimeManager) applyLocked(candidate config.Config, persist bool) (App
 	if err := m.ensureEgress(normalized); err != nil {
 		return ApplyResult{}, err
 	}
+	m.syncRequestLogs(normalized)
 	next, err := m.build(normalized)
 	if err != nil {
 		return ApplyResult{}, fmt.Errorf("initialize runtime: %w", err)
@@ -296,6 +302,11 @@ func (m *RuntimeManager) Shutdown() {
 	if current := m.current.Load(); current != nil {
 		current.cancel()
 	}
+	m.requestLogsMu.Lock()
+	defer m.requestLogsMu.Unlock()
+	_ = m.requestLogs.Close()
+	m.requestLogs = nil
+	m.monitor.SetSink(nil)
 }
 
 // Egress returns the exit-pool engine, or nil when the feature is disabled.
@@ -303,6 +314,48 @@ func (m *RuntimeManager) Egress() *egress.Engine {
 	m.egressMu.Lock()
 	defer m.egressMu.Unlock()
 	return m.egressEngine
+}
+
+// RequestLogs returns the persistent request log, or nil when persistence is off.
+func (m *RuntimeManager) RequestLogs() *logstore.Service {
+	m.requestLogsMu.Lock()
+	defer m.requestLogsMu.Unlock()
+	return m.requestLogs
+}
+
+// syncRequestLogs reconciles the persistent request log with the configuration.
+// Only the enable flag and the database path need a reopen; the retention window
+// and row cap are pushed to the running writer.
+func (m *RuntimeManager) syncRequestLogs(cfg config.Config) {
+	m.requestLogsMu.Lock()
+	defer m.requestLogsMu.Unlock()
+	requests := cfg.Logging.Requests
+	if m.requestLogs != nil && m.requestLogSettings.SameSourceAs(requests) {
+		m.requestLogs.SetRetention(requests.RetentionDays, requests.MaxRows)
+		m.requestLogSettings = requests
+		return
+	}
+	_ = m.requestLogs.Close()
+	m.requestLogs = nil
+	m.monitor.SetSink(nil)
+	m.requestLogSettings = requests
+	if !requests.IsEnabled() {
+		return
+	}
+	service, err := logstore.Open(logstore.Options{
+		Path: requests.StatePath, RetentionDays: requests.RetentionDays,
+		MaxRows: requests.MaxRows, BufferSize: requests.BufferSize, Logger: m.logger,
+	})
+	if err != nil {
+		// A broken log database must not stop the gateway: the in-memory ring
+		// still serves the monitor, and the error is reported once per reload.
+		m.logger.Error("request log disabled: cannot open database",
+			"component", "logstore", "event", "request_log_open_failed", "path", requests.StatePath, "error", err)
+		return
+	}
+	service.Start(m.root)
+	m.requestLogs = service
+	m.monitor.SetSink(service)
 }
 
 func (m *RuntimeManager) ensureEgress(cfg config.Config) error {

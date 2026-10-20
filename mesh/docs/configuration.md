@@ -17,7 +17,7 @@
 | `retry` | object | `max_attempts`（唯一总预算，默认 3）、`timeout_seconds` |
 | `models` | object | `refresh_seconds`、`protocols`（模型→原生协议覆盖）、`free_only` |
 | `performance` | object | 连接池、连接/尝试/首个 SSE 事件超时、通道冷却 |
-| `logging` | object | `level`、`ring_size`、`dump_request_bodies` |
+| `logging` | object | `level`、`ring_size`、`dump_request_bodies`、`requests`（持久请求日志） |
 | `prefer` | string | `zen` 或 `go` |
 | `reasoning` | object | `effort` / `effort_by_model` 强制推理强度 |
 | `rotation` | object | 两个模型别名的名称与首个输出超时；顺序由排名生成 |
@@ -152,3 +152,19 @@ SQLite（modernc，纯 Go）通过内嵌迁移自动建表：
 - 出口切换事件（上限 5000 条，周期裁剪）
 
 升级前请备份该文件。迁移只向前，不支持降级迁移。
+
+## 持久请求日志
+
+`logging.requests` 用独立的 SQLite 库（默认 `<config>.requests.db`）保存每次上游请求与每次上游尝试，重启后历史仍在：
+
+| 字段 | 说明 |
+| --- | --- |
+| `enabled` | 缺省即启用；`false` 关闭持久化，只保留内存环形缓冲 |
+| `state_path` | 请求库路径；默认 `<config>.requests.db` |
+| `retention_days` | 按时间裁剪（1–3650），默认 7 天 |
+| `max_rows` | 按条数裁剪，保留最新的 N 条请求，默认 200000 |
+| `buffer_size` | 写入缓冲条数；0 用默认 8192 |
+
+写入路径不阻塞请求：记录先进入内存缓冲，后台按 100 条或 500ms 批量落盘。缓冲满时丢弃新记录并在 `dropped` 计数中体现，宁可丢历史也不拖慢推理。请求与尝试分表存储，尝试按 `request_id` 关联，详情页展示完整尝试链。
+
+`enabled` 与 `state_path` 改变会重开数据库；`retention_days` 与 `max_rows` 热更新即时生效。

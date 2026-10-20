@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -78,10 +79,69 @@ type ModelsConfig struct {
 type LoggingConfig struct {
 	Level    string `json:"level"`
 	RingSize int    `json:"ring_size"`
+	// Requests persists the request and attempt log to SQLite so the history
+	// survives restarts instead of living only in the in-memory ring.
+	Requests RequestsLogConfig `json:"requests"`
 	// DumpRequestBodies logs the exact bytes sent upstream (redacted, capped)
 	// so retry and translation problems can be diagnosed without patching the
 	// binary. Off by default: the bodies contain conversation content.
 	DumpRequestBodies bool `json:"dump_request_bodies"`
+}
+
+// RequestsLogConfig configures the persistent request log.
+type RequestsLogConfig struct {
+	// Enabled defaults to true; the section is written to disk only when it
+	// differs from that, so an absent section keeps the log on.
+	Enabled       *bool  `json:"enabled,omitempty"`
+	StatePath     string `json:"state_path,omitempty"`
+	RetentionDays int    `json:"retention_days,omitempty"`
+	// MaxRows caps the stored requests; older rows are pruned first.
+	MaxRows    int `json:"max_rows,omitempty"`
+	BufferSize int `json:"buffer_size,omitempty"`
+}
+
+// IsEnabled reports whether request persistence is on.
+func (r *RequestsLogConfig) IsEnabled() bool {
+	return r != nil && (r.Enabled == nil || *r.Enabled)
+}
+
+// SameSourceAs reports whether two settings point at the same database, which is
+// the only property that forces a reopen. Retention and caps apply live.
+func (r RequestsLogConfig) SameSourceAs(other RequestsLogConfig) bool {
+	return r.IsEnabled() == other.IsEnabled() && r.StatePath == other.StatePath
+}
+
+// normalizeRequests fills the persistent request log defaults. The buffer size
+// stays zero when unset, which lets the store pick its own default.
+func (l *LoggingConfig) normalizeRequests(configPath string) error {
+	r := &l.Requests
+	if !r.IsEnabled() {
+		r.StatePath = ""
+		r.RetentionDays = 0
+		r.MaxRows = 0
+		r.BufferSize = 0
+		return nil
+	}
+	if r.StatePath == "" {
+		r.StatePath = filepath.Clean(configPath + ".requests.db")
+	}
+	r.StatePath = filepath.Clean(r.StatePath)
+	if r.RetentionDays < 0 || r.RetentionDays > 3650 {
+		return errors.New("logging.requests.retention_days must be between 0 and 3650 (0 keeps the default)")
+	}
+	if r.RetentionDays == 0 {
+		r.RetentionDays = 7
+	}
+	if r.MaxRows < 0 || r.MaxRows > 5000000 {
+		return errors.New("logging.requests.max_rows must be between 0 and 5000000 (0 keeps the default)")
+	}
+	if r.MaxRows == 0 {
+		r.MaxRows = 200000
+	}
+	if r.BufferSize < 0 || r.BufferSize > 200000 {
+		return errors.New("logging.requests.buffer_size must be between 0 and 200000 (0 keeps the default)")
+	}
+	return nil
 }
 
 type WebUIConfig struct {
@@ -272,6 +332,9 @@ func Normalize(path string, cfg Config) (Config, error) {
 		if err := cfg.Egress.normalize(path); err != nil {
 			return Config{}, err
 		}
+	}
+	if err := cfg.Logging.normalizeRequests(path); err != nil {
+		return Config{}, err
 	}
 	return cfg, nil
 }

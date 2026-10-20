@@ -33,7 +33,7 @@ docker build -t mesh:local .
 - **模型排名**：排名对象是「提供商 + 模型 + 任务类型」；综合分 `G × (Q/E/A/F)`，硬性准入先行，按任务类型分别排名。
 - **轮转顺序**：`sota` / `sweet` 的模型顺序由排名引擎按 `ranking.sota_task` / `ranking.sweet_task` 自动生成；配置与 API 不再接受手写顺序。
 - **认证**：管理端统一使用 session + CSRF；`/api/egress/*` 与 `/api/rankings` 沿用同一认证。
-- **配置与状态分离**：业务配置在 `config.json`；节点/订阅/健康/延迟/事件在 `egress.state_path` 的 SQLite 中独立更新。
+- **配置与状态分离**：业务配置在 `config.json`；节点/订阅/健康/延迟/事件在 `egress.state_path` 的 SQLite 中独立更新；请求与尝试日志在 `logging.requests.state_path` 的独立 SQLite，写入走缓冲，不阻塞请求。
 - **许可证**：整体 GPL-3.0-or-later；第三方声明见 `mesh/NOTICE`。
 
 ## CI 与自动化
