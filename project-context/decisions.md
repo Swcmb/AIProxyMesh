@@ -143,3 +143,13 @@ type Selector interface {
 - **D-17 可观测性**：遥测与持久化事件均记录出口节点 ID/名称、状态码、尝试序号与切换原因；模型目录刷新优先经出口池客户端。
 - **D-18 管理接口**：`/api/egress` 摘要、`/nodes`、`/nodes/{id}`、`/nodes/{id}/enabled`、`/nodes/{id}/probe`、`/subscriptions`、`/subscriptions/{id}/refresh`、`/events`、`/diagnose`；全部沿用 session + CSRF。`/api/config` 增补 `egress` 读写，订阅 URL 以 `scheme://host/***` 脱敏，提交脱敏 URL 或空 URL 时按 ID 复用原值。
 - **验证证据（2026-10-20）**：`go build ./...`、`go vet ./...`、`go test -race ./internal/gateway ./internal/egress/... ./internal/admin ./internal/config` 全部通过；关键用例：跨订阅去重→探测→评分、故障出口→直连切换、单一预算上限、429 冷却、上游共识不冷却节点、SQLite 重开恢复。
+
+---
+
+## D-19 发布形态（2026-10-20）
+
+- 版本 `v0.1.0`；单二进制 + 单 Docker 镜像；五平台交叉编译通过。
+- Docker 运行阶段原定 distroless，因 gcr.io 在当前网络不可达改为 `alpine:3.21` + 非 root 用户；仍为单进程、单配置、单 WebUI。
+- 前端构建产物提交在 `mesh/internal/webui/dist`，保证无 Node.js 环境也能直接 `go build`；发布 Dockerfile 仍会从源码重建前端。
+- 许可证：`mesh/LICENSE`（GPL-3.0 全文，与 o2a 一致）+ `mesh/NOTICE`（Resin MIT 完整声明、opencode2api 来源、Go/前端依赖许可）。
+- 升级演练：同一配置/状态目录切换 v0.1.0 二进制，节点状态恢复、健康版本正确；回滚依赖上一版二进制与 `config.json.bak`/手动备份，状态库迁移只向前。

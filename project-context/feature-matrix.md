@@ -143,12 +143,12 @@
 
 | # | 功能项 | 证据位置 | 阶段 0 现状 | 整合后验证方式 | 状态 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| I1 | Dockerfile（多阶段） | `Dockerfile`、`docker-entrypoint.sh`、`.dockerignore` | 存在 | 阶段 1/7：单二进制 + 单 Docker（§4）；React 构建期嵌入 | ⬜ |
-| I2 | compose | `compose.yaml` | 存在 | 阶段 7：与新镜像一致 | ⬜ |
+| I1 | Dockerfile（多阶段） | `Dockerfile`、`docker-entrypoint.sh`、`.dockerignore` | 存在 | 阶段 1/7：单二进制 + 单 Docker（§4）；React 构建期嵌入 | ✅ |
+| I2 | compose | `compose.yaml` | 存在 | 阶段 7：与新镜像一致 | ✅ |
 | I3 | CI：checks + release | `.github/workflows/checks.yml`、`release.yml` | 存在；**无 `go test` 步骤** | 阶段 0/1：补测试骨架；CI 增 `go test ./... -race` + `go vet`（§9-13） | ⚠️ |
 | I4 | Go 版本与依赖 | `go.mod`（`module opencode2api`，go 1.24，直接依赖仅 `golang.org/x/crypto v0.41.0`） | 存在 | 阶段 1：迁为 `mesh/` 模块（toolchain go1.25.5） | ✅ |
-| I5 | 文档 | `README.md`、`README.zh-CN.md`、`docs/management.zh-CN.md` | 存在 | 阶段 7：更新为整合后形态 | ⬜ |
-| I6 | 许可证 | `LICENSE`（GPL-3.0） | 存在 | 阶段 1：衍生分发 GPL-3.0-or-later + 保留 Resin MIT 声明（§12 收口） | ⬜ |
+| I5 | 文档 | `README.md`、`README.zh-CN.md`、`docs/management.zh-CN.md` | 存在 | 阶段 7：更新为整合后形态 | ✅ |
+| I6 | 许可证 | `LICENSE`（GPL-3.0） | 存在 | 阶段 1：衍生分发 GPL-3.0-or-later + 保留 Resin MIT 声明（§12 收口） | ✅ |
 
 ## J. 盘点注记（后续阶段防回归约束）
 
@@ -175,3 +175,5 @@
 - 证据与缺口：`project-context/regression-report.md`、`project-context/fault-injection-report.md`。
 - 前端等价关系：旧 `guide`/`access` 信息页折叠进总览与配置页；`account` 并入配置页；其余页面一一对应规格 §5.10 的 13 页。
 - Docker、跨平台产物、文档与许可证属于阶段 7，未在本表标记。
+
+阶段 7 发布补充：I1 Dockerfile / I2 compose / I5 README+docs / I6 LICENSE+NOTICE 已完成；I3 工作流已落盘但沙箱未实际触发 CI 运行。

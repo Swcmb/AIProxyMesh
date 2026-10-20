@@ -1,0 +1,11 @@
+webui/node_modules
+internal/webui/dist
+.git
+.gitignore
+*.db
+*.db-shm
+*.db-wal
+*.log
+Dockerfile
+README.md
+docs

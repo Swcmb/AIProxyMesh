@@ -1,0 +1,32 @@
+name: checks
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.5"
+      - name: Go build, vet and tests
+        working-directory: mesh
+        run: |
+          go build ./...
+          go vet ./...
+          go test ./...
+          go test -race ./...
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Frontend build
+        working-directory: mesh/webui
+        run: |
+          npm ci
+          npm run build
+      - name: Docker build
+        working-directory: mesh
+        run: docker build -t mesh:ci .
