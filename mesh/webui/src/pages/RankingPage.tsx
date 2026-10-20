@@ -90,7 +90,7 @@ export function RankingPage() {
                   <th>适配 F</th>
                   <th>综合</th>
                   <th>置信</th>
-                  <th>单任务成本</th>
+                  <th>任务成本</th>
                   <th>P95 / 成功率</th>
                 </tr>
               </thead>
@@ -154,11 +154,16 @@ function RankingRow({ route, rank }: { route: RankingResult; rank?: number }) {
 
 function scoreCell(value: number | undefined, hint?: string) {
   if (value === undefined) {
-    return <span className="muted">-（无数据）</span>;
+    return <span className="muted">-</span>;
   }
   return (
     <>
-      {value.toFixed(1)}
+      <div className="score-cell">
+        <span>{value.toFixed(1)}</span>
+        <div className="quota-bar" role="progressbar" aria-valuenow={value} aria-valuemin={0} aria-valuemax={100}>
+          <span style={{ width: `${Math.max(0, Math.min(100, value))}%` }} />
+        </div>
+      </div>
       {hint ? <div className="muted">{hint}</div> : null}
     </>
   );
