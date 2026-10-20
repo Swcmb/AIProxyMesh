@@ -21,6 +21,24 @@ type EgressConfig struct {
 	Probe               EgressProbe          `json:"probe,omitempty"`
 	StatePath           string               `json:"state_path,omitempty"`
 	MaxLatencyEntries   int                  `json:"max_latency_entries,omitempty"`
+	GeoIP               *EgressGeoIP         `json:"geoip,omitempty"`
+}
+
+// EgressGeoIP configures the MaxMind-compatible country database used to label
+// node regions. It is downloaded from operator configuration only, never from
+// an API request.
+type EgressGeoIP struct {
+	// Enabled defaults to true; set it to false to switch region resolution off.
+	Enabled     *bool  `json:"enabled,omitempty"`
+	URL         string `json:"url,omitempty"`
+	SHA256      string `json:"sha256,omitempty"`
+	Path        string `json:"path,omitempty"`
+	RefreshDays int    `json:"refresh_days,omitempty"`
+}
+
+// IsEnabled reports whether region resolution should run.
+func (g *EgressGeoIP) IsEnabled() bool {
+	return g != nil && (g.Enabled == nil || *g.Enabled)
 }
 
 // EgressSubscription is one remote subscription source.
@@ -228,6 +246,27 @@ func (e *EgressConfig) normalize(configPath string) error {
 	if e.StatePath == "" {
 		e.StatePath = filepath.Clean(configPath + ".egress.db")
 	}
+	if e.GeoIP != nil {
+		geo := e.GeoIP
+		geo.URL = strings.TrimSpace(geo.URL)
+		geo.Path = strings.TrimSpace(geo.Path)
+		geo.SHA256 = strings.TrimSpace(geo.SHA256)
+		if geo.Path == "" {
+			geo.Path = filepath.Clean(e.StatePath + ".geoip.mmdb")
+		}
+		if geo.RefreshDays < 0 || geo.RefreshDays > 365 {
+			return errors.New("egress.geoip.refresh_days must be 0-365")
+		}
+		if geo.URL != "" {
+			parsed, err := url.Parse(geo.URL)
+			if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+				return errors.New("egress.geoip.url must be an http(s) URL")
+			}
+		}
+		if geo.SHA256 != "" && len(geo.SHA256) != 64 {
+			return errors.New("egress.geoip.sha256 must be a 64-character hex digest")
+		}
+	}
 	return nil
 }
 
@@ -238,6 +277,10 @@ func cloneEgress(in *EgressConfig) *EgressConfig {
 	out := *in
 	out.Subscriptions = append([]EgressSubscription(nil), in.Subscriptions...)
 	out.Probe.Targets = append([]string(nil), in.Probe.Targets...)
+	if in.GeoIP != nil {
+		geo := *in.GeoIP
+		out.GeoIP = &geo
+	}
 	if in.Failover.StatusPolicy != nil {
 		out.Failover.StatusPolicy = make(map[string]string, len(in.Failover.StatusPolicy))
 		for key, value := range in.Failover.StatusPolicy {

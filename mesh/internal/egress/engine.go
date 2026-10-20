@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/config"
+	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/geoip"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/node"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/outbound"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/pool"
@@ -51,8 +52,12 @@ type Engine struct {
 	probe    *probe.Manager
 	subs     *subscription.Manager
 	store    *state.Store
-	logger   *slog.Logger
-	settings atomic.Pointer[settings]
+	geoip    *geoip.Service
+	// geoipConfig records the section the service was built from, so a hot
+	// reload only rebuilds it when something actually changed.
+	geoipConfig *config.EgressGeoIP
+	logger      *slog.Logger
+	settings    atomic.Pointer[settings]
 
 	events    chan state.Event
 	ctx       context.Context
@@ -96,6 +101,11 @@ func New(opts Options) (*Engine, error) {
 	}
 	e.settings.Store(&settings{egress: cfg, upstream: opts.Upstream, performance: opts.Performance, legacy: opts.Legacy})
 	e.subs = subscription.New(nodePool, nil, e.sources, logger)
+	e.geoip = newGeoIPService(cfg, logger)
+	if e.geoip != nil {
+		geo := *cfg.GeoIP
+		e.geoipConfig = &geo
+	}
 
 	if err := e.restore(context.Background()); err != nil {
 		_ = store.Close()
@@ -142,6 +152,8 @@ func (e *Engine) Start(parent context.Context) {
 		defer e.wg.Done()
 		e.probe.Run(e.ctx)
 	}()
+
+	e.StartGeoIP(e.ctx)
 
 	e.wg.Add(1)
 	go func() {
@@ -192,6 +204,9 @@ func (e *Engine) Close() error {
 		if err == nil {
 			err = closeErr
 		}
+		if e.geoip != nil {
+			_ = e.geoip.Close()
+		}
 	})
 	return err
 }
@@ -207,6 +222,7 @@ func (e *Engine) Apply(egress *config.EgressConfig, upstream config.UpstreamConf
 		perf = current.performance
 	}
 	e.settings.Store(&settings{egress: egress, upstream: upstream, performance: perf, legacy: legacy})
+	e.reconfigureGeoIP(egress)
 	if e.outbound != nil {
 		e.outbound.Reconfigure(outboundConfig(perf))
 	}
