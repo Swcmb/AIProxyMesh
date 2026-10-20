@@ -70,17 +70,17 @@
 | E2 | `GET /api/auth/session` | session | 阶段 6/7 回归 | ✅ |
 | E3 | `POST /api/auth/logout` | session+CSRF | 阶段 6/7 回归 | ✅ |
 | E4 | `GET /api/config` | session | 阶段 6：新增字段后读取兼容 | ✅ |
-| E5 | `PUT /api/config` | session+CSRF | 阶段 6：旧配置写入（proxies/proxyfile）不失效 | ⬜ |
-| E6 | `POST /api/config/reload` | session+CSRF | 阶段 6：热重载含新出口配置 | ⬜ |
-| E7 | `POST /api/config/reveal` | session+CSRF | 阶段 6/7 回归 | ⬜ |
-| E8 | `PUT /api/account` | session+CSRF | 阶段 6/7 回归 | ⬜ |
+| E5 | `PUT /api/config` | session+CSRF | 阶段 6：旧配置写入（proxies/proxyfile）不失效 | ✅ |
+| E6 | `POST /api/config/reload` | session+CSRF | 阶段 6：热重载含新出口配置 | ✅ |
+| E7 | `POST /api/config/reveal` | session+CSRF | 阶段 6/7 回归 | ✅ |
+| E8 | `PUT /api/account` | session+CSRF | 阶段 6/7 回归 | ✅ |
 | E9 | `GET /api/monitor` | session | 阶段 6：监控数据并入新视图 | ✅ |
 | E10 | `GET /api/debug/models` | session | 阶段 6/7 回归 | ✅ |
 | E11 | `GET /api/models/availability` | session | 阶段 6/7 回归 | ✅ |
 | E12 | `POST /api/models/restore` | session+CSRF | 阶段 6/7 回归 | ⬜ |
 | E13 | `POST /api/models/manual` | session+CSRF | 阶段 6/7 回归 | ⬜ |
 | E14 | `GET /api/rotation` | session | 阶段 6/7 回归 | ✅ |
-| E15 | `PUT /api/rotation` | session+CSRF | 阶段 6/7 回归 | ⬜ |
+| E15 | `PUT /api/rotation` | session+CSRF | 阶段 6/7 回归 | ✅ |
 | E16 | `POST /api/rotation/current` | session+CSRF | 阶段 6/7 回归 | ⚠️ |
 | E17 | `GET /api/model-quotas` | session | 阶段 6/7 回归 | ✅ |
 | E18 | `GET /api/api-keys` | session | 阶段 6/7 回归 | ✅ |
@@ -125,7 +125,7 @@
 | G6 | 持久化与密钥处理 | `config/persistence.go`、`secrets.go`、`password.go` | 存在 | 阶段 1：迁入 SQLite（§5.9），JSON 仅导入导出 | ✅ |
 | G7 | Tier 逻辑 | `config/tier.go` | 存在 | 阶段 4：与出口调度解耦，语义不回归 | ✅ |
 | G8 | 环境变量：仅 `CONFIG_PATH`/`CONFIG_SEED_PATH` | `cmd/opencode2api/main.go` | 存在；无 `.env` 加载 | 阶段 1/6：保持不变 | ✅ |
-| G9 | 配置热重载 | `config.go` reload 路径；`admin/server.go:53` | 存在 | 阶段 6 回归（含新出口配置） | ⚠️ |
+| G9 | 配置热重载 | `config.go` reload 路径；`admin/server.go:53` | 存在 | 阶段 6 回归（含新出口配置） | ✅ |
 
 ## H. 基础设施与运行时
 
@@ -177,3 +177,4 @@
 - Docker、跨平台产物、文档与许可证属于阶段 7，未在本表标记。
 
 阶段 7 发布补充：I1 Dockerfile / I2 compose / I5 README+docs / I6 LICENSE+NOTICE 已完成；I3 工作流已落盘但沙箱未实际触发 CI 运行。
+阶段 7 追加：E5/E6/E7/E8/E15/G9 已用真实进程 + CSRF 完成写接口回归（配置保存保留 egress、热重载、密钥揭示、账号更新、轮转顺序保存）。

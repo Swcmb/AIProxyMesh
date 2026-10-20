@@ -52,6 +52,11 @@
 | `POST /api/egress/nodes/{id}/probe`（无 CSRF） | 403 |
 | 同一请求（带 CSRF） | 200，记录探测时间与延迟 |
 | `POST /api/auth/logout` | 204，随后 `GET /api/config` 返回 401 |
+| `PUT /api/config`（完整配置，带 CSRF） | 200；`egress` 节与密钥保留，`ring_size` 变更生效 |
+| `POST /api/config/reload` | 200 `{applied:true}` |
+| `POST /api/config/reveal` | 200，返回完整 server/zen keys |
+| `PUT /api/rotation`（当前顺序） | 200，分组与顺序保持 |
+| `PUT /api/account`（同用户名、空新密码） | 200；旧会话立即 401；重新登录成功 |
 | 13 个前端路由 | 全部渲染出 `h1`，`errors=0` |
 
 ## 4. 覆盖缺口（需要真实凭据或外部网络）
