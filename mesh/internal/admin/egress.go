@@ -31,14 +31,26 @@ func (a *Server) handleEgressSummary(w http.ResponseWriter, _ *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, engine.Snapshot())
 }
 
-func (a *Server) handleEgressNodes(w http.ResponseWriter, _ *http.Request) {
+func (a *Server) handleEgressNodes(w http.ResponseWriter, r *http.Request) {
 	engine := a.egressEngine()
 	if engine == nil {
 		writeEgressDisabled(w)
 		return
 	}
-	snapshot := engine.Snapshot()
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"nodes": snapshot.Nodes, "counts": snapshot.Counts})
+	query := r.URL.Query()
+	limit, _ := strconv.Atoi(query.Get("limit"))
+	offset, _ := strconv.Atoi(query.Get("offset"))
+	page := engine.Nodes(egress.NodeQuery{
+		Keyword:      query.Get("keyword"),
+		Status:       query.Get("status"),
+		Subscription: query.Get("subscription"),
+		Protocol:     query.Get("protocol"),
+		SortBy:       query.Get("sort_by"),
+		SortDesc:     query.Get("sort_order") == "desc",
+		Offset:       max(offset, 0),
+		Limit:        limit,
+	})
+	httpx.WriteJSON(w, http.StatusOK, page)
 }
 
 func (a *Server) handleEgressSubscriptions(w http.ResponseWriter, _ *http.Request) {
@@ -84,14 +96,12 @@ func (a *Server) handleEgressToggle(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusNotFound, "node_not_found", err.Error())
 		return
 	}
-	snapshot := engine.Snapshot()
-	for _, item := range snapshot.Nodes {
-		if item.ID == r.PathValue("id") {
-			httpx.WriteJSON(w, http.StatusOK, map[string]any{"node": item})
-			return
-		}
+	view, ok := engine.NodeDetail(r.PathValue("id"))
+	if !ok {
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"node": view})
 }
 
 func (a *Server) handleEgressNodeDetail(w http.ResponseWriter, r *http.Request) {
@@ -100,16 +110,12 @@ func (a *Server) handleEgressNodeDetail(w http.ResponseWriter, r *http.Request) 
 		writeEgressDisabled(w)
 		return
 	}
-	target := ""
-	if primary := engine.PrimaryTarget(); primary != nil {
-		target = primary.String()
-	}
-	node, ok := engine.Node(r.PathValue("id"), target)
+	view, ok := engine.NodeDetail(r.PathValue("id"))
 	if !ok {
 		writeAdminError(w, http.StatusNotFound, "node_not_found", "node not found")
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"node": node})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"node": view})
 }
 
 func (a *Server) handleEgressProbe(w http.ResponseWriter, r *http.Request) {
@@ -120,12 +126,16 @@ func (a *Server) handleEgressProbe(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	node, err := engine.ProbeNode(ctx, r.PathValue("id"))
-	if err != nil {
+	if _, err := engine.ProbeNode(ctx, r.PathValue("id")); err != nil {
 		writeAdminError(w, http.StatusNotFound, "node_probe_failed", err.Error())
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"node": node})
+	view, ok := engine.NodeDetail(r.PathValue("id"))
+	if !ok {
+		writeAdminError(w, http.StatusNotFound, "node_not_found", "node disappeared during probe")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"node": view})
 }
 
 func (a *Server) handleEgressEvents(w http.ResponseWriter, r *http.Request) {
