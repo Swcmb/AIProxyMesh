@@ -374,8 +374,36 @@ export interface EgressNode {
   last_probe_at?: string;
   created_at: string;
   status: string;
+  region?: string;
+  region_name?: string;
   score: EgressNodeScore;
   eligible: boolean;
+}
+
+export interface GeoIPStatus {
+  enabled: boolean;
+  path?: string;
+  url?: string;
+  mod_time?: string;
+  size_bytes?: number;
+  sha256?: string;
+  last_update?: string;
+  last_error?: string;
+  next_update?: string;
+  loaded: boolean;
+  refresh_days: number;
+}
+
+export interface GeoIPStatusResponse {
+  enabled: boolean;
+  status?: GeoIPStatus;
+}
+
+export interface GeoIPLookupResponse {
+  ip: string;
+  found: boolean;
+  country?: string;
+  name?: string;
 }
 
 export interface EgressNodePage {
@@ -388,6 +416,8 @@ export interface EgressNodePage {
     protocols: string[];
     subscriptions: string[];
     statuses: string[];
+    regions: string[];
+    geoip_enabled: boolean;
   };
   subscription_names: Record<string, string>;
 }
