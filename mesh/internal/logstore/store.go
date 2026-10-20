@@ -87,23 +87,23 @@ type Query struct {
 
 // RequestPage is one page of the request log, newest first.
 type RequestPage struct {
-	Requests  []Request `json:"requests"`
-	NextCursor int64    `json:"next_cursor,omitempty"`
-	HasMore   bool      `json:"has_more"`
+	Requests   []Request `json:"requests"`
+	NextCursor int64     `json:"next_cursor,omitempty"`
+	HasMore    bool      `json:"has_more"`
 }
 
 // Stats describes the stored log for the management API.
 type Stats struct {
-	Enabled     bool      `json:"enabled"`
-	Path        string    `json:"path"`
-	Requests    int64     `json:"requests"`
-	Attempts    int64     `json:"attempts"`
-	Oldest      time.Time `json:"oldest,omitempty"`
-	Newest      time.Time `json:"newest,omitempty"`
-	SizeBytes   int64     `json:"size_bytes"`
-	Dropped     int64     `json:"dropped"`
-	RetentionDays int     `json:"retention_days"`
-	MaxRows     int       `json:"max_rows"`
+	Enabled       bool      `json:"enabled"`
+	Path          string    `json:"path"`
+	Requests      int64     `json:"requests"`
+	Attempts      int64     `json:"attempts"`
+	Oldest        time.Time `json:"oldest,omitempty"`
+	Newest        time.Time `json:"newest,omitempty"`
+	SizeBytes     int64     `json:"size_bytes"`
+	Dropped       int64     `json:"dropped"`
+	RetentionDays int       `json:"retention_days"`
+	MaxRows       int       `json:"max_rows"`
 }
 
 // Store owns the SQLite handle. Writes go through Writer so the request path

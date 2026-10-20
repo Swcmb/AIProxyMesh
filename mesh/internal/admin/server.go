@@ -25,18 +25,18 @@ import (
 )
 
 type Server struct {
-	manager        *gateway.RuntimeManager
-	monitor        *telemetry.Monitor
-	logs           *telemetry.LogHub
-	logger         *slog.Logger
-	mu             sync.Mutex
-	sessions       map[string]adminSession
-	attempts       map[string]loginWindow
-	debugAttempts  map[string]loginWindow
-	lastInference  *DebugInferenceResult
-	quotaMu        sync.Mutex
-	quotaCache     map[string]quotaCacheEntry
-	egressProvider func() *egress.Engine
+	manager            *gateway.RuntimeManager
+	monitor            *telemetry.Monitor
+	logs               *telemetry.LogHub
+	logger             *slog.Logger
+	mu                 sync.Mutex
+	sessions           map[string]adminSession
+	attempts           map[string]loginWindow
+	debugAttempts      map[string]loginWindow
+	lastInference      *DebugInferenceResult
+	quotaMu            sync.Mutex
+	quotaCache         map[string]quotaCacheEntry
+	egressProvider     func() *egress.Engine
 	requestLogProvider func() *logstore.Service
 }
 
