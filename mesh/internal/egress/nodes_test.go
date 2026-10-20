@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/config"
 )
@@ -160,5 +161,50 @@ func TestEnginePrunesNodesOfDeletedSubscriptions(t *testing.T) {
 	defer second.Close()
 	if second.Pool().Len() != 0 {
 		t.Fatalf("orphaned nodes survived: pool = %d", second.Pool().Len())
+	}
+}
+
+func TestEngineInlineSubscriptionAndCleanup(t *testing.T) {
+	cfg := testEgressConfig(t)
+	cfg.ImportLegacyProxies = boolPtr(false)
+	cfg.Subscriptions = []config.EgressSubscription{{
+		ID: "local", Name: "本地粘贴", Enabled: true,
+		Content: "http://1.1.1.1:8080#first\nhttp://2.2.2.2:8080#second\n",
+	}}
+	engine, err := New(testOptions(t, cfg, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	engine.RefreshAll(context.Background())
+
+	if engine.Pool().Len() != 2 {
+		t.Fatalf("pool = %d, want 2", engine.Pool().Len())
+	}
+	status, ok := engine.Subscriptions().Status("local")
+	if !ok || !status.Inline || status.Nodes != 2 {
+		t.Fatalf("inline status = %+v", status)
+	}
+
+	// Cool one exit down, then clean it: the refresh brings it back healthy.
+	entries := engine.Pool().List()
+	entries[0].RestoreCooldown(3, time.Now().Add(time.Minute).UnixNano())
+	removed, err := engine.CleanupSubscription(context.Background(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1", removed)
+	}
+	if engine.Pool().Len() != 2 {
+		t.Fatalf("pool after refresh = %d, want 2", engine.Pool().Len())
+	}
+	for _, entry := range engine.Pool().List() {
+		if entry.Failures() != 0 {
+			t.Fatalf("cleaned node kept failures: %+v", entry.Failures())
+		}
+	}
+	if _, err := engine.CleanupSubscription(context.Background(), "missing"); err == nil {
+		t.Fatal("unknown subscription must be rejected")
 	}
 }

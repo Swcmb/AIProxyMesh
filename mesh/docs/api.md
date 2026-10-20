@@ -84,8 +84,13 @@ WebUI 监听器同源提供。认证使用 HttpOnly Session Cookie `mesh_session
 | GET | `/api/egress/nodes/{id}` | 单节点详情，含 `status`、`score`（H/L/R/U）与 `eligible` |
 | POST | `/api/egress/nodes/{id}/enabled` | `{enabled:bool}` 手动启停 |
 | POST | `/api/egress/nodes/{id}/probe` | 立即探测并返回刷新后的节点 |
-| GET | `/api/egress/subscriptions` | 订阅状态（节点数、格式、错误、下次刷新） |
+| GET | `/api/egress/subscriptions` | 订阅状态（节点数、格式、错误、下次刷新）；URL 仅显示 origin |
+| POST | `/api/egress/subscriptions` | 新增订阅 `{id,name,url|content,enabled,refresh_seconds}` |
+| GET | `/api/egress/subscriptions/{id}` | 单订阅原文（未脱敏 URL 与粘贴内容），供运维核对自己登记的地址 |
+| PATCH | `/api/egress/subscriptions/{id}` | 局部更新；URL 传掩码值即沿用已存地址，传 content 会切为粘贴源 |
+| DELETE | `/api/egress/subscriptions/{id}` | 删除订阅；其独占节点在下一次刷新时移出池 |
 | POST | `/api/egress/subscriptions/{id}/refresh` | 立即刷新订阅 |
+| POST | `/api/egress/subscriptions/{id}/cleanup` | 清理该订阅处于冷却中的出口并立即刷新，返回 `{removed_nodes:n}` |
 | GET | `/api/egress/events` | 出口切换事件（`limit`，默认 200） |
 | GET | `/api/egress/diagnose` | `target=` 指定上游 URL；返回每个节点的资格、原因与 H/L/R/U 分数 |
 

@@ -232,3 +232,28 @@ func (a *atomicString) get() string {
 	defer a.mu.Unlock()
 	return a.value
 }
+
+func TestStatusMasksFeedURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "http://1.1.1.1:8080#a\n")
+	}))
+	defer server.Close()
+
+	sources := &sourceSet{}
+	p := pool.New(8)
+	manager := New(p, nil, sources.get, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	sources.set(Source{
+		ID: "remote", Name: "remote", URL: server.URL + "/private/feed?token=secret",
+		Enabled: true, Refresh: time.Hour,
+	})
+	if err := manager.Refresh(context.Background(), "remote"); err != nil {
+		t.Fatal(err)
+	}
+	status, ok := manager.Status("remote")
+	if !ok {
+		t.Fatal("status missing")
+	}
+	if status.URL != server.URL+"/***" {
+		t.Fatalf("status url = %q, want origin only", status.URL)
+	}
+}

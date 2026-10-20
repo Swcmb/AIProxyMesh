@@ -156,6 +156,34 @@ func (p *Pool) PruneSubscriptions(keep map[string]struct{}) int {
 	return removed
 }
 
+// PruneCooling drops this subscription's references to nodes that are currently
+// cooling down. Nodes with no remaining reference leave the pool, so the next
+// refresh re-adds them with cleared health. It returns how many nodes left.
+func (p *Pool) PruneCooling(subID string, now time.Time) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	dropped := 0
+	for h, subscriptions := range p.refs {
+		if _, ok := subscriptions[subID]; !ok {
+			continue
+		}
+		entry := p.entries[h]
+		if entry == nil || !(entry.CooldownUntil() > 0 && time.Unix(0, entry.CooldownUntil()).After(now)) {
+			continue
+		}
+		delete(subscriptions, subID)
+		entry.RemoveSubscriptionID(subID)
+		if len(subscriptions) == 0 {
+			delete(p.refs, h)
+			delete(p.entries, h)
+			dropped++
+			continue
+		}
+		p.refs[h] = subscriptions
+	}
+	return dropped
+}
+
 func (p *Pool) RemoveSubscription(subID string) int {
 	p.mu.Lock()
 	defer p.mu.Unlock()

@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"sort"
 	"sync"
 	"time"
@@ -283,6 +284,20 @@ func (m *Manager) succeed(source Source, stats parser.Stats, diff pool.Diff) {
 	m.mu.Unlock()
 }
 
+// maskURL keeps only the origin. Feed URLs routinely carry access tokens in
+// the path or query, and statuses are shown to every authenticated operator;
+// the management API serves the full URL only for a single named subscription.
+func maskURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return "***"
+	}
+	return parsed.Scheme + "://" + parsed.Host + "/***"
+}
+
 func (m *Manager) statusFor(source Source) *Status {
 	status, ok := m.statuses[source.ID]
 	if !ok {
@@ -290,7 +305,7 @@ func (m *Manager) statusFor(source Source) *Status {
 		m.statuses[source.ID] = status
 	}
 	status.Name = source.Name
-	status.URL = source.URL
+	status.URL = maskURL(source.URL)
 	status.Enabled = source.Enabled
 	status.Inline = source.Content != ""
 	status.IntervalSeconds = int(source.Refresh / time.Second)
