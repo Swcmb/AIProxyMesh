@@ -422,6 +422,39 @@ func runKeyAttempt(t *testing.T, g *Gateway) (*http.Response, error, int, *telem
 	return resp, err, used, meta
 }
 
+func TestFreeModelAvailabilityProbeUsesEgress(t *testing.T) {
+	fake := newFakeUpstream(t)
+	proxy := forwardingProxy(t, nil)
+	engine := testEgressEngine(t, testConfig(fake.server.URL, nil), proxy.URL+"#probe")
+
+	cfg := e2eConfig(fake.server.URL, []string{"zen-key-probe"})
+	cfg.Models.Protocols = map[string]string{"test-free": "chat"}
+	cfg.Reasoning.Effort = ""
+	g, err := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), telemetry.NewMonitor())
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.SetEgress(engine)
+	g.catalog.ReplaceWithCapabilities([]string{"test-free"}, nil, nil, nil, nil)
+
+	result := g.probeFreeModel(context.Background(), "test-free")
+	if !result.success {
+		t.Fatalf("probe failed: %+v", result)
+	}
+	if result.channel != "zen" {
+		t.Fatalf("probe channel = %q", result.channel)
+	}
+	if hits, _, _ := fake.snapshot(); len(hits) == 0 {
+		t.Fatal("probe did not reach the upstream")
+	}
+	now := time.Now()
+	for _, entry := range engine.Pool().List() {
+		if entry.Cooling(now) {
+			t.Fatalf("diagnostic probe must not cool exit %s", entry.Name())
+		}
+	}
+}
+
 func TestRotationFailoverUsesEgress(t *testing.T) {
 	upstream := newFakeUpstream(t)
 	upstream.reply = func(w http.ResponseWriter, r *http.Request, body []byte) bool {

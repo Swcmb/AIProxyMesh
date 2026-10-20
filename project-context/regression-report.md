@@ -28,8 +28,8 @@
 | 1 | o2a 功能完整性 | `feature-matrix.md` 逐项更新；协议、Key、模型、管理 API、前端均有实现或测试 | ✅（见 §4 缺口） |
 | 2 | API 兼容性 | `TestGatewayEndToEndProtocols`：`GET /v1/models`、`/v1/chat/completions`、`/v1/responses`、`/v1/messages`；`TestSystemOnePassesThroughVerbatim`：`/v1/systemone` 字节级透传 | ✅ |
 | 3 | 协议转换 | 同一 Chat 上游响应经 Responses / Anthropic 入口转换；多模态 `image_url` 与 `tools` 抵达上游；SSE 流正常返回 | ✅ |
-| 4 | Key 与模型路由 | `TestGatewayKeyRotation`：401 后切换到第二个 Key；`TestAnonymousLaneUsesPublicCredential`：`Bearer public`；`TestRotationFailoverUsesEgress`：sota 首个模型 429 → 切换下一模型并经健康出口成功；模型目录来自上游 `/v1/models` | ✅ |
-| 5 | 代理资源 | `TestEngineImportDedupProbeSmoke`：legacy `direct` 与远程订阅去重为 1 个节点、双引用；`sync.Once` 状态共享 | ✅ |
+| 4 | Key 与模型路由 | `TestGatewayKeyRotation`：401 后切换到第二个 Key；`TestAnonymousLaneUsesPublicCredential`：`Bearer public`；`TestRotationFailoverUsesEgress`：sota 首个模型 429 → 切换下一模型并经健康出口成功；`TestFreeModelAvailabilityProbeUsesEgress`：免费模型探测经出口池；模型目录来自上游 `/v1/models` | ✅ |
+| 5 | 代理资源 | `TestEngineImportDedupProbeSmoke`：legacy `direct` 与远程订阅去重为 1 个节点、双引用；`TestEngineApplyReconcilesSubscriptions`：订阅新增/替换/删除热更新 | ✅ |
 | 6 | 节点故障切换 | `TestEgressFailoverToHealthyExit`（故障代理→direct）、`TestEgressAllNodesFailWithinBudget`（全故障不超预算）、`TestAffinityIsStickyButRespectsHealth` | ✅ |
 | 7 | 上游故障判断 | `TestEgressUpstreamWideStopsWithoutCoolingNodes`：两个出口同 5xx → 停止、节点不冷却；`TestExitFailureConsensusBecomesUpstreamWide` | ✅ |
 | 8 | 429 策略 | `TestEgress429SwitchesExit`：`Retry-After: 2` 出口冷却并切换健康出口；`TestRetryAfterBeyondCooldownCap`：不被 900s 截断；`TestCooldownBackoffAndRetryAfter` | ✅ |
@@ -66,8 +66,8 @@
 | 真实 OpenCode 上游 | 沙箱无法访问 `opencode.ai`；端到端使用本地假上游，验证协议、重试、SSE 与失败分类 |
 | 模型能力目录 | `https://models.opencode.ai/api.json` 不可达；测试通过 `ReplaceWithCapabilities` 注入模型与原生协议 |
 | 额度看板 | 需要真实 Go Key；接口路径与空账户响应已验证 |
-| 免费模型自动探测 | 需要真实上游；可用性存储/恢复逻辑有单元覆盖，自动探测未做在线 E2E |
-| 轮转故障切换状态机 | 需要可用模型目录；管理接口与排序/切换入口已验证，实际切换在沙箱中因无可用模型返回 400 |
+| 免费模型自动探测 | 探测核心路径已用假上游 + 出口池验证；周期调度器未单独做在线 E2E |
+| 轮转管理接口 | 轮转故障切换状态机已由 `TestRotationFailoverUsesEgress` 覆盖；管理端“手动切换”在沙箱因无可用模型目录返回 400，接口与 CSRF 已到达业务校验层 |
 | Playground 实际推理 | 与真实上游相同，依赖模型目录与 Key；请求构造、诊断标记与不冷却语义由代码与单测覆盖 |
 | Docker / 跨平台产物 | 阶段 7 发布任务执行 |
 

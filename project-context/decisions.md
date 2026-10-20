@@ -161,4 +161,4 @@ type Selector interface {
 - 轮转别名请求原先直接使用 Go Key 的旧代理绑定；现改为与普通推理相同的出口选择器，并上报成功/失败用于节点冷却与 `U_i`。
 - 轮转请求的总尝试次数纳入 `retry.max_attempts`；同一模型的多次重试共享 exclude 集合；上游共识时停止切换模型。
 - 模型目录刷新与免费模型可用性探测优先使用出口池客户端；这类诊断/目录请求不把模型级 4xx 归因到出口，避免误冷却。
-- 验证：`TestRotationFailoverUsesEgress`（429 → 切换模型 → 健康出口成功、单节点冷却、上游 2 次调用）；全量 `go test -race ./...` 通过。
+- 验证：`TestRotationFailoverUsesEgress`（429 → 切换模型 → 健康出口成功、单节点冷却、上游 2 次调用）；`TestFreeModelAvailabilityProbeUsesEgress`（探测经出口池、诊断不冷却）；`TestEngineApplyReconcilesSubscriptions`（订阅热更新）；全量 `go test -race ./...` 通过。

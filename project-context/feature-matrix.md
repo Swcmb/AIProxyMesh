@@ -48,7 +48,7 @@
 | # | 功能项 | 证据位置 | 阶段 0 现状 | 整合后验证方式 | 状态 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | C1 | 模型目录发现与缓存 | `internal/models/catalog.go`、`discovery.go`、`cache.go` | 存在 | 阶段 4 回归 | ✅ |
-| C2 | 模型可用性追踪（探测） | `internal/models/availability.go`；`gateway/probe.go`、`availability.go` | 存在 | 阶段 4：探测路径经新出口池后语义不变；SystemOne/A5 排除 | ⬜ |
+| C2 | 模型可用性追踪（探测） | `internal/models/availability.go`；`gateway/probe.go`、`availability.go` | 存在 | 阶段 4：探测路径经新出口池后语义不变；SystemOne/A5 排除 | ✅ |
 | C3 | 模型配额视图 | `internal/models/pricing.go`；`admin/model_quotas.go` | 存在 | 阶段 6/7 回归 | ⚠️ |
 | C4 | 模型手动恢复/手动登记 | `admin/availability.go`；`server.go:58-60` | 存在 | 阶段 6 回归 | ⬜ |
 
@@ -179,3 +179,4 @@
 阶段 7 发布补充：I1 Dockerfile / I2 compose / I5 README+docs / I6 LICENSE+NOTICE 已完成；I3 工作流已落盘但沙箱未实际触发 CI 运行。
 阶段 7 追加：E5/E6/E7/E8/E15/G9 已用真实进程 + CSRF 完成写接口回归（配置保存保留 egress、热重载、密钥揭示、账号更新、轮转顺序保存）。
 v0.1.1 后追加：轮转别名请求已接入统一出口池（含同轮节点去重与总预算），`TestRotationFailoverUsesEgress` 覆盖 429→切换模型→健康出口成功；模型目录刷新与可用性探测优先使用出口池客户端。
+补充：`TestFreeModelAvailabilityProbeUsesEgress` 验证免费模型探测经出口池且诊断失败不冷却节点；`TestEngineApplyReconcilesSubscriptions` 验证订阅新增/替换/删除的热更新。

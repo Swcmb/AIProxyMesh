@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -153,6 +154,65 @@ func TestEngineApplyUpdatesProtocols(t *testing.T) {
 			t.Fatal("disabled protocol must not be selected")
 		}
 		attempt.Report(routing.Outcome{Kind: routing.Success})
+	}
+}
+
+type mutablePayload struct {
+	mu    sync.Mutex
+	value string
+}
+
+func (m *mutablePayload) set(value string) {
+	m.mu.Lock()
+	m.value = value
+	m.mu.Unlock()
+}
+
+func (m *mutablePayload) get() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.value
+}
+
+func TestEngineApplyReconcilesSubscriptions(t *testing.T) {
+	upstream := config.UpstreamConfig{Zen: "https://api.example.com/zen", Go: "https://api.example.com/go", Anonymous: "https://api.example.com/inference"}
+	payload := &mutablePayload{}
+	payload.set("http://1.1.1.1:8080#a\nhttp://2.2.2.2:8080#b\n")
+	feed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(payload.get()))
+	}))
+	defer feed.Close()
+
+	cfg := testEgressConfig(t)
+	cfg.Subscriptions = []config.EgressSubscription{{ID: "remote", Name: "remote", URL: feed.URL, Enabled: true, RefreshSeconds: 3600}}
+	engine, err := New(testOptions(t, cfg, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	engine.RefreshAll(context.Background())
+	if engine.Pool().Len() != 2 {
+		t.Fatalf("initial pool = %d", engine.Pool().Len())
+	}
+
+	payload.set("http://3.3.3.3:8080#c\n")
+	engine.Apply(cfg, upstream, "")
+	engine.RefreshAll(context.Background())
+	if engine.Pool().Len() != 1 {
+		t.Fatalf("updated pool = %d", engine.Pool().Len())
+	}
+	if entry := engine.Pool().List()[0]; entry.Options.Server != "3.3.3.3" {
+		t.Fatalf("node = %+v", entry.Options)
+	}
+
+	without := *cfg
+	without.Subscriptions = nil
+	engine.Apply(&without, upstream, "")
+	if engine.Pool().Len() != 0 {
+		t.Fatalf("removed subscription pool = %d", engine.Pool().Len())
+	}
+	if statuses := engine.Subscriptions().Statuses(); len(statuses) != 0 {
+		t.Fatalf("statuses = %+v", statuses)
 	}
 }
 
