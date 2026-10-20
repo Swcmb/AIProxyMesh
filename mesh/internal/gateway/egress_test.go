@@ -218,18 +218,27 @@ func TestEgressFailoverToHealthyExit(t *testing.T) {
 func keyAffinityTo(t *testing.T, engine *egress.Engine, target *url.URL, wantID string) string {
 	t.Helper()
 	for i := 0; i < 500; i++ {
-		key := fmt.Sprintf("sk-failover-%d", i)
+		key := fmt.Sprintf("sk-affinity-%d", i)
 		keyID := config.KeyDisplayID(key)
-		attempt, err := engine.Router().SelectAffinity(context.Background(), target, nil, keyID)
-		if err != nil {
-			t.Fatal(err)
+		stable := true
+		// A forced affinity returns the preferred node every time. A key that
+		// merely won one weighted draw fails this stability check.
+		for n := 0; n < 20; n++ {
+			attempt, err := engine.Router().SelectAffinity(context.Background(), target, nil, keyID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := attempt.NodeID
+			attempt.Release()
+			if got != wantID {
+				stable = false
+				break
+			}
 		}
-		got := attempt.NodeID
-		attempt.Release()
-		if got == wantID {
+		if stable {
 			return key
 		}
 	}
-	t.Fatal("no key affinity mapped to the dead exit")
+	t.Fatalf("no stable affinity for %s", wantID)
 	return ""
 }

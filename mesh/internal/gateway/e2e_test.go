@@ -388,19 +388,27 @@ func forwardingProxy(t *testing.T, override func(w http.ResponseWriter, r *http.
 }
 
 func egressGateway(t *testing.T, upstream string, legacy string) (*Gateway, *egress.Engine) {
+	return egressGatewayNamed(t, upstream, legacy, "")
+}
+
+func egressGatewayNamed(t *testing.T, upstream string, legacy string, preferName string) (*Gateway, *egress.Engine) {
 	t.Helper()
 	base := testConfig(upstream, nil)
 	engine := testEgressEngine(t, base, legacy)
 	target := mustParseURL(t, upstream)
 	var firstID string
 	for _, entry := range engine.Pool().List() {
-		if entry.Options.Type != node.Direct {
-			firstID = entry.ID()
-			break
+		if entry.Options.Type == node.Direct {
+			continue
 		}
+		if preferName != "" && entry.Name() != preferName {
+			continue
+		}
+		firstID = entry.ID()
+		break
 	}
 	if firstID == "" {
-		t.Fatal("no proxy node in pool")
+		t.Fatalf("no proxy node %q in pool", preferName)
 	}
 	key := keyAffinityTo(t, engine, target, firstID)
 	cfg := e2eConfig(upstream, []string{key})
@@ -590,9 +598,9 @@ func TestEgress429SwitchesExit(t *testing.T) {
 		return true
 	})
 	healthy := forwardingProxy(t, nil)
-	g, engine := egressGateway(t, upstream.server.URL, limited.URL+"#limited\n"+healthy.URL+"#healthy")
+	g, engine := egressGatewayNamed(t, upstream.server.URL, limited.URL+"#limited\n"+healthy.URL+"#healthy", "limited")
 
-	resp, err, used, _ := runKeyAttempt(t, g)
+	resp, err, used, meta := runKeyAttempt(t, g)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -600,10 +608,10 @@ func TestEgress429SwitchesExit(t *testing.T) {
 		t.Fatalf("status = %v", resp)
 	}
 	defer resp.Body.Close()
-	if used != 2 {
-		t.Fatalf("attempts = %d, want 2", used)
-	}
 	bodies, _, _ := upstream.snapshot()
+	if used != 2 {
+		t.Fatalf("attempts = %d, want 2 (exit=%s hits=%d)", used, meta.ExitNode, len(bodies))
+	}
 	if len(bodies) != 1 {
 		t.Fatalf("upstream hits = %d, want 1", len(bodies))
 	}
