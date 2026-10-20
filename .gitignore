@@ -17,10 +17,10 @@ mesh/mesh
 mesh/mesh.exe
 mesh/bin/
 mesh/coverage.out
-dist/
 
-# 前端依赖（内嵌产物 dist 已提交，供 go build 使用）
+# 前端依赖与本地构建输出（内嵌产物 mesh/internal/webui/dist 必须入库，供 go build 使用）
 mesh/webui/node_modules/
+mesh/webui/dist/
 
 # 编辑器
 .idea/

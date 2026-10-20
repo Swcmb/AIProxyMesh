@@ -14,6 +14,7 @@ import {
   Rss,
   Settings,
   Stethoscope,
+  Trophy,
   Waypoints,
 } from "lucide-react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
@@ -26,6 +27,7 @@ const navItems = [
   { label: "模型管理", path: "/models", icon: Boxes },
   { label: "上游管理", path: "/upstreams", icon: KeyRound },
   { label: "模型轮转", path: "/rotation", icon: RefreshCw },
+  { label: "模型排名", path: "/rankings", icon: Trophy },
   { label: "API Key", path: "/api-keys", icon: KeyRound },
   { label: "额度看板", path: "/quotas", icon: Gauge },
   { label: "代理订阅", path: "/subscriptions", icon: Rss },
