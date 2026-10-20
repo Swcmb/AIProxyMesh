@@ -367,3 +367,51 @@
   flex: 1;
   margin: 0;
 }
+
+/* Node pool: sortable headers, pager row and detail definition lists. */
+.sort-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.pager-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.node-detail-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 8px 16px;
+  margin: 0;
+}
+
+.node-detail-list > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px dashed var(--border);
+  padding-bottom: 6px;
+}
+
+.node-detail-list dt {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.node-detail-list dd {
+  margin: 0;
+  font-size: 13px;
+  text-align: right;
+  word-break: break-all;
+}
