@@ -45,6 +45,12 @@ jobs:
           ref: main
           fetch-depth: 0
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: mesh/go.mod
+          cache-dependency-path: mesh/go.sum
+
       - name: Sync upstreams
         run: bash .github/scripts/upstream-sync.sh
 
