@@ -5,17 +5,22 @@ import { api } from "../lib/api";
 import type { RotationSnapshot } from "../lib/types";
 import { EmptyState, ErrorNotice, Loading, PageHeader } from "../components/Common";
 import { Button } from "../components/ui/Button";
+import { useToast } from "../components/ui/Toast";
 import { formatDateTime } from "../lib/time";
 import { formatApiErrorMessage } from "../lib/error-message";
 
 export function RotationPage() {
   const queryClient = useQueryClient();
+  const toast = useToast();
   const snapshot = useQuery({ queryKey: ["rotation"], queryFn: () => api.get<RotationSnapshot>("/api/rotation") });
 
   const select = useMutation({
     mutationFn: ({ group, model }: { group: string; model: string }) =>
       api.post("/api/rotation/current", { group, model }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["rotation"] }),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["rotation"] });
+      toast.success(`${variables.group} 已切换到 ${variables.model}`);
+    },
   });
 
   if (snapshot.isLoading && !snapshot.data) {
@@ -41,7 +46,7 @@ export function RotationPage() {
         description="两个别名按综合排名自动排序，按顺序故障切换；切换状态持久化并在重启后恢复。"
         actions={
           <>
-            <Link className="muted" to="/models">
+            <Link className="link-inline" to="/models">
               查看模型排名 <ArrowRight size={13} />
             </Link>
             <Button variant="secondary" onClick={() => queryClient.invalidateQueries({ queryKey: ["rotation"] })}>
@@ -107,7 +112,7 @@ export function RotationPage() {
       <div className="card panel">
         <div className="panel-head">
           <h3>最近切换记录</h3>
-          <span className="badge badge-neutral">{groups.reduce((sum, group) => sum + (group.switches?.length ?? 0), 0)} 条</span>
+          <span className="badge badge-neutral">最近 20 条</span>
         </div>
         {groups.flatMap((group) => group.switches ?? []).length === 0 ? (
           <EmptyState title="尚无切换记录" />

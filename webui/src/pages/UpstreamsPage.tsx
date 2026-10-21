@@ -4,8 +4,12 @@ import { ArrowUpRight } from "lucide-react";
 import { api } from "../lib/api";
 import type { ConfigView, MonitorResponse } from "../lib/types";
 import { EmptyState, ErrorNotice, Loading, PageHeader, StatusBadge } from "../components/Common";
+import { DataTable, type DataColumn } from "../components/ui/DataTable";
 import { formatDateTime, formatNumber } from "../lib/time";
 import { formatApiErrorMessage } from "../lib/error-message";
+
+type KeyRow = { id: string; index: number; failures: number; cooldown_until?: string; proxy_index: number };
+type ProxyRow = { index: number; address: string; healthy: boolean; zen_keys: number; go_keys: number };
 
 export function UpstreamsPage() {
   const config = useQuery({ queryKey: ["config"], queryFn: () => api.get<ConfigView>("/api/config") });
@@ -31,6 +35,25 @@ export function UpstreamsPage() {
   }
   const zenKeys = resources.keys.filter((key) => key.tier === "zen");
   const goKeys = resources.keys.filter((key) => key.tier === "go");
+
+  const proxyColumns: DataColumn<ProxyRow>[] = [
+    { key: "index", header: "#", cell: (proxy) => proxy.index },
+    { key: "address", header: "地址", cell: (proxy) => <span className="mono">{proxy.address}</span> },
+    {
+      key: "status",
+      header: "状态",
+      cell: (proxy) => (
+        <div>
+          <span className={`badge ${proxy.healthy ? "badge-success" : "badge-danger"}`}>
+            {proxy.healthy ? "健康" : "不可用"}
+          </span>
+          <div className="muted">
+            zen {proxy.zen_keys} / go {proxy.go_keys}
+          </div>
+        </div>
+      ),
+    },
+  ];
 
   return (
     <>
@@ -68,9 +91,7 @@ export function UpstreamsPage() {
               <StatusBadge ok={cfg.anonymous} label="启用" pendingLabel="关闭" />
             </div>
           </div>
-          <p className="muted">
-            调度器直接从以上地址派生目标与探测目标，不维护第二份目标域名配置。
-          </p>
+          <p className="muted">调度器直接从以上地址派生目标与探测目标，不维护第二份目标域名配置。</p>
         </div>
 
         <div className="card panel">
@@ -116,31 +137,14 @@ export function UpstreamsPage() {
         {(cfg.proxies ?? []).length === 0 && !cfg.proxyfile ? (
           <EmptyState title="未配置 proxies/proxyfile" hint="启用 egress 后默认将直接连接作为出口节点导入" />
         ) : (
-          <div className="data-table-wrap scroll-x">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>地址</th>
-                  <th>绑定</th>
-                </tr>
-              </thead>
-              <tbody>
-                {resources.proxies.map((proxy) => (
-                  <tr key={proxy.index}>
-                    <td>{proxy.index}</td>
-                    <td className="mono">{proxy.address}</td>
-                    <td>
-                      <span className={`badge ${proxy.healthy ? "badge-success" : "badge-danger"}`}>
-                        {proxy.healthy ? "健康" : "不可用"}
-                      </span>
-                      <span className="muted"> · zen {proxy.zen_keys} / go {proxy.go_keys}</span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataTable
+            columns={proxyColumns}
+            rows={resources.proxies}
+            rowKey={(proxy) => String(proxy.index)}
+            emptyTitle="暂无旧代理"
+            caption="旧代理来源"
+            minWidth={560}
+          />
         )}
         <p className="muted">
           开启 <span className="mono">egress.import_legacy_proxies</span> 后，proxies/proxyfile 会与订阅一起进入统一节点池并参与去重。
@@ -150,13 +154,15 @@ export function UpstreamsPage() {
   );
 }
 
-function KeyPool({
-  title,
-  keys,
-}: {
-  title: string;
-  keys: { id: string; index: number; failures: number; cooldown_until?: string; proxy_index: number }[];
-}) {
+function KeyPool({ title, keys }: { title: string; keys: KeyRow[] }) {
+  const columns: DataColumn<KeyRow>[] = [
+    { key: "index", header: "#", cell: (key) => key.index + 1 },
+    { key: "id", header: "Key（掩码）", cell: (key) => <span className="mono">{key.id.slice(0, 10)}</span> },
+    { key: "failures", header: "失败次数", align: "right", cell: (key) => formatNumber(key.failures) },
+    { key: "cooldown", header: "冷却至", cell: (key) => (key.cooldown_until ? formatDateTime(key.cooldown_until) : "-") },
+    { key: "proxy", header: "旧代理绑定", align: "right", cell: (key) => key.proxy_index },
+  ];
+
   return (
     <div className="card panel">
       <div className="panel-head">
@@ -164,32 +170,9 @@ function KeyPool({
         <span className="badge badge-neutral">{keys.length} 个</span>
       </div>
       {keys.length === 0 ? (
-        <EmptyState title="未配置 Key" hint="在配置管理中新增上游 Key" />
+        <EmptyState title="未配置 Key" hint="在系统设置中新增上游 Key" />
       ) : (
-        <div className="data-table-wrap scroll-x">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>Key</th>
-                <th>失败次数</th>
-                <th>冷却至</th>
-                <th>旧代理绑定</th>
-              </tr>
-            </thead>
-            <tbody>
-              {keys.map((key) => (
-                <tr key={key.id}>
-                  <td>{key.index + 1}</td>
-                  <td className="mono">{key.id.slice(0, 10)}</td>
-                  <td>{formatNumber(key.failures)}</td>
-                  <td>{key.cooldown_until ? formatDateTime(key.cooldown_until) : "-"}</td>
-                  <td>{key.proxy_index}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <DataTable columns={columns} rows={keys} rowKey={(key) => key.id} caption={title} minWidth={420} />
       )}
     </div>
   );

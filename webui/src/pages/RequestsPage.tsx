@@ -1,18 +1,26 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, RefreshCw, Trash2, X } from "lucide-react";
+import { RefreshCw, Trash2 } from "lucide-react";
 import { api } from "../lib/api";
 import type {
   EgressEvent,
   MonitorResponse,
+  RequestLogAttempt,
   RequestLogDetail,
+  RequestLogRecord,
   RequestLogResponse,
 } from "../lib/types";
 import { EmptyState, ErrorNotice, Loading, PageHeader, StatCard } from "../components/Common";
 import { Button } from "../components/ui/Button";
+import { ConfirmDialog } from "../components/ui/ConfirmDialog";
+import { DataTable, type DataColumn } from "../components/ui/DataTable";
+import { Drawer } from "../components/ui/Drawer";
 import { Input } from "../components/ui/Input";
+import { Pagination } from "../components/ui/Pagination";
 import { Select } from "../components/ui/Select";
+import { Tabs } from "../components/ui/Tabs";
+import { useToast } from "../components/ui/Toast";
 import { formatDateTime, formatRelativeTime } from "../lib/time";
 import { formatApiErrorMessage } from "../lib/error-message";
 
@@ -96,11 +104,13 @@ function formatBytes(value: number): string {
 export function RequestsPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const toast = useToast();
   const [params, setParams] = useSearchParams();
   const [tab, setTabState] = useState<Tab>(() => readTab(params.get("tab")));
   const filters = useMemo(() => readFilters(params), [params]);
   const [keyword, setKeyword] = useState(filters.keyword);
   const [detailId, setDetailIdState] = useState<string | null>(params.get("request"));
+  const [purgeOpen, setPurgeOpen] = useState(false);
   // Cursor history is session state: the URL carries the current page only.
   const history = useRef<number[]>([]);
 
@@ -162,7 +172,18 @@ export function RequestsPage() {
 
   useEffect(() => {
     history.current = [];
-  }, [filters.model, filters.channel, filters.tier, filters.exit, filters.status, filters.result, filters.since, filters.until, filters.keyword, filters.limit]);
+  }, [
+    filters.model,
+    filters.channel,
+    filters.tier,
+    filters.exit,
+    filters.status,
+    filters.result,
+    filters.since,
+    filters.until,
+    filters.keyword,
+    filters.limit,
+  ]);
 
   const query = useMemo(() => {
     const search = new URLSearchParams();
@@ -189,7 +210,8 @@ export function RequestsPage() {
   });
   const detail = useQuery({
     queryKey: ["request-log-detail", detailId],
-    queryFn: () => api.get<RequestLogDetail>(`/api/logs/requests/detail?request_id=${encodeURIComponent(detailId ?? "")}`),
+    queryFn: () =>
+      api.get<RequestLogDetail>(`/api/logs/requests/detail?request_id=${encodeURIComponent(detailId ?? "")}`),
     enabled: Boolean(detailId),
   });
   const monitor = useQuery({
@@ -207,9 +229,11 @@ export function RequestsPage() {
 
   const purge = useMutation({
     mutationFn: () => api.delete<{ removed: number }>(`/api/logs/requests`),
-    onSuccess: () => {
+    onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ["request-logs"] });
       queryClient.invalidateQueries({ queryKey: ["request-log-detail"] });
+      setPurgeOpen(false);
+      toast.success(`已清空 ${result?.removed ?? 0} 条请求日志`);
     },
   });
 
@@ -234,6 +258,59 @@ export function RequestsPage() {
   // into it instead of landing on a bare list.
   const openNode = useCallback((id: string) => navigate(`/nodes?node=${encodeURIComponent(id)}`), [navigate]);
 
+  const requestColumns: DataColumn<RequestLogRecord>[] = [
+    { key: "time", header: "时间", cell: (row) => <span className="nowrap">{formatDateTime(row.time)}</span> },
+    { key: "request", header: "请求", cell: (row) => <span className="mono">{row.request_id.slice(-8)}</span> },
+    { key: "model", header: "模型", cell: (row) => <span className="mono">{row.model}</span> },
+    {
+      key: "channel",
+      header: "渠道 / Tier",
+      cell: (row) => (
+        <div>
+          {row.channel || "-"}
+          {row.tier ? <div className="muted">{row.tier}</div> : null}
+        </div>
+      ),
+    },
+    {
+      key: "server_key",
+      header: "调用方 Key",
+      cell: (row) => <span className="mono">{row.server_key_id ? row.server_key_id.slice(0, 10) : "-"}</span>,
+    },
+    { key: "upstream_key", header: "上游 Key", cell: (row) => <span className="mono">{row.key_id || "-"}</span> },
+    {
+      key: "exit",
+      header: "出口",
+      cell: (row) =>
+        row.exit_id ? (
+          <button className="link-button mono" onClick={() => openNode(row.exit_id ?? "")}>
+            {row.exit_node || row.exit_id.slice(0, 8)}
+          </button>
+        ) : (
+          <span className="muted">{row.proxy_node || "-"}</span>
+        ),
+    },
+    { key: "attempts", header: "尝试", align: "right", cell: (row) => row.attempts },
+    { key: "status", header: "状态", cell: (row) => row.status || "-" },
+    { key: "duration", header: "耗时", align: "right", cell: (row) => `${row.duration_ms} ms` },
+    {
+      key: "outcome",
+      header: "结果",
+      cell: (row) => (
+        <span className={`badge ${row.success ? "badge-success" : "badge-danger"}`}>{row.outcome || "-"}</span>
+      ),
+    },
+    {
+      key: "actions",
+      header: "操作",
+      cell: (row) => (
+        <Button size="sm" variant="secondary" onClick={() => setDetailId(row.request_id)}>
+          详情
+        </Button>
+      ),
+    },
+  ];
+
   return (
     <>
       <PageHeader
@@ -256,10 +333,7 @@ export function RequestsPage() {
               <Button
                 variant="danger"
                 disabled={purge.isPending || !rows.length}
-                onClick={() => {
-                  if (!window.confirm("清空持久化请求日志？该操作不可撤销。")) return;
-                  purge.mutate();
-                }}
+                onClick={() => setPurgeOpen(true)}
               >
                 <Trash2 size={15} /> 清空日志
               </Button>
@@ -268,20 +342,37 @@ export function RequestsPage() {
         }
       />
 
-      <div className="tab-row">
-        <button className={tab === "requests" ? "tab-active" : ""} onClick={() => setTab("requests")}>
-          持久请求{" "}
-          {page ? <span className="badge badge-neutral">{stats?.requests ?? 0}</span> : null}
-        </button>
-        <button className={tab === "live" ? "tab-active" : ""} onClick={() => setTab("live")}>
-          实时尝试{" "}
-          {monitor.data ? <span className="badge badge-neutral">{monitor.data.upstream.recent.length}</span> : null}
-        </button>
-        <button className={tab === "events" ? "tab-active" : ""} onClick={() => setTab("events")}>
-          出口事件{" "}
-          {events.data ? <span className="badge badge-neutral">{(events.data.events ?? []).length}</span> : null}
-        </button>
-      </div>
+      <Tabs
+        ariaLabel="日志视图"
+        value={tab}
+        onChange={(key) => setTab(key as Tab)}
+        items={[
+          {
+            key: "requests",
+            label: (
+              <>
+                持久请求 {page ? <span className="badge badge-neutral">{stats?.requests ?? 0}</span> : null}
+              </>
+            ),
+          },
+          {
+            key: "live",
+            label: (
+              <>
+                实时尝试 {monitor.data ? <span className="badge badge-neutral">{monitor.data.upstream.recent.length}</span> : null}
+              </>
+            ),
+          },
+          {
+            key: "events",
+            label: (
+              <>
+                出口事件 {events.data ? <span className="badge badge-neutral">{(events.data.events ?? []).length}</span> : null}
+              </>
+            ),
+          },
+        ]}
+      />
 
       {purge.isError ? <ErrorNotice message={formatApiErrorMessage(purge.error)} /> : null}
 
@@ -297,15 +388,11 @@ export function RequestsPage() {
             ) : null}
             {page?.enabled ? (
               <div className="stats-grid">
-                <StatCard label="已记录请求" value={stats?.requests ?? 0} hint={`尝试 ${stats?.attempts ?? 0} 条`} />
-                <StatCard label="库大小" value={formatBytes(stats?.size_bytes ?? 0)} hint={stats?.path ?? ""} />
+                <StatCard label="已记录请求数" value={stats?.requests ?? 0} hint={`尝试 ${stats?.attempts ?? 0} 条`} />
+                <StatCard label="数据库大小" value={formatBytes(stats?.size_bytes ?? 0)} hint={stats?.path ?? ""} />
+                <StatCard label="保留策略" value={`${stats?.retention_days ?? 0} 天`} hint={`上限 ${stats?.max_rows ?? 0} 条`} />
                 <StatCard
-                  label="保留策略"
-                  value={`${stats?.retention_days ?? 0} 天`}
-                  hint={`上限 ${stats?.max_rows ?? 0} 条`}
-                />
-                <StatCard
-                  label="丢弃记录"
+                  label="丢弃记录数"
                   value={stats?.dropped ?? 0}
                   hint={stats?.dropped ? "写入缓冲已满" : "写入未阻塞请求"}
                 />
@@ -314,13 +401,17 @@ export function RequestsPage() {
 
             <div className="card panel">
               <div className="panel-head">
-                <h3>筛选与分页</h3>
+                <h3>筛选</h3>
                 <span className="badge badge-neutral">筛选条件写入地址栏，可直接分享</span>
               </div>
-              <div className="form-grid-tight">
+              <div className="form-grid">
                 <label className="field-group">
                   <span className="field-label">关键字</span>
-                  <Input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="请求 / 模型 / 渠道 / 出口" />
+                  <Input
+                    value={keyword}
+                    onChange={(event) => setKeyword(event.target.value)}
+                    placeholder="请求 / 模型 / 渠道 / 出口"
+                  />
                 </label>
                 <label className="field-group">
                   <span className="field-label">模型</span>
@@ -387,15 +478,26 @@ export function RequestsPage() {
                 </label>
                 <label className="field-group">
                   <span className="field-label">起始时间</span>
-                  <Input type="datetime-local" value={filters.since} onChange={(event) => patch({ since: event.target.value, before: 0 })} />
+                  <Input
+                    type="datetime-local"
+                    value={filters.since}
+                    onChange={(event) => patch({ since: event.target.value, before: 0 })}
+                  />
                 </label>
                 <label className="field-group">
                   <span className="field-label">结束时间</span>
-                  <Input type="datetime-local" value={filters.until} onChange={(event) => patch({ until: event.target.value, before: 0 })} />
+                  <Input
+                    type="datetime-local"
+                    value={filters.until}
+                    onChange={(event) => patch({ until: event.target.value, before: 0 })}
+                  />
                 </label>
                 <label className="field-group">
                   <span className="field-label">每页条数</span>
-                  <Select value={String(filters.limit)} onChange={(event) => patch({ limit: Number(event.target.value), before: 0 })}>
+                  <Select
+                    value={String(filters.limit)}
+                    onChange={(event) => patch({ limit: Number(event.target.value), before: 0 })}
+                  >
                     {pageSizes.map((size) => (
                       <option key={size} value={size}>
                         {size}
@@ -410,77 +512,27 @@ export function RequestsPage() {
               <div className="panel-head">
                 <h3>请求列表</h3>
                 <span className="badge badge-neutral">
-                  {rows.length} 条{stats?.newest ? ` · 最新 ${formatRelativeTime(stats.newest)}` : ""}
+                  {rows.length} 条
+                  {stats?.newest && (stats?.requests ?? 0) > 0 ? ` · 最新 ${formatRelativeTime(stats.newest)}` : ""}
                 </span>
               </div>
-              {rows.length === 0 ? (
-                <EmptyState title="暂无匹配的请求" hint="请求完成后约一秒内入库；也可放宽筛选条件" />
-              ) : (
-                <div className="data-table-wrap scroll-x">
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>时间</th>
-                        <th>请求</th>
-                        <th>模型</th>
-                        <th>渠道 / Tier</th>
-                        <th>调用方 Key</th>
-                        <th>上游 Key</th>
-                        <th>出口</th>
-                        <th>尝试</th>
-                        <th>状态</th>
-                        <th>耗时</th>
-                        <th>结果</th>
-                        <th>操作</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {rows.map((row) => (
-                        <tr key={row.id}>
-                          <td className="nowrap">{formatDateTime(row.time)}</td>
-                          <td className="mono">{row.request_id.slice(-8)}</td>
-                          <td className="mono">{row.model}</td>
-                          <td>
-                            {row.channel || "-"}
-                            {row.tier ? <div className="muted">{row.tier}</div> : null}
-                          </td>
-                          <td className="mono">{row.server_key_id ? row.server_key_id.slice(0, 10) : "-"}</td>
-                          <td className="mono">{row.key_id || "-"}</td>
-                          <td>
-                            {row.exit_id ? (
-                              <button className="link-button mono" onClick={() => openNode(row.exit_id ?? "")}>
-                                {row.exit_node || row.exit_id.slice(0, 8)}
-                              </button>
-                            ) : (
-                              <span className="muted">{row.proxy_node || "-"}</span>
-                            )}
-                          </td>
-                          <td>{row.attempts}</td>
-                          <td>{row.status || "-"}</td>
-                          <td>{row.duration_ms} ms</td>
-                          <td>
-                            <span className={`badge ${row.success ? "badge-success" : "badge-danger"}`}>{row.outcome || "-"}</span>
-                          </td>
-                          <td>
-                            <Button size="sm" variant="secondary" onClick={() => setDetailId(row.request_id)}>
-                              详情
-                            </Button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-              <div className="pager-row">
-                <Button size="sm" variant="secondary" disabled={!history.current.length} onClick={previousPage}>
-                  <ChevronLeft size={14} /> 上一页
-                </Button>
-                <span className="muted">每页 {filters.limit} 条 · 按时间倒序</span>
-                <Button size="sm" variant="secondary" disabled={!page?.has_more} onClick={nextPage}>
-                  下一页 <ChevronRight size={14} />
-                </Button>
-              </div>
+              <DataTable
+                columns={requestColumns}
+                rows={rows}
+                rowKey={(row) => String(row.id)}
+                loading={logs.isLoading}
+                emptyTitle="暂无匹配的请求"
+                emptyHint="请求完成后约一秒内入库；也可放宽筛选条件"
+                caption="持久请求日志"
+                minWidth={1120}
+              />
+              <Pagination
+                hasPrev={history.current.length > 0}
+                hasNext={Boolean(page?.has_more)}
+                onPrev={previousPage}
+                onNext={nextPage}
+                label={`每页 ${filters.limit} 条 · 按时间倒序`}
+              />
             </div>
           </>
         )
@@ -496,93 +548,95 @@ export function RequestsPage() {
         )
       ) : null}
 
-      {tab === "events" ? (
-        <div className="card panel">
-          <div className="panel-head">
-            <h3>出口切换事件</h3>
-            <span className="badge badge-neutral">持久化</span>
-          </div>
-          {events.isError ? <ErrorNotice message={formatApiErrorMessage(events.error)} /> : null}
-          {(events.data?.events ?? []).length === 0 ? (
-            <EmptyState title="暂无出口事件" hint="请求失败或切换出口后记录" />
-          ) : (
-            <div className="data-table-wrap scroll-x">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>时间</th>
-                    <th>请求</th>
-                    <th>节点</th>
-                    <th>目标</th>
-                    <th>类型</th>
-                    <th>状态</th>
-                    <th>尝试</th>
-                    <th>原因</th>
-                    <th>详情</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(events.data?.events ?? []).slice().reverse().map((item) => (
-                    <tr key={item.id}>
-                      <td className="nowrap">{formatDateTime(item.at)}</td>
-                      <td className="mono">{item.request_id?.slice(-8) || "-"}</td>
-                      <td>
-                        {item.node_name || "-"}
-                        <div className="muted mono">{item.node_id?.slice(0, 10)}</div>
-                      </td>
-                      <td className="mono">{item.target || "-"}</td>
-                      <td>
-                        <span
-                          className={`badge ${
-                            item.kind === "success" ? "badge-success" : item.kind === "client_cancel" ? "badge-muted" : "badge-warning"
-                          }`}
-                        >
-                          {item.kind}
-                        </span>
-                      </td>
-                      <td>{item.status || "-"}</td>
-                      <td>{item.attempt || "-"}</td>
-                      <td>{item.reason || "-"}</td>
-                      <td className="pre-wrap">{item.detail || "-"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      ) : null}
+      {tab === "events" ? <EventsPanel events={events.data?.events ?? []} error={events.error} /> : null}
 
-      {detailId ? (
-        <div className="drawer-overlay" onClick={() => setDetailId(null)} role="presentation">
-          <div className="card drawer-panel" onClick={(event) => event.stopPropagation()}>
-            <div className="drawer-header">
-              <div>
-                <h3>请求 {detailId.slice(-8)}</h3>
-                <p className="mono">{detailId}</p>
-              </div>
-              <div className="drawer-header-actions">
-                <Button size="sm" variant="ghost" onClick={() => setDetailId(null)} aria-label="关闭详情">
-                  <X size={14} />
-                </Button>
-              </div>
-            </div>
-            {detail.isLoading && !detail.data ? <Loading label="读取请求详情…" /> : null}
-            {detail.isError ? <ErrorNotice message={formatApiErrorMessage(detail.error)} /> : null}
-            {detail.data ? <RequestDetail data={detail.data} onOpenNode={openNode} /> : null}
-          </div>
-        </div>
-      ) : null}
+      <Drawer
+        open={Boolean(detailId)}
+        onClose={() => setDetailId(null)}
+        title={detailId ? `请求 ${detailId.slice(-8)}` : "请求详情"}
+        subtitle={detailId ?? undefined}
+        size="lg"
+      >
+        {detail.isLoading && !detail.data ? <Loading label="读取请求详情…" /> : null}
+        {detail.isError ? <ErrorNotice message={formatApiErrorMessage(detail.error)} /> : null}
+        {detail.data ? <RequestDetail data={detail.data} onOpenNode={openNode} /> : null}
+      </Drawer>
+
+      <ConfirmDialog
+        open={purgeOpen}
+        title="清空请求日志"
+        description="清空全部持久化请求与尝试记录，该操作不可撤销。"
+        confirmLabel="清空"
+        danger
+        pending={purge.isPending}
+        onConfirm={() => purge.mutate()}
+        onCancel={() => setPurgeOpen(false)}
+      />
     </>
+  );
+}
+
+function EventsPanel({ events, error }: { events: EgressEvent[]; error: unknown }) {
+  const columns: DataColumn<EgressEvent>[] = [
+    { key: "time", header: "时间", cell: (item) => <span className="nowrap">{formatDateTime(item.at)}</span> },
+    { key: "request", header: "请求", cell: (item) => <span className="mono">{item.request_id?.slice(-8) || "-"}</span> },
+    {
+      key: "node",
+      header: "节点",
+      cell: (item) => (
+        <div>
+          {item.node_name || "-"}
+          <div className="muted mono">{item.node_id?.slice(0, 10)}</div>
+        </div>
+      ),
+    },
+    { key: "target", header: "目标", cell: (item) => <span className="mono">{item.target || "-"}</span> },
+    {
+      key: "kind",
+      header: "类型",
+      cell: (item) => (
+        <span
+          className={`badge ${
+            item.kind === "success" ? "badge-success" : item.kind === "client_cancel" ? "badge-muted" : "badge-warning"
+          }`}
+        >
+          {item.kind}
+        </span>
+      ),
+    },
+    { key: "status", header: "状态", cell: (item) => item.status || "-" },
+    { key: "attempt", header: "尝试", cell: (item) => item.attempt || "-" },
+    { key: "reason", header: "原因", cell: (item) => item.reason || "-" },
+    { key: "detail", header: "详情", cell: (item) => <span className="pre-wrap">{item.detail || "-"}</span> },
+  ];
+
+  return (
+    <div className="card panel">
+      <div className="panel-head">
+        <h3>出口切换事件</h3>
+        <span className="badge badge-neutral">持久化</span>
+      </div>
+      {error ? <ErrorNotice message={formatApiErrorMessage(error)} /> : null}
+      <DataTable
+        columns={columns}
+        rows={events.slice().reverse()}
+        rowKey={(item) => String(item.id)}
+        emptyTitle="暂无出口事件"
+        emptyHint="请求失败或切换出口后记录"
+        caption="出口切换事件"
+        minWidth={1000}
+        maxHeight={560}
+      />
+    </div>
   );
 }
 
 function RequestDetail({ data, onOpenNode }: { data: RequestLogDetail; onOpenNode: (id: string) => void }) {
   const record = data.request;
   return (
-    <div className="platform-drawer-layout">
-      <section className="platform-drawer-section">
-        <div className="platform-drawer-section-head">
+    <div className="detail-stack">
+      <section className="detail-section">
+        <div className="detail-section-head">
           <h4>请求结果</h4>
           <p>
             <span className={`badge ${record.success ? "badge-success" : "badge-danger"}`}>{record.outcome || "-"}</span>{" "}
@@ -636,50 +690,47 @@ function RequestDetail({ data, onOpenNode }: { data: RequestLogDetail; onOpenNod
           </div>
         </dl>
       </section>
-      <section className="platform-drawer-section">
-        <div className="platform-drawer-section-head">
+      <section className="detail-section">
+        <div className="detail-section-head">
           <h4>尝试链</h4>
           <p>{data.attempts.length} 条</p>
         </div>
         {data.attempts.length === 0 ? (
           <EmptyState title="该请求没有尝试记录" hint="请求在路由前失败时不会出现尝试" />
         ) : (
-          <div className="data-table-wrap scroll-x">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>时间</th>
-                  <th>Tier</th>
-                  <th>Key</th>
-                  <th>出口</th>
-                  <th>状态</th>
-                  <th>耗时</th>
-                  <th>结果</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.attempts.map((attempt) => (
-                  <tr key={attempt.id}>
-                    <td>{attempt.attempt}</td>
-                    <td className="nowrap">{formatDateTime(attempt.time)}</td>
-                    <td>{attempt.tier || "-"}</td>
-                    <td className="mono">{attempt.key_id || (attempt.anonymous ? "anonymous" : "-")}</td>
-                    <td className="mono">{attempt.exit_node || attempt.proxy_node || "-"}</td>
-                    <td>{attempt.status || "-"}</td>
-                    <td>{attempt.duration_ms} ms</td>
-                    <td>
-                      <span className={`badge ${attempt.success ? "badge-success" : "badge-warning"}`}>{attempt.outcome || "-"}</span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <AttemptTable attempts={data.attempts} />
         )}
       </section>
     </div>
   );
+}
+
+function AttemptTable({ attempts }: { attempts: RequestLogAttempt[] }) {
+  const columns: DataColumn<RequestLogAttempt>[] = [
+    { key: "attempt", header: "#", cell: (attempt) => attempt.attempt },
+    { key: "time", header: "时间", cell: (attempt) => <span className="nowrap">{formatDateTime(attempt.time)}</span> },
+    { key: "tier", header: "Tier", cell: (attempt) => attempt.tier || "-" },
+    {
+      key: "key",
+      header: "Key",
+      cell: (attempt) => <span className="mono">{attempt.key_id || (attempt.anonymous ? "anonymous" : "-")}</span>,
+    },
+    {
+      key: "exit",
+      header: "出口",
+      cell: (attempt) => <span className="mono">{attempt.exit_node || attempt.proxy_node || "-"}</span>,
+    },
+    { key: "status", header: "状态", cell: (attempt) => attempt.status || "-" },
+    { key: "duration", header: "耗时", cell: (attempt) => `${attempt.duration_ms} ms` },
+    {
+      key: "outcome",
+      header: "结果",
+      cell: (attempt) => (
+        <span className={`badge ${attempt.success ? "badge-success" : "badge-warning"}`}>{attempt.outcome || "-"}</span>
+      ),
+    },
+  ];
+  return <DataTable columns={columns} rows={attempts} rowKey={(attempt) => String(attempt.id)} caption="尝试链" minWidth={720} />;
 }
 
 function LiveAttempts({
@@ -689,6 +740,38 @@ function LiveAttempts({
   attempts: MonitorResponse["upstream"]["recent"];
   requests: MonitorResponse["upstream"]["requests"];
 }) {
+  const requestColumns: DataColumn<(typeof requests)[number]>[] = [
+    { key: "time", header: "时间", cell: (item) => <span className="nowrap">{formatDateTime(item.time)}</span> },
+    { key: "request", header: "请求", cell: (item) => <span className="mono">{item.request_id.slice(-8)}</span> },
+    { key: "model", header: "模型", cell: (item) => <span className="mono">{item.model}</span> },
+    { key: "channel", header: "渠道", cell: (item) => item.tier || item.channel },
+    { key: "exit", header: "出口", cell: (item) => <span className="mono">{item.exit_node || item.proxy_node || "-"}</span> },
+    { key: "attempts", header: "尝试", cell: (item) => item.attempts },
+    { key: "status", header: "状态", cell: (item) => item.status },
+    { key: "duration", header: "耗时", cell: (item) => `${item.duration_ms} ms` },
+    {
+      key: "outcome",
+      header: "结果",
+      cell: (item) => <span className={`badge ${item.success ? "badge-success" : "badge-danger"}`}>{item.outcome}</span>,
+    },
+  ];
+
+  const attemptColumns: DataColumn<(typeof attempts)[number]>[] = [
+    { key: "time", header: "时间", cell: (item) => <span className="nowrap">{formatDateTime(item.time)}</span> },
+    { key: "model", header: "模型", cell: (item) => <span className="mono">{item.model}</span> },
+    { key: "tier", header: "Tier", cell: (item) => item.tier },
+    { key: "key", header: "Key", cell: (item) => <span className="mono">{item.key_id?.slice(0, 10) || "-"}</span> },
+    { key: "exit", header: "出口", cell: (item) => <span className="mono">{item.exit_node || item.proxy_node || "-"}</span> },
+    { key: "attempt", header: "#", cell: (item) => item.attempt },
+    { key: "status", header: "状态", cell: (item) => item.status || "-" },
+    { key: "duration", header: "耗时", cell: (item) => `${item.duration_ms} ms` },
+    {
+      key: "outcome",
+      header: "结果",
+      cell: (item) => <span className={`badge ${item.success ? "badge-success" : "badge-warning"}`}>{item.outcome}</span>,
+    },
+  ];
+
   return (
     <>
       <div className="card panel">
@@ -697,44 +780,15 @@ function LiveAttempts({
           <span className="badge badge-neutral">{requests.length}</span>
         </div>
         <p className="panel-sub">进程内的实时视图，重启即清空；持久记录见「持久请求」。</p>
-        {requests.length === 0 ? (
-          <EmptyState title="暂无请求" />
-        ) : (
-          <div className="data-table-wrap scroll-x">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>时间</th>
-                  <th>请求</th>
-                  <th>模型</th>
-                  <th>渠道</th>
-                  <th>出口</th>
-                  <th>尝试</th>
-                  <th>状态</th>
-                  <th>耗时</th>
-                  <th>结果</th>
-                </tr>
-              </thead>
-              <tbody>
-                {requests.slice().reverse().map((item) => (
-                  <tr key={`${item.request_id}-${item.time}`}>
-                    <td className="nowrap">{formatDateTime(item.time)}</td>
-                    <td className="mono">{item.request_id.slice(-8)}</td>
-                    <td className="mono">{item.model}</td>
-                    <td>{item.tier || item.channel}</td>
-                    <td className="mono">{item.exit_node || item.proxy_node || "-"}</td>
-                    <td>{item.attempts}</td>
-                    <td>{item.status}</td>
-                    <td>{item.duration_ms} ms</td>
-                    <td>
-                      <span className={`badge ${item.success ? "badge-success" : "badge-danger"}`}>{item.outcome}</span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        <DataTable
+          columns={requestColumns}
+          rows={requests.slice().reverse()}
+          rowKey={(item) => `${item.request_id}-${item.time}`}
+          emptyTitle="暂无请求"
+          caption="实时请求"
+          minWidth={960}
+          maxHeight={420}
+        />
       </div>
 
       <div className="card panel">
@@ -742,44 +796,15 @@ function LiveAttempts({
           <h3>最近上游尝试</h3>
           <span className="badge badge-neutral">{attempts.length}</span>
         </div>
-        {attempts.length === 0 ? (
-          <EmptyState title="暂无尝试记录" />
-        ) : (
-          <div className="data-table-wrap scroll-x">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>时间</th>
-                  <th>模型</th>
-                  <th>Tier</th>
-                  <th>Key</th>
-                  <th>出口</th>
-                  <th>#</th>
-                  <th>状态</th>
-                  <th>耗时</th>
-                  <th>结果</th>
-                </tr>
-              </thead>
-              <tbody>
-                {attempts.slice(-200).reverse().map((item, index) => (
-                  <tr key={`${item.request_id}-${item.attempt}-${index}`}>
-                    <td className="nowrap">{formatDateTime(item.time)}</td>
-                    <td className="mono">{item.model}</td>
-                    <td>{item.tier}</td>
-                    <td className="mono">{item.key_id?.slice(0, 10) || "-"}</td>
-                    <td className="mono">{item.exit_node || item.proxy_node || "-"}</td>
-                    <td>{item.attempt}</td>
-                    <td>{item.status || "-"}</td>
-                    <td>{item.duration_ms} ms</td>
-                    <td>
-                      <span className={`badge ${item.success ? "badge-success" : "badge-warning"}`}>{item.outcome}</span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        <DataTable
+          columns={attemptColumns}
+          rows={attempts.slice(-200).reverse()}
+          rowKey={(item) => `${item.request_id}-${item.attempt}-${item.time}`}
+          emptyTitle="暂无尝试记录"
+          caption="最近上游尝试"
+          minWidth={960}
+          maxHeight={420}
+        />
       </div>
     </>
   );

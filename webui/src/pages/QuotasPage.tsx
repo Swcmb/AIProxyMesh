@@ -34,13 +34,13 @@ export function QuotasPage() {
       />
 
       <div className="stats-grid">
-        <StatCard label="Go 账号" value={data.accounts.length} hint={`数据源 ${data.source}`} />
-        <StatCard label="缓存刷新" value={`${data.cache_seconds}s`} hint="面板自动刷新间隔 60s" />
-        <StatCard label="可用 Go 模型" value={data.models.length} hint="仅为展示，不代表逐模型余额" />
+        <StatCard label="Go 账号数" value={data.accounts.length} hint={`数据源 ${data.source}`} />
+        <StatCard label="缓存刷新间隔" value={`${data.cache_seconds}s`} hint="面板自动刷新间隔 60s" />
+        <StatCard label="可用 Go 模型数" value={data.models.length} hint="仅展示可用性，不代表逐模型余额" />
       </div>
 
       {data.accounts.length === 0 ? (
-        <EmptyState title="未配置 Go Key" hint="在配置管理中新增 go_keys 后可查询共享套餐额度" />
+        <EmptyState title="未配置 Go Key" hint="在系统设置中新增 go_keys 后可查询共享套餐额度" />
       ) : (
         <div className="grid-2">
           {data.accounts.map((account) => (
@@ -50,7 +50,15 @@ export function QuotasPage() {
                   <h3 className="mono">{account.display}</h3>
                   <p className="panel-sub">检查时间 {formatDateTime(account.checked_at)}</p>
                 </div>
-                <span className={`badge ${account.status === "ok" ? "badge-success" : account.status === "stale" ? "badge-warning" : "badge-danger"}`}>
+                <span
+                  className={`badge ${
+                    account.status === "ok"
+                      ? "badge-success"
+                      : account.status === "stale"
+                        ? "badge-warning"
+                        : "badge-danger"
+                  }`}
+                >
                   {account.status}
                 </span>
               </div>
@@ -58,15 +66,24 @@ export function QuotasPage() {
               {account.windows ? (
                 <div className="timeline">
                   {Object.entries(account.windows).map(([name, window]) => (
-                    <div key={name}>
+                    <div key={name} className="quota-row">
                       <div className="panel-head">
                         <span className="muted">{quotaName(name)}</span>
                         <strong>{window.remaining_percent.toFixed(1)}% 剩余</strong>
                       </div>
-                      <div className="quota-bar" role="progressbar" aria-valuenow={window.remaining_percent} aria-valuemin={0} aria-valuemax={100}>
+                      <div
+                        className="quota-bar"
+                        role="progressbar"
+                        aria-label={`${quotaName(name)}剩余额度`}
+                        aria-valuenow={window.remaining_percent}
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                      >
                         <span style={{ width: `${Math.max(0, Math.min(100, window.remaining_percent))}%` }} />
                       </div>
-                      <p className="muted">重置时间 {formatDateTime(window.resets_at)} · 状态 {window.status}</p>
+                      <p className="muted">
+                        重置时间 {formatDateTime(window.resets_at)} · 状态 {window.status}
+                      </p>
                     </div>
                   ))}
                 </div>

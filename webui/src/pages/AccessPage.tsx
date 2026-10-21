@@ -138,7 +138,7 @@ console.log(response.choices[0].message.content);`,
             <dd>
               <span className="mono">Authorization: Bearer &lt;server key&gt;</span>
               <div className="muted">
-                {keyCount > 0 ? `当前配置了 ${keyCount} 个本地 Key，在「配置管理」查看或轮换。` : "尚未配置本地 Key，请先在「配置管理」中添加。"}
+                {keyCount > 0 ? `当前配置了 ${keyCount} 个本地 Key，在「系统设置」查看或轮换。` : "尚未配置本地 Key，请先在「系统设置」中添加。"}
               </div>
             </dd>
           </div>

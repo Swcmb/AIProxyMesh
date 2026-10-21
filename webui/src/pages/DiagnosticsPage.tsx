@@ -1,9 +1,9 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Search } from "lucide-react";
 import { api } from "../lib/api";
 import type { DebugModelsResponse, EgressCandidate } from "../lib/types";
 import { EmptyState, ErrorNotice, JsonBlock, Loading, PageHeader, StatCard } from "../components/Common";
+import { DataTable, type DataColumn } from "../components/ui/DataTable";
 import { Input } from "../components/ui/Input";
 import { Select } from "../components/ui/Select";
 import { formatPercent } from "../lib/time";
@@ -15,7 +15,10 @@ export function DiagnosticsPage() {
   const debug = useQuery({ queryKey: ["debug-models"], queryFn: () => api.get<DebugModelsResponse>("/api/debug/models") });
   const diagnose = useQuery({
     queryKey: ["egress", "diagnose", target],
-    queryFn: () => api.get<{ target: string; candidates: EgressCandidate[] }>(`/api/egress/diagnose?target=${encodeURIComponent(target)}`),
+    queryFn: () =>
+      api.get<{ target: string; candidates: EgressCandidate[] }>(
+        `/api/egress/diagnose?target=${encodeURIComponent(target)}`,
+      ),
     enabled: target.startsWith("http"),
   });
 
@@ -24,6 +27,40 @@ export function DiagnosticsPage() {
     if (!model) return models[0];
     return models.find((item) => item.model === model) ?? models[0];
   }, [models, model]);
+
+  const candidateColumns: DataColumn<EgressCandidate>[] = [
+    {
+      key: "node",
+      header: "节点",
+      cell: (item) => (
+        <div>
+          {item.name}
+          <div className="muted mono">
+            {item.protocol} · {item.id.slice(0, 8)}
+          </div>
+        </div>
+      ),
+    },
+    {
+      key: "eligible",
+      header: "资格",
+      cell: (item) => (
+        <span className={`badge ${item.eligible ? "badge-success" : "badge-muted"}`}>
+          {item.eligible ? "可调度" : item.reason}
+        </span>
+      ),
+    },
+    { key: "health", header: "健康 H", align: "right", cell: (item) => formatPercent(item.score.health) },
+    { key: "latency", header: "延迟 L", align: "right", cell: (item) => formatPercent(item.score.latency) },
+    { key: "routing", header: "路由 R", align: "right", cell: (item) => formatPercent(item.score.routing) },
+    { key: "upstream", header: "上游 U", align: "right", cell: (item) => formatPercent(item.score.upstream) },
+    {
+      key: "total",
+      header: "总分",
+      align: "right",
+      cell: (item) => <strong>{item.score.total.toFixed(1)}</strong>,
+    },
+  ];
 
   if (debug.isLoading && !debug.data) {
     return <Loading label="读取模型路由诊断…" />;
@@ -37,17 +74,22 @@ export function DiagnosticsPage() {
       <PageHeader eyebrow="Diagnostics" title="路由诊断" description="模型路由、Key 选择与出口候选评分。" />
 
       <div className="stats-grid">
-        <StatCard label="模型总数" value={models.length} />
-        <StatCard label="Zen 可用" value={models.filter((item) => item.available_zen).length} />
-        <StatCard label="Go 可用" value={models.filter((item) => item.available_go).length} />
-        <StatCard label="路由异常" value={models.filter((item) => item.route_error).length} tone={models.some((item) => item.route_error) ? "danger" : "success"} />
+        <StatCard label="模型总数" value={models.length} hint="当前目录" />
+        <StatCard label="Zen 可用模型数" value={models.filter((item) => item.available_zen).length} hint="当前目录" />
+        <StatCard label="Go 可用模型数" value={models.filter((item) => item.available_go).length} hint="当前目录" />
+        <StatCard
+          label="路由异常模型数"
+          value={models.filter((item) => item.route_error).length}
+          tone={models.some((item) => item.route_error) ? "danger" : "success"}
+          hint="当前目录"
+        />
       </div>
 
       <div className="grid-2">
         <div className="card panel">
           <div className="panel-head">
             <h3>模型路由</h3>
-            <Search size={15} className="muted" />
+            <span className="badge badge-neutral">单模型</span>
           </div>
           <label className="field-group">
             <span className="field-label">选择模型</span>
@@ -71,14 +113,20 @@ export function DiagnosticsPage() {
                 </div>
                 <div className="timeline-item">
                   <span className="muted">可用性</span>
-                  <span>Zen {selected.available_zen ? "可用" : "不可用"} · Go {selected.available_go ? "可用" : "不可用"}</span>
+                  <span>
+                    Zen {selected.available_zen ? "可用" : "不可用"} · Go{" "}
+                    {selected.available_go ? "可用" : "不可用"}
+                  </span>
                   <span className={`badge ${selected.route_error ? "badge-danger" : "badge-success"}`}>
                     {selected.route_error || "正常"}
                   </span>
                 </div>
                 <div className="timeline-item">
                   <span className="muted">匿名通道</span>
-                  <span>{selected.anonymous_eligibility?.allowed ? "允许" : "不允许"}（{selected.anonymous_eligibility?.source}）</span>
+                  <span>
+                    {selected.anonymous_eligibility?.allowed ? "允许" : "不允许"}（
+                    {selected.anonymous_eligibility?.source}）
+                  </span>
                   <span className="badge badge-neutral">{selected.anonymous ? "是" : "否"}</span>
                 </div>
               </div>
@@ -94,7 +142,11 @@ export function DiagnosticsPage() {
           </div>
           <label className="field-group">
             <span className="field-label">上游目标</span>
-            <Input value={target} onChange={(event) => setTarget(event.target.value)} placeholder="https://opencode.ai/zen" />
+            <Input
+              value={target}
+              onChange={(event) => setTarget(event.target.value)}
+              placeholder="https://opencode.ai/zen"
+            />
           </label>
           {diagnose.isError ? <ErrorNotice message={formatApiErrorMessage(diagnose.error)} /> : null}
           {!diagnose.data ? (
@@ -102,43 +154,14 @@ export function DiagnosticsPage() {
           ) : diagnose.data.candidates.length === 0 ? (
             <EmptyState title="出口池未启用或无节点" />
           ) : (
-            <div className="data-table-wrap scroll-x">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>节点</th>
-                    <th>资格</th>
-                    <th>H</th>
-                    <th>L</th>
-                    <th>R</th>
-                    <th>U</th>
-                    <th>总分</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {diagnose.data.candidates.slice().sort((a, b) => b.score.total - a.score.total).map((item) => (
-                    <tr key={item.id}>
-                      <td>
-                        {item.name}
-                        <div className="muted mono">{item.protocol} · {item.id.slice(0, 8)}</div>
-                      </td>
-                      <td>
-                        <span className={`badge ${item.eligible ? "badge-success" : "badge-muted"}`}>
-                          {item.eligible ? "可调度" : item.reason}
-                        </span>
-                      </td>
-                      <td>{formatPercent(item.score.health)}</td>
-                      <td>{formatPercent(item.score.latency)}</td>
-                      <td>{formatPercent(item.score.routing)}</td>
-                      <td>{formatPercent(item.score.upstream)}</td>
-                      <td>
-                        <strong>{item.score.total.toFixed(1)}</strong>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <DataTable
+              columns={candidateColumns}
+              rows={diagnose.data.candidates.slice().sort((a, b) => b.score.total - a.score.total)}
+              rowKey={(item) => item.id}
+              caption="出口候选评分"
+              minWidth={640}
+              maxHeight={420}
+            />
           )}
         </div>
       </div>
@@ -159,7 +182,9 @@ export function DiagnosticsPage() {
                   {keys.map((key) => (
                     <div className="timeline-item" key={key.id}>
                       <span className="mono">{key.display || key.id.slice(0, 12)}</span>
-                      <span className="muted">失败 {key.failures} · 索引 {key.index}</span>
+                      <span className="muted">
+                        失败 {key.failures} · 索引 {key.index}
+                      </span>
                       <span className={`badge ${key.cooldown_until ? "badge-warning" : "badge-success"}`}>
                         {key.cooldown_until ? "冷却中" : "可用"}
                       </span>
