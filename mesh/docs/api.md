@@ -124,10 +124,10 @@ WebUI 监听器同源提供。认证使用 HttpOnly Session Cookie `mesh_session
 
 | 方法 | 路径 | 说明 |
 | :--- | :--- | :--- |
-| GET | `/api/rankings` | 模型×接入路线综合排名；`task=agent-coding\|general-text\|vision`，缺省 `agent-coding` |
+| GET | `/api/rankings` | 模型综合排名；`task=agent-coding\|general-text\|vision`，缺省 `agent-coding` |
 | GET | `/api/rankings/tasks` | 可用任务预设、权重与准入条件 |
 
-排名对象是「提供商 + 模型 + 任务」组合。响应包含 `gate`、`Q/E/A/F`、`final_score`、`sample_count`、`confidence` 与明细分量；`gate=false` 的路线保留展示但不参与排序。
+排名对象是「模型 + 任务」，Zen 与 Go 作为同一模型的接入路线合并：费用取最便宜路线，可用性与能力取最好值，成功率与延迟按渠道汇总。响应 `models` 按综合分降序排列，`gate=false` 的模型排在最后并给出 `gate_reasons`，模型管理页直接用该顺序展示。
 
 ## 4. 兼容性说明
 

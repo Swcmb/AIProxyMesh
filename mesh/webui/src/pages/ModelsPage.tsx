@@ -2,16 +2,20 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { RotateCcw, Search } from "lucide-react";
 import { api } from "../lib/api";
-import type { Availability, DebugModelsResponse } from "../lib/types";
+import type { Availability, DebugModelsResponse, RankingResult, RankingsResponse, RankingTasksResponse } from "../lib/types";
 import { EmptyState, ErrorNotice, Loading, PageHeader } from "../components/Common";
 import { Input } from "../components/ui/Input";
+import { Select } from "../components/ui/Select";
 import { Button } from "../components/ui/Button";
 import { formatDateTime } from "../lib/time";
 import { formatApiErrorMessage } from "../lib/error-message";
 
+const fallbackTasks = ["agent-coding", "general-text", "vision"];
+
 export function ModelsPage() {
   const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
+  const [task, setTask] = useState("agent-coding");
   const models = useQuery({
     queryKey: ["debug-models"],
     queryFn: () => api.get<DebugModelsResponse>("/api/debug/models"),
@@ -19,6 +23,16 @@ export function ModelsPage() {
   const availability = useQuery({
     queryKey: ["availability"],
     queryFn: () => api.get<{ models: Availability[] }>("/api/models/availability"),
+  });
+  const tasks = useQuery({
+    queryKey: ["ranking-tasks"],
+    queryFn: () => api.get<RankingTasksResponse>("/api/rankings/tasks"),
+    staleTime: 300_000,
+  });
+  const rankings = useQuery({
+    queryKey: ["rankings", task],
+    queryFn: () => api.get<RankingsResponse>(`/api/rankings?task=${encodeURIComponent(task)}`),
+    refetchInterval: 60_000,
   });
 
   const restore = useMutation({
@@ -46,16 +60,47 @@ export function ModelsPage() {
     return <ErrorNotice message={formatApiErrorMessage(models.error)} />;
   }
   const all = models.data?.models ?? [];
-  const filtered = all.filter((model) => model.model.toLowerCase().includes(search.trim().toLowerCase()));
+  // The composite ranking is the model list's order: eligible models first by
+  // score, then gated models, then anything the ranking has not scored yet.
+  const ranked = rankings.data?.models ?? [];
+  const rankOf = new Map<string, { order: number; rank: number; result: RankingResult }>();
+  let eligibleRank = 0;
+  ranked.forEach((result, order) => {
+    if (result.gate) eligibleRank += 1;
+    rankOf.set(result.model_id, { order, rank: result.gate ? eligibleRank : 0, result });
+  });
+  const filtered = all
+    .filter((model) => model.model.toLowerCase().includes(search.trim().toLowerCase()))
+    .sort((a, b) => {
+      const left = rankOf.get(a.model);
+      const right = rankOf.get(b.model);
+      if (left && right) return left.order - right.order;
+      if (left) return -1;
+      if (right) return 1;
+      return a.model.localeCompare(b.model);
+    });
+  const taskOptions = tasks.data?.tasks?.map((item) => ({ value: item.task_type, label: item.label })) ?? [];
+  const activeTask = rankings.data?.preset;
 
   return (
     <>
       <PageHeader
         eyebrow="Models"
         title="模型管理"
-        description="模型目录、原生协议、可用性与免费模型状态。"
+        description={
+          activeTask
+            ? `按「${activeTask.label}」综合排名排序：准入条件 × (能力 + 费用 + 可用性 + 适配)；Zen/Go 合并为同一模型。`
+            : "模型目录、原生协议、可用性与免费模型状态。"
+        }
         actions={
           <div className="field-inline">
+            <Select value={task} onChange={(event) => setTask(event.target.value)} aria-label="排名基准">
+              {(taskOptions.length ? taskOptions : fallbackTasks.map((value) => ({ value, label: value }))).map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </Select>
             <Search size={15} className="muted" />
             <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索模型 ID" />
           </div>
@@ -97,6 +142,7 @@ export function ModelsPage() {
             <table className="data-table">
               <thead>
                 <tr>
+                  <th>综合排名</th>
                   <th>模型</th>
                   <th>原生协议</th>
                   <th>Zen</th>
@@ -110,8 +156,24 @@ export function ModelsPage() {
               <tbody>
                 {filtered.map((model) => {
                   const status = availabilityMap.get(model.model);
+                  const rank = rankOf.get(model.model);
                   return (
                     <tr key={model.model}>
+                      <td>
+                        {!rank ? (
+                          <span className="muted">-</span>
+                        ) : rank.result.gate ? (
+                          <div>
+                            <span className="badge badge-info">#{rank.rank}</span>
+                            <div className="muted">{rank.result.final_score.toFixed(1)} 分</div>
+                          </div>
+                        ) : (
+                          <div>
+                            <span className="badge badge-muted">未准入</span>
+                            <div className="muted">{rank.result.gate_reasons?.join("；") || "-"}</div>
+                          </div>
+                        )}
+                      </td>
                       <td className="mono">{model.model}</td>
                       <td>
                         <span className="tag">{model.native_protocol}</span>
@@ -179,6 +241,7 @@ export function ModelsPage() {
             </table>
           </div>
         )}
+        {rankings.isError ? <ErrorNotice message={formatApiErrorMessage(rankings.error)} /> : null}
         {restore.isError || manual.isError ? (
           <ErrorNotice message={formatApiErrorMessage(restore.error ?? manual.error)} />
         ) : null}

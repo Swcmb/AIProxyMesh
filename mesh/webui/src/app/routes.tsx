@@ -6,7 +6,6 @@ import { OverviewPage } from "../pages/OverviewPage";
 import { ModelsPage } from "../pages/ModelsPage";
 import { UpstreamsPage } from "../pages/UpstreamsPage";
 import { RotationPage } from "../pages/RotationPage";
-import { RankingPage } from "../pages/RankingPage";
 import { APIKeysPage } from "../pages/APIKeysPage";
 import { QuotasPage } from "../pages/QuotasPage";
 import { SubscriptionsPage } from "../pages/SubscriptionsPage";
@@ -33,7 +32,6 @@ export function AppRoutes() {
         <Route path="/models" element={<ModelsPage />} />
         <Route path="/upstreams" element={<UpstreamsPage />} />
         <Route path="/rotation" element={<RotationPage />} />
-        <Route path="/rankings" element={<RankingPage />} />
         <Route path="/api-keys" element={<APIKeysPage />} />
         <Route path="/quotas" element={<QuotasPage />} />
         <Route path="/subscriptions" element={<SubscriptionsPage />} />

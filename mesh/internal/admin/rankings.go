@@ -13,7 +13,7 @@ type rankingsResponse struct {
 	Preset      ranking.Preset   `json:"preset"`
 	GeneratedAt time.Time        `json:"generated_at"`
 	SampleHours int              `json:"sample_hours"`
-	Routes      []ranking.Result `json:"routes"`
+	Models      []ranking.Result `json:"models"`
 }
 
 func (a *Server) handleRankings(w http.ResponseWriter, r *http.Request) {
@@ -32,7 +32,7 @@ func (a *Server) handleRankings(w http.ResponseWriter, r *http.Request) {
 		Preset:      preset,
 		GeneratedAt: time.Now().UTC(),
 		SampleHours: 24,
-		Routes:      results,
+		Models:      results,
 	})
 }
 
