@@ -42,7 +42,6 @@ jobs:
           cache-dependency-path: webui/package-lock.json
 
       - name: Update Go modules
-        working-directory: mesh
         run: |
           # 只升级直接依赖：滚动发布的间接依赖（如 golang.org/x/exp）会要求更高的
           # Go 版本，让 tidy 失败。
@@ -54,7 +53,6 @@ jobs:
           fi
 
       - name: Verify Go build and tests
-        working-directory: mesh
         run: |
           go vet ./...
           go test ./...
