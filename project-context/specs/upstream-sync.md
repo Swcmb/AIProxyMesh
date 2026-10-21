@@ -138,13 +138,13 @@ git diff <sha>^ <sha> -- <path> | git apply --3way --whitespace=nowarn --index
 
 路径映射与保护：
 
-- 上游 `internal/`、`cmd/`、`webui/`、`docs/`、`scripts/` 映射到本仓库的 `mesh/` 同名目录（`git apply --directory=mesh`）；其余路径原样。
+- 仓库根目录即模块根，上游路径原样对应（`internal/`、`cmd/`、`webui/`、`docs/`、`scripts/` 同名）。
 - 只对本仓库已跟踪的文件做就地补丁。上游新增文件一律记为 `missing-base`，避免把另一套前端/脚本当死代码塞进来。
-- `.github/**`、`project-context/**`、`AGENTS.md`、`CLAUDE.md`、许可证与 NOTICE、`mesh/go.mod`、`mesh/go.sum`、Dockerfile、compose、`.gitignore`、`.gitattributes` 受保护，永不自动改写。
+- `.github/**`、`project-context/**`、`AGENTS.md`、`CLAUDE.md`、许可证与 NOTICE、`go.mod`、`go.sum`、Dockerfile、compose、`.gitignore`、`.gitattributes` 受保护，永不自动改写。
 
 约束：
 
-- 不修改上游文件中的版权头与 `SPDX-License-Identifier`；新增第三方文件需同步登记到 `mesh/NOTICE`（在报告的检查清单中提示）。
+- 不修改上游文件中的版权头与 `SPDX-License-Identifier`；新增第三方文件需同步登记到 `NOTICE`（在报告的检查清单中提示）。
 - 二进制文件跳过自动移植，直接记为 `conflict`。
 - 单个文件失败不影响其余文件与提交。
 
@@ -224,7 +224,7 @@ git diff <sha>^ <sha> -- <path> | git apply --3way --whitespace=nowarn --index
 - 两个上游每日检查一次，最多产生 1 个草稿 PR 与 1 个滚动 Issue/上游，不会刷屏。
 - `GITHUB_TOKEN` 推送不触发工作流，所有自动发版必须显式 `gh workflow run`。
 - 公开代理池的流量会经过第三方主机：仅建议在可接受该风险时启用，且不要把它作为唯一出口。
-- 自动应用的第三方文件必须保留上游许可证头，并在 `mesh/NOTICE` 登记。
+- 自动应用的第三方文件必须保留上游许可证头，并在 `NOTICE` 登记。
 
 ## 九、实现清单
 
@@ -234,7 +234,7 @@ git diff <sha>^ <sha> -- <path> | git apply --3way --whitespace=nowarn --index
 | `.github/workflows/upstream-sync.yml` | 调度、权限、并发、artifact |
 | `.github/workflows/version-bump.yml` | 合入后升版、tag、显式分发 |
 | `project-context/upstream-state.json` | 同步状态 |
-| `mesh/internal/admin/subscriptions.go` | 预设端点 |
-| `mesh/webui/src/pages/SubscriptionsPage.tsx` | 预设卡片 |
-| `mesh/docs/configuration.md` / `mesh/docs/api.md` | 文档同步 |
+| `internal/admin/subscriptions.go` | 预设端点 |
+| `webui/src/pages/SubscriptionsPage.tsx` | 预设卡片 |
+| `docs/configuration.md` / `docs/api.md` | 文档同步 |
 | `AGENTS.md` | 自动化边界同步 |

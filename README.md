@@ -36,7 +36,7 @@
 需要 Go 1.25.5+ 与 Node.js 24+（仅前端构建需要）。
 
 ```bash
-cd mesh/webui && npm ci && npm run build
+cd webui && npm ci && npm run build
 cd .. && go build -trimpath -ldflags "-s -w" -o mesh ./cmd/mesh
 ./mesh -config config.json
 ```

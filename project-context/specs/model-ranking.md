@@ -171,11 +171,11 @@ Zen 和 Go 分开记录价格、额度、延迟、请求成功率、接口兼容
 
 | 规格项 | 实现位置 |
 | :--- | :--- |
-| 评分公式与四个维度 | `mesh/internal/ranking/ranking.go` |
+| 评分公式与四个维度 | `internal/ranking/ranking.go` |
 | 任务预设与权重 | 同文件的 `presets`（`agent-coding` / `general-text` / `vision`） |
-| 路线输入构造（目录、价格、订阅分摊、运行采样） | `mesh/internal/gateway/ranking.go`；`rankingInputs` 按模型合并 Zen/Go，`rotationPlan` 仍按 Go 单路线计算 |
-| 排名结果驱动轮转顺序 | `mesh/internal/gateway/rotation.go` 的 `syncRotation` + `rotation.Manager.Apply` |
+| 路线输入构造（目录、价格、订阅分摊、运行采样） | `internal/gateway/ranking.go`；`rankingInputs` 按模型合并 Zen/Go，`rotationPlan` 仍按 Go 单路线计算 |
+| 排名结果驱动轮转顺序 | `internal/gateway/rotation.go` 的 `syncRotation` + `rotation.Manager.Apply` |
 | 查询接口 | `GET /api/rankings?task=`、`GET /api/rankings/tasks` |
-| 可调参数 | 配置 `ranking.*`，见 `mesh/docs/configuration.md` |
+| 可调参数 | 配置 `ranking.*`，见 `docs/configuration.md` |
 
 接口字段与本文记录的对应：`p95_latency` 以毫秒为单位命名为 `p95_latency_ms`；`capability_score` 为 Q，`economy_score` 为 E，`availability_score` 为 A，`fit_score` 为 F，`gate` 为准入开关 G，`final_score` 为 S。未测量的维度返回空值，综合分按中性 50 分计入并同步降低 `confidence`；`sample_count` 直接来自最近 24 小时的运行采样条数。

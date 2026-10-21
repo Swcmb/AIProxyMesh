@@ -31,15 +31,15 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: mesh/go.mod
+          go-version-file: go.mod
           cache: true
-          cache-dependency-path: mesh/go.sum
+          cache-dependency-path: go.sum
 
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: mesh/webui/package-lock.json
+          cache-dependency-path: webui/package-lock.json
 
       - name: Update Go modules
         working-directory: mesh
@@ -60,7 +60,7 @@ jobs:
           go test ./...
 
       - name: Update WebUI dependencies and rebuild
-        working-directory: mesh/webui
+        working-directory: webui
         run: |
           npm update --package-lock-only
           npm ci
@@ -77,7 +77,7 @@ jobs:
           fi
           echo "changed=true" >> "$GITHUB_OUTPUT"
           git status --short
-          git add mesh/go.mod mesh/go.sum mesh/webui/package-lock.json mesh/internal/webui/dist
+          git add go.mod go.sum webui/package-lock.json internal/webui/dist
           git commit -m "chore: 更新依赖到兼容范围内的最新版本"
           git push origin HEAD:main
 
