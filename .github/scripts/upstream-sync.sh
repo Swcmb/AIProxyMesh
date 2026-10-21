@@ -372,14 +372,44 @@ sync_upstream() { # name
   fi
 
   if [ "${#applied[@]}" -gt 0 ]; then
+    local build_status="未运行" build_output=""
     if [ "$DRY_RUN" != true ]; then
+      # The sync PR is opened with GITHUB_TOKEN, so its pull_request event does
+      # not start Checks. Compile here to keep the "broken patch" signal.
+      if (cd "$worktree/mesh" && go build ./... >"$worktree/build.log" 2>&1); then
+        build_status="通过"
+      else
+        build_status="失败"
+        build_output=$(tail -40 "$worktree/build.log")
+      fi
+      {
+        printf '\n## 构建验证\n\n- `go build ./...`：%s\n' "$build_status"
+        if [ -n "$build_output" ]; then
+          printf '\n```text\n%s\n```\n' "$build_output"
+        fi
+      } >>"$report"
       (
         cd "$worktree"
+        rm -f build.log
         git add -A
         git commit -q -m "chore(sync): $name ${synced:0:8}..${to:0:8}"
       )
     fi
     open_sync_pr "$name" "$synced" "$to" "$bump" "$blocked" "$report"
+    if [ "$build_status" = "失败" ]; then
+      local build_body
+      build_body=$(mktemp)
+      {
+        printf '自动移植后的代码无法通过 `go build ./...`。草稿 PR：%s\n\n```text\n%s\n```\n' \
+          "sync/$name-${to:0:8}" "$build_output"
+      } >"$build_body"
+      if [ "$DRY_RUN" = true ]; then
+        cp "$build_body" "$ARTIFACT_DIR/build-$name.md" 2>/dev/null || true
+      else
+        upsert_issue "[sync] $name 同步 PR 检查失败" "$build_body" >/dev/null
+      fi
+      rm -f "$build_body"
+    fi
   else
     log "$name: nothing applied cleanly"
     blocked=1
