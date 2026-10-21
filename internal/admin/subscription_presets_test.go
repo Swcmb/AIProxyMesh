@@ -35,8 +35,18 @@ func TestSubscriptionPresetsAreOptIn(t *testing.T) {
 			t.Fatalf("preset %s url = %q", id, url)
 		}
 		protocols, _ := preset["protocols"].([]any)
-		if len(protocols) != 2 || protocols[0] != "http" || protocols[1] != "https" {
-			t.Fatalf("preset %s protocols = %+v", id, preset["protocols"])
+		allowed := map[string]bool{}
+		for _, value := range protocols {
+			name, _ := value.(string)
+			allowed[name] = true
+		}
+		for _, want := range []string{"http", "https", "socks5"} {
+			if !allowed[want] {
+				t.Fatalf("preset %s is missing protocol %s: %+v", id, want, preset["protocols"])
+			}
+		}
+		if allowed["socks4"] {
+			t.Fatalf("preset %s must not import SOCKS4: %+v", id, preset["protocols"])
 		}
 		for _, field := range []string{"name", "description", "risk"} {
 			if text, _ := preset[field].(string); strings.TrimSpace(text) == "" {
