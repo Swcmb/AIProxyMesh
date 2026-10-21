@@ -209,6 +209,13 @@ func (g *Gateway) doUpstreamTiers(ctx context.Context, route models.Route, bodie
 			return resp, route, attempts, nil
 		}
 		lastResponse, lastErr = resp, err
+		if peekDeterministic(resp) {
+			// The request itself was rejected. Another exit or tier gets the
+			// same answer, and retrying only buries it under the next error, so
+			// hand the upstream 4xx back unchanged.
+			g.logger.Warn("upstream rejected the request; not retrying on other tiers", "component", "upstream", "event", "deterministic_rejection", "request_id", ids.Request, "attempts", attempts, "model", route.ID)
+			return resp, route, attempts, nil
+		}
 		if len(route.KeyTiers) > 0 {
 			g.logger.Debug("anonymous request did not succeed; entering preferred key tiers", "component", "upstream", "event", "anonymous_fallback", "request_id", ids.Request, "attempts", attempts, "key_tiers", route.KeyTiers)
 		}
@@ -250,6 +257,10 @@ func (g *Gateway) doUpstreamTiers(ctx context.Context, route models.Route, bodie
 		if err == nil && resp != nil && resp.StatusCode/100 == 2 {
 			return resp, keyRoute, attempts, nil
 		}
+		if peekDeterministic(resp) {
+			g.logger.Warn("upstream rejected the request; not trying other tiers", "component", "upstream", "event", "deterministic_rejection", "request_id", ids.Request, "attempts", attempts, "tier", keyRoute.Tier, "status", resp.StatusCode)
+			return resp, keyRoute, attempts, nil
+		}
 		lastResponse, lastErr = resp, err
 	}
 	if lastResponse != nil {
@@ -278,6 +289,11 @@ func (g *Gateway) doAnonymousUpstream(ctx context.Context, route models.Route, b
 		limit = remaining
 	} else if limit > remaining {
 		limit = remaining
+	}
+	// The breaker holds the lane shut for an hour-scale window after repeated
+	// failures: poking a flagged upstream again would only extend the block.
+	if g.anonymous.Paused() {
+		return nil, errAnonymousLanePaused, 0
 	}
 	body := bodies[config.TierZen]
 	if len(body) == 0 {
@@ -373,14 +389,27 @@ func (g *Gateway) doAnonymousUpstream(ctx context.Context, route models.Route, b
 			break
 		}
 
+		if peekDeterministic(resp) {
+			// A request-level rejection is identical on every exit; stop the
+			// walk without cooling the exit for the client's mistake.
+			if egressAttempt != nil {
+				egressAttempt.Release()
+			}
+			g.logger.Warn("upstream rejected the request; ending the anonymous walk", "component", "upstream", "event", "deterministic_rejection", "request_id", ids.Request, "attempt", attempts, "status", resp.StatusCode)
+			lastResponse, lastErr = resp, nil
+			break
+		}
+
 		if egressAttempt != nil {
 			classification := g.reportEgressAttempt(ctx, route, ids, attemptOffset+attempts, "anonymous", "anonymous", true, egressAttempt, resp, err, duration)
 			status := upstreamStatus(resp)
 			switch classification.Kind {
 			case routing.Success, routing.Neutral:
+				g.anonymous.NoteSuccess()
 				g.logger.Debug("anonymous upstream accepted request", "component", "upstream", "event", "anonymous_attempt_succeeded", "request_id", ids.Request, "attempt", attempts, "tier", config.TierZen, "node", egressAttempt.NodeName, "node_id", egressAttempt.NodeID, "status", status, "duration_ms", duration.Milliseconds())
 				return resp, nil, attempts
 			case routing.UpstreamFailure:
+				g.noteAnonymousFailure(ids, attempts)
 				lastResponse, lastErr = resp, err
 				if classification.UpstreamWide {
 					return resp, nil, attempts
@@ -390,6 +419,7 @@ func (g *Gateway) doAnonymousUpstream(ctx context.Context, route models.Route, b
 				lastResponse, lastErr = resp, err
 				return resp, lastErr, attempts
 			default:
+				g.noteAnonymousFailure(ids, attempts)
 				lastResponse, lastErr = resp, egressProxyError(egressAttempt, classification, err)
 				if classification.Kind == routing.ExitFailure && resp != nil && g.honorRetryAfter() {
 					retryWait = parseRetryAfter(resp.Header.Get("Retry-After"))
@@ -406,9 +436,11 @@ func (g *Gateway) doAnonymousUpstream(ctx context.Context, route models.Route, b
 		g.observeAnonymousResult(ctx, node, resp, err)
 		g.recordUpstreamAttempt(ctx, route, ids, attemptOffset+attempts, "anonymous", "anonymous", true, proxyTrace(proxy), resp, err, duration)
 		if err == nil && resp.StatusCode/100 == 2 {
+			g.anonymous.NoteSuccess()
 			g.logger.Debug("anonymous upstream accepted request", "component", "upstream", "event", "anonymous_attempt_succeeded", "request_id", ids.Request, "attempt", attempts, "tier", config.TierZen, "key_id", "anonymous", "channel", "anonymous", "anonymous", true, "proxy", config.RedactURL(proxy.name), "status", resp.StatusCode, "duration_ms", duration.Milliseconds())
 			return resp, nil, attempts
 		}
+		g.noteAnonymousFailure(ids, attempts)
 		lastResponse = resp
 		lastErr = asProxyUnavailable(proxy, err)
 		if err != nil {
@@ -887,6 +919,16 @@ func (g *Gateway) doKeyUpstream(ctx context.Context, route models.Route, bodies 
 				lastErr = ctx.Err()
 			}
 			break
+		}
+
+		if peekDeterministic(resp) {
+			// Request-level rejection: another key or tier would answer the
+			// same, so stop rotating and forward this response.
+			if egressAttempt != nil {
+				egressAttempt.Release()
+			}
+			g.logger.Warn("upstream rejected the request; ending key rotation", "component", "upstream", "event", "deterministic_rejection", "request_id", ids.Request, "attempt", attempts, "tier", route.Tier, "key_id", keyID, "status", resp.StatusCode)
+			return resp, nil, attempts
 		}
 
 		if egressAttempt != nil {

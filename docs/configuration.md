@@ -15,7 +15,7 @@
 | `proxyfile` | string | 旧代理文件路径，支持注释与逐行 URL |
 | `upstream` | object | `zen` / `go` / `anonymous` 三个上游基址；唯一目标来源 |
 | `retry` | object | `max_attempts`（唯一总预算，默认 3）、`timeout_seconds` |
-| `models` | object | `refresh_seconds`、`protocols`（模型→原生协议覆盖）、`free_only` |
+| `models` | object | `refresh_seconds`、`protocols`（模型→原生协议覆盖）、`free_only`、`anonymous_backoff`（匿名通道熔断） |
 | `performance` | object | 连接池、连接/尝试/首个 SSE 事件超时、通道冷却 |
 | `logging` | object | `level`、`ring_size`、`dump_request_bodies`、`requests`（持久请求日志） |
 | `prefer` | string | `zen` 或 `go` |
@@ -24,6 +24,18 @@
 | `ranking` | object | 模型综合排名的成本口径、延迟阈值与基准分 |
 | `webui` | object | 管理端启用、监听、用户名、密码、会话时长 |
 | `egress` | object | 统一出口调度；缺省表示不启用 |
+
+## 匿名通道与请求级拒绝
+
+- **匿名通道熔断**：配置 `models.anonymous_backoff` 后，匿名通道连续失败 `threshold` 次（默认 6）即暂停整个通道；暂停从 `base_hours`（默认 1）起步，连续触发翻倍，上限 `max_hours`（默认 24）。暂停期间不抽出口、不发上游请求，直接进入 key tier；任一次成功会关闭熔断并清零计数。缺省不启用。
+
+  ```jsonc
+  "models": {
+    "anonymous_backoff": { "threshold": 6, "base_hours": 1, "max_hours": 24 }
+  }
+  ```
+
+- **请求级拒绝**：上游返回 400/422 且正文包含 `invalid_request_error`、`context_length_exceeded`、`maximum context length`、`string_above_max_length` 或 `prompt is too long` 时，说明请求本身无法被任何出口或 Key 接受，网关立即结束并原样返回该响应，不再重试。401/403/429 仍按凭证或出口问题处理。
 
 ## `egress`
 
