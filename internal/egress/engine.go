@@ -399,12 +399,13 @@ func (e *Engine) sources() []subscription.Source {
 	out := make([]subscription.Source, 0, len(cfg.Subscriptions)+1)
 	for _, sub := range cfg.Subscriptions {
 		out = append(out, subscription.Source{
-			ID:      sub.ID,
-			Name:    sub.Name,
-			URL:     sub.URL,
-			Content: sub.Content,
-			Enabled: sub.Enabled,
-			Refresh: time.Duration(sub.RefreshSeconds) * time.Second,
+			ID:        sub.ID,
+			Name:      sub.Name,
+			URL:       sub.URL,
+			Content:   sub.Content,
+			Enabled:   sub.Enabled,
+			Protocols: append([]string(nil), sub.Protocols...),
+			Refresh:   time.Duration(sub.RefreshSeconds) * time.Second,
 		})
 	}
 	if cfg.LegacyProxiesImported() && current.legacy != "" {

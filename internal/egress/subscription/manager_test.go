@@ -257,3 +257,30 @@ func TestStatusMasksFeedURL(t *testing.T) {
 		t.Fatalf("status url = %q, want origin only", status.URL)
 	}
 }
+
+func TestRefreshFiltersDisallowedProtocols(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("http://1.1.1.1:8080#a\nhttps://3.3.3.3:443#c\nsocks5://2.2.2.2:1080#b\n"))
+	}))
+	defer server.Close()
+
+	set := &sourceSet{}
+	set.set(Source{ID: "sub-a", Name: "filtered", URL: server.URL, Enabled: true, Refresh: time.Hour, Protocols: []string{"http", "https"}})
+	manager, p := newTestManager(t, set)
+	if err := manager.Refresh(context.Background(), "sub-a"); err != nil {
+		t.Fatal(err)
+	}
+	if p.Len() != 2 {
+		t.Fatalf("socks5 must be filtered out, pool size = %d", p.Len())
+	}
+	status, ok := manager.Status("sub-a")
+	if !ok || status.Nodes != 2 || status.Supported != 2 {
+		t.Fatalf("status = %+v", status)
+	}
+	// The filter must not invent nodes: only the two allowed schemes remain.
+	for _, entry := range p.List() {
+		if name := entry.Name(); name == "b" {
+			t.Fatal("socks5 node leaked into the pool")
+		}
+	}
+}

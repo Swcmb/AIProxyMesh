@@ -178,6 +178,7 @@ export interface SubscriptionPreset {
   name: string;
   url: string;
   format: string;
+  protocols: string[];
   description: string;
   risk: string;
 }

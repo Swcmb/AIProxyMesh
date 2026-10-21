@@ -177,7 +177,7 @@ export function SubscriptionsPage() {
                 <div className="timeline-item" key={preset.id}>
                   <div>
                     <strong>{preset.name}</strong>
-                    <div className="muted mono">{preset.id} · {preset.format}</div>
+                    <div className="muted mono">{preset.id} · {preset.format} · {preset.protocols.join("/")}</div>
                   </div>
                   <div>
                     <div>{preset.description}</div>
@@ -189,7 +189,7 @@ export function SubscriptionsPage() {
                       variant="secondary"
                       disabled={added || busy}
                       onClick={() =>
-                        create.mutate({ id: preset.id, name: preset.name, url: preset.url, enabled: true, refresh_seconds: 3600 })
+                        create.mutate({ id: preset.id, name: preset.name, url: preset.url, enabled: true, refresh_seconds: 3600, protocols: preset.protocols })
                       }
                     >
                       <Wand2 size={13} /> {added ? "已添加" : "添加"}

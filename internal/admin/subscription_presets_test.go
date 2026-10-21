@@ -16,20 +16,32 @@ func TestSubscriptionPresetsAreOptIn(t *testing.T) {
 	}
 	body := decodeBody(t, recorder)
 	presets, _ := body["presets"].([]any)
-	if len(presets) != 1 {
-		t.Fatalf("expected one built-in preset, got %+v", body["presets"])
+	if len(presets) != 2 {
+		t.Fatalf("expected the hproxy and proxifly presets, got %+v", body["presets"])
 	}
-	preset, _ := presets[0].(map[string]any)
-	if preset["id"] != "api-proxy-pool" {
-		t.Fatalf("preset id = %v", preset["id"])
+	wantedSuffix := map[string]string{
+		"api-proxy-pool-hproxy":   "/live.csv",
+		"api-proxy-pool-proxifly": "/proxies/all/data.txt",
 	}
-	url, _ := preset["url"].(string)
-	if !strings.HasPrefix(url, "https://") || !strings.HasSuffix(url, "/alive.txt") {
-		t.Fatalf("preset url = %q", url)
-	}
-	for _, field := range []string{"name", "description", "risk"} {
-		if text, _ := preset[field].(string); strings.TrimSpace(text) == "" {
-			t.Fatalf("preset %s must be non-empty", field)
+	for _, raw := range presets {
+		preset, _ := raw.(map[string]any)
+		id, _ := preset["id"].(string)
+		url, _ := preset["url"].(string)
+		suffix, ok := wantedSuffix[id]
+		if !ok {
+			t.Fatalf("unexpected preset id %q", id)
+		}
+		if !strings.HasPrefix(url, "https://") || !strings.HasSuffix(url, suffix) {
+			t.Fatalf("preset %s url = %q", id, url)
+		}
+		protocols, _ := preset["protocols"].([]any)
+		if len(protocols) != 2 || protocols[0] != "http" || protocols[1] != "https" {
+			t.Fatalf("preset %s protocols = %+v", id, preset["protocols"])
+		}
+		for _, field := range []string{"name", "description", "risk"} {
+			if text, _ := preset[field].(string); strings.TrimSpace(text) == "" {
+				t.Fatalf("preset %s %s must be non-empty", id, field)
+			}
 		}
 	}
 }

@@ -172,3 +172,42 @@ func TestParseEmpty(t *testing.T) {
 		t.Fatalf("expected ErrEmpty, got %v", err)
 	}
 }
+
+func TestParseHproxyCSV(t *testing.T) {
+	payload := `ip,port,protocols,anonymity,country,city,latency_ms,uptime_pct,alive
+1.2.3.4,8080,http,anonymous,US,Ashburn,10,99,true
+5.6.7.8,1080,"socks5,http",transparent,DE,Berlin,20,90,true
+9.9.9.9,3128,https,anonymous,FR,Paris,30,80,false
+10.0.0.1,3129,vmess,anonymous,JP,Tokyo,40,70,true
+`
+	result, err := Parse([]byte(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Stats.Format != "csv" {
+		t.Fatalf("format = %s", result.Stats.Format)
+	}
+	// Three live protocols survive (http, socks5, http); the dead row and the
+	// protocol-less vmess row contribute nothing.
+	if result.Stats.Total != 3 {
+		t.Fatalf("stats = %+v", result.Stats)
+	}
+	var http, socks int
+	for _, entry := range result.Nodes {
+		switch entry.Options.Type {
+		case node.HTTP:
+			http++
+			if entry.Options.Server != "1.2.3.4" && entry.Options.Server != "5.6.7.8" {
+				t.Fatalf("unexpected server %q", entry.Options.Server)
+			}
+		case node.SOCKS5:
+			socks++
+			if entry.Options.Server != "5.6.7.8" || entry.Options.Port != 1080 {
+				t.Fatalf("unexpected socks node %+v", entry.Options)
+			}
+		}
+	}
+	if http != 2 || socks != 1 {
+		t.Fatalf("http=%d socks=%d", http, socks)
+	}
+}
