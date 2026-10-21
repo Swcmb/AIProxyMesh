@@ -74,6 +74,11 @@ func testEgressEngine(t *testing.T, cfg config.Config, legacy string) *egress.En
 		t.Fatal(err)
 	}
 	engine.RefreshAll(context.Background())
+	// Fixtures describe exits that already passed the first probe sweep; the
+	// pending-node gate has its own tests.
+	for _, entry := range engine.Pool().List() {
+		entry.MarkHealthy()
+	}
 	t.Cleanup(func() { _ = engine.Close() })
 	return engine
 }

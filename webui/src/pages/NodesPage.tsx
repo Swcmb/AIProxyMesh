@@ -3,7 +3,15 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { RefreshCw, X, Zap } from "lucide-react";
 import { api } from "../lib/api";
-import type { EgressNode, EgressNodePage, GeoIPLookupResponse, GeoIPStatusResponse } from "../lib/types";
+import type {
+  BatchProbeJob,
+  BatchProbeResponse,
+  ConfigView,
+  EgressNode,
+  EgressNodePage,
+  GeoIPLookupResponse,
+  GeoIPStatusResponse,
+} from "../lib/types";
 import { EmptyState, ErrorNotice, Loading, PageHeader, StatCard } from "../components/Common";
 import { Button } from "../components/ui/Button";
 import { DataTable, type DataColumn } from "../components/ui/DataTable";
@@ -17,8 +25,6 @@ import { useToast } from "../components/ui/Toast";
 import { formatDateTime, formatPercent, formatRelativeTime } from "../lib/time";
 import { formatApiErrorMessage } from "../lib/error-message";
 import { configUpdateFromView } from "../lib/config-update";
-import type { ConfigView } from "../lib/types";
-
 const statusLabels: Record<string, string> = {
   healthy: "健康",
   cooling: "冷却",
@@ -96,6 +102,8 @@ export function NodesPage() {
   const filters = useMemo(() => readFilters(params), [params]);
   const [keyword, setKeyword] = useState(filters.keyword);
   const [detailId, setDetailIdState] = useState<string | null>(params.get("node"));
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [probeJob, setProbeJob] = useState<BatchProbeJob | null>(null);
 
   // The open drawer is part of the URL so a node view can be shared directly.
   const setDetailId = useCallback(
@@ -135,6 +143,13 @@ export function NodesPage() {
     return () => clearTimeout(timer);
   }, [keyword, filters.keyword, patch]);
 
+  // A new filter represents a new working set; stale cross-page selections
+  // would otherwise refresh nodes the operator can no longer see.
+  const filterKey = queryString(filters);
+  useEffect(() => {
+    setSelected(new Set());
+  }, [filterKey]);
+
   const query = useQuery({
     queryKey: ["egress", "nodes", filters],
     queryFn: () => api.get<EgressNodePage>(`/api/egress/nodes?${queryString(filters)}`),
@@ -163,6 +178,34 @@ export function NodesPage() {
       toast.success("探测请求已完成");
     },
   });
+  const batchProbe = useMutation({
+    mutationFn: (ids: string[]) => api.post<BatchProbeResponse>("/api/egress/nodes/probe", { ids }),
+    onSuccess: (result) => {
+      invalidate(queryClient);
+      if (result.mode === "sync") {
+        toast.success(`已刷新 ${result.probed} 个节点`);
+        return;
+      }
+      setProbeJob(result.job);
+      toast.success(result.started ? "批量刷新已开始" : "已有批量刷新在进行，已接入进度");
+    },
+  });
+  const jobStatus = useQuery({
+    queryKey: ["egress", "probe-job", probeJob?.id ?? ""],
+    queryFn: () => api.get<{ job: BatchProbeJob }>("/api/egress/nodes/probe/status"),
+    enabled: Boolean(probeJob?.running),
+    refetchInterval: (current) => (current.state.data?.job?.running ? 1_500 : false),
+  });
+  useEffect(() => {
+    const job = jobStatus.data?.job;
+    if (!job) return;
+    setProbeJob(job);
+    if (!job.running) {
+      invalidate(queryClient);
+      toast.success(`批量刷新完成：${job.done}/${job.total}`);
+      setSelected(new Set());
+    }
+  }, [jobStatus.data, queryClient, toast]);
 
   if (query.isLoading && !query.data) {
     return <Loading label="读取节点池…" />;
@@ -183,6 +226,8 @@ export function NodesPage() {
 
   const names = page.subscription_names ?? {};
   const nodes = page.nodes ?? [];
+  const batchTargets = selected.size > 0 ? Array.from(selected) : nodes.map((node) => node.id);
+  const batchBusy = batchProbe.isPending || Boolean(probeJob?.running);
   const totalPages = Math.max(1, Math.ceil(page.total / filters.limit));
   const currentPage = Math.floor(filters.offset / filters.limit) + 1;
   const dirty =
@@ -365,7 +410,7 @@ export function NodesPage() {
               </Button>
             ) : null}
             <Button variant="secondary" onClick={() => invalidate(queryClient)}>
-              <RefreshCw size={15} /> 刷新
+              <RefreshCw size={15} /> 刷新列表
             </Button>
           </>
         }
@@ -472,9 +517,37 @@ export function NodesPage() {
       <div className="card panel">
         <div className="panel-head">
           <h3>节点列表</h3>
-          <span className="badge badge-neutral">
-            第 {currentPage}/{totalPages} 页 · 共 {page.total} 个
-          </span>
+          <div className="field-inline selection-bar">
+            <span className="badge badge-neutral">
+              第 {currentPage}/{totalPages} 页 · 共 {page.total} 个
+            </span>
+            {selected.size > 0 ? <span className="badge badge-info">已选 {selected.size}</span> : null}
+            {selected.size > 0 ? (
+              <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())} disabled={batchBusy}>
+                清空选择
+              </Button>
+            ) : null}
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => batchProbe.mutate(batchTargets)}
+              disabled={batchBusy || batchTargets.length === 0}
+              title={
+                selected.size > 0
+                  ? `重新探测所选 ${selected.size} 个节点`
+                  : `重新探测当前页 ${nodes.length} 个节点；超过 ${200} 个自动转为后台任务`
+              }
+            >
+              <RefreshCw size={13} className={batchBusy ? "spin" : undefined} />
+              {probeJob?.running
+                ? `刷新中 ${probeJob.done}/${probeJob.total}`
+                : batchBusy
+                  ? "刷新中…"
+                  : selected.size > 0
+                    ? `刷新所选 ${selected.size}`
+                    : "批量刷新本页"}
+            </Button>
+          </div>
         </div>
         <DataTable
           columns={columns}
@@ -486,7 +559,9 @@ export function NodesPage() {
           emptyTitle="没有匹配的节点"
           emptyHint="调整筛选条件，或先在订阅页添加订阅"
           caption="代理节点列表"
-          minWidth={1280}
+          minWidth={1314}
+          maxHeight={340}
+          selection={{ selected, onChange: setSelected, disabled: batchBusy }}
         />
         <div className="pager-row">
           <Pagination
@@ -517,8 +592,10 @@ export function NodesPage() {
             <span className="muted">/ {totalPages} 页</span>
           </div>
         </div>
-        {toggle.isError || probe.isError || detail.isError ? (
-          <ErrorNotice message={formatApiErrorMessage(toggle.error ?? probe.error ?? detail.error)} />
+        {toggle.isError || probe.isError || batchProbe.isError || detail.isError ? (
+          <ErrorNotice
+            message={formatApiErrorMessage(toggle.error ?? probe.error ?? batchProbe.error ?? detail.error)}
+          />
         ) : null}
       </div>
 
@@ -581,6 +658,7 @@ function GeoIPPanel({ enabled }: { enabled: boolean }) {
   const [probe, setProbe] = useState("");
   const [answer, setAnswer] = useState<GeoIPLookupResponse | null>(null);
   const [source, setSource] = useState("");
+  const [customURL, setCustomURL] = useState("");
   const status = useQuery({
     queryKey: ["egress", "geoip"],
     queryFn: () => api.get<GeoIPStatusResponse>("/api/egress/geoip"),
@@ -635,6 +713,8 @@ function GeoIPPanel({ enabled }: { enabled: boolean }) {
   const info = status.data?.status;
   const currentURL = info?.url ?? "";
   const selectedSource = source || geoipMirrors.find((mirror) => mirror.url === currentURL)?.id || "custom";
+  const selectedMirror = geoipMirrors.find((mirror) => mirror.id === selectedSource);
+  const applyURL = selectedSource === "custom" ? customURL.trim() : selectedMirror?.url ?? "";
   return (
     <div className="card panel">
       <div className="panel-head">
@@ -643,14 +723,18 @@ function GeoIPPanel({ enabled }: { enabled: boolean }) {
           {info?.loaded ? "已加载" : "未加载"}
         </span>
       </div>
-      <dl className="node-detail-list">
+      <dl className="geoip-info">
         <div>
           <dt>库文件</dt>
-          <dd className="mono">{info?.path ?? "-"}</dd>
+          <dd className="mono" title={info?.path ?? ""}>
+            {info?.path ?? "-"}
+          </dd>
         </div>
         <div>
           <dt>来源</dt>
-          <dd className="mono">{info?.url ?? "-"}</dd>
+          <dd className="mono" title={info?.url ?? ""}>
+            {info?.url ?? "-"}
+          </dd>
         </div>
         <div>
           <dt>大小</dt>
@@ -658,7 +742,9 @@ function GeoIPPanel({ enabled }: { enabled: boolean }) {
         </div>
         <div>
           <dt>SHA256</dt>
-          <dd className="mono">{info?.sha256 ? `${info.sha256.slice(0, 16)}…` : "-"}</dd>
+          <dd className="mono" title={info?.sha256 ?? ""}>
+            {info?.sha256 ? `${info.sha256.slice(0, 16)}…` : "-"}
+          </dd>
         </div>
         <div>
           <dt>最近更新</dt>
@@ -674,36 +760,48 @@ function GeoIPPanel({ enabled }: { enabled: boolean }) {
         </div>
         <div>
           <dt>错误</dt>
-          <dd className="pre-wrap">{info?.last_error || "-"}</dd>
+          <dd title={info?.last_error ?? ""}>{info?.last_error || "-"}</dd>
         </div>
       </dl>
-      <div className="field-inline" style={{ marginTop: 12 }}>
+      <div className="geoip-controls">
         <span className="muted">下载源</span>
         <Select
           value={selectedSource}
-          onChange={(event) => setSource(event.target.value)}
+          onChange={(event) => {
+            const value = event.target.value;
+            setSource(value);
+            if (value === "custom" && !customURL) {
+              setCustomURL(currentURL);
+            }
+          }}
           aria-label="GeoIP 下载源"
-          style={{ minWidth: 180 }}
+          style={{ width: 190 }}
         >
-          <option value="custom">自定义（当前配置）</option>
+          <option value="custom">自定义 URL</option>
           {geoipMirrors.map((mirror) => (
             <option key={mirror.id} value={mirror.id}>
               {mirror.label}
             </option>
           ))}
         </Select>
+        {selectedSource === "custom" ? (
+          <Input
+            value={customURL}
+            onChange={(event) => setCustomURL(event.target.value)}
+            placeholder={currentURL || "https://example.com/country.mmdb"}
+            aria-label="自定义 GeoIP 下载地址"
+            style={{ width: 340 }}
+          />
+        ) : null}
         <Button
           variant="secondary"
-          disabled={selectedSource === "custom" || applySource.isPending}
-          onClick={() => {
-            const mirror = geoipMirrors.find((item) => item.id === selectedSource);
-            if (mirror) applySource.mutate(mirror.url);
-          }}
+          disabled={!applyURL.startsWith("http") || applySource.isPending}
+          onClick={() => applySource.mutate(applyURL)}
         >
-          {applySource.isPending ? "更新中…" : "应用镜像并更新"}
+          {applySource.isPending ? "更新中…" : "应用并更新"}
         </Button>
       </div>
-      <div className="field-inline" style={{ marginTop: 12 }}>
+      <div className="geoip-controls">
         <Button variant="secondary" disabled={update.isPending} onClick={() => update.mutate()}>
           <RefreshCw size={14} /> 立即更新库
         </Button>
@@ -711,7 +809,7 @@ function GeoIPPanel({ enabled }: { enabled: boolean }) {
           value={probe}
           onChange={(event) => setProbe(event.target.value)}
           placeholder="查询 IP 归属，如 1.1.1.1"
-          style={{ width: 240 }}
+          style={{ width: 220 }}
         />
         <Button variant="secondary" disabled={!probe.trim() || lookup.isPending} onClick={() => lookup.mutate(probe.trim())}>
           查询
@@ -774,6 +872,14 @@ function NodeDetail({ node, names }: { node: EgressNode; names: Record<string, s
             </dd>
           </div>
           <div>
+            <dt>出口 IP</dt>
+            <dd className="mono">{node.egress_ip || "-"}</dd>
+          </div>
+          <div>
+            <dt>首次连通</dt>
+            <dd>{node.ever_healthy ? "已确认" : "待首次探测"}</dd>
+          </div>
+          <div>
             <dt>健康分</dt>
             <dd>{formatPercent(node.health_score, 1)}</dd>
           </div>
@@ -794,6 +900,10 @@ function NodeDetail({ node, names }: { node: EgressNode; names: Record<string, s
           <div>
             <dt>冷却至</dt>
             <dd>{node.cooldown_until ? formatDateTime(node.cooldown_until) : "-"}</dd>
+          </div>
+          <div>
+            <dt>熔断起点</dt>
+            <dd>{node.cooldown_since ? formatDateTime(node.cooldown_since) : "-"}</dd>
           </div>
           <div>
             <dt>创建时间</dt>

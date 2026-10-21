@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
-  Activity,
   BookOpen,
   Boxes,
   FlaskConical,
@@ -32,7 +31,6 @@ const navGroups = [
     label: "仪表盘",
     items: [
       { label: "总览", path: "/overview", icon: LayoutDashboard },
-      { label: "实时监控", path: "/monitor", icon: Activity },
     ],
   },
   {

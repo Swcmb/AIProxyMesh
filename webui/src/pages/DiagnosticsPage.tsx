@@ -160,7 +160,7 @@ export function DiagnosticsPage() {
               rowKey={(item) => item.id}
               caption="出口候选评分"
               minWidth={640}
-              maxHeight={420}
+              maxHeight={260}
             />
           )}
         </div>

@@ -139,6 +139,56 @@ func (a *Server) handleEgressProbe(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"node": view})
 }
 
+const (
+	// syncProbeLimit keeps small selections immediate; larger ones run as a
+	// background job so the request never sits on a multi-minute sweep.
+	syncProbeLimit = 200
+	maxProbeBatch  = 20000
+)
+
+func (a *Server) handleEgressBatchProbe(w http.ResponseWriter, r *http.Request) {
+	engine := a.egressEngine()
+	if engine == nil {
+		writeEgressDisabled(w)
+		return
+	}
+	var input struct {
+		IDs []string `json:"ids"`
+	}
+	if err := decodeAdminJSON(w, r, &input); err != nil {
+		writeAdminError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if len(input.IDs) == 0 {
+		writeAdminError(w, http.StatusBadRequest, "invalid_request", "ids 不能为空")
+		return
+	}
+	if len(input.IDs) > maxProbeBatch {
+		writeAdminError(w, http.StatusBadRequest, "invalid_request", "一次最多刷新 20000 个节点")
+		return
+	}
+	if len(input.IDs) <= syncProbeLimit {
+		ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
+		defer cancel()
+		probed := engine.ProbeNodes(ctx, input.IDs)
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{
+			"mode": "sync", "probed": probed, "requested": len(input.IDs),
+		})
+		return
+	}
+	job, started := engine.StartBatchProbe(input.IDs)
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"mode": "async", "started": started, "job": job})
+}
+
+func (a *Server) handleEgressBatchProbeStatus(w http.ResponseWriter, _ *http.Request) {
+	engine := a.egressEngine()
+	if engine == nil {
+		writeEgressDisabled(w)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"job": engine.BatchProbeStatus()})
+}
+
 func (a *Server) handleEgressEvents(w http.ResponseWriter, r *http.Request) {
 	engine := a.egressEngine()
 	if engine == nil {

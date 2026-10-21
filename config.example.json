@@ -117,7 +117,10 @@
       "targets": [],
       "interval_seconds": 60,
       "timeout_seconds": 10,
-      "concurrency": 8
+      "concurrency": 8,
+      "egress_ip_enabled": true,
+      "egress_ip_interval_seconds": 21600,
+      "egress_ip_target": "https://cloudflare.com/cdn-cgi/trace"
     },
     "state_path": "/data/egress.db",
     "max_latency_entries": 128,

@@ -26,6 +26,9 @@ func testRouter(t *testing.T) (*Router, *pool.Pool) {
 func addNode(p *pool.Pool, sub string, opts node.Options) *node.Entry {
 	raw, _ := json.Marshal(opts)
 	entry, _ := p.Add(sub, pool.Input{Options: opts, Raw: raw})
+	// Pool helpers describe reachable exits; pending-node behaviour has its
+	// own test.
+	entry.MarkHealthy()
 	return entry
 }
 
@@ -49,6 +52,25 @@ func selectOnly(t *testing.T, r *Router, u *url.URL) *Attempt {
 		t.Fatal(err)
 	}
 	return attempt
+}
+
+func TestUnprobedNodeIsNotEligible(t *testing.T) {
+	r, p := testRouter(t)
+	opts := httpExit("127.0.0.1", 18080, "pending")
+	raw, _ := json.Marshal(opts)
+	entry, _ := p.Add("sub", pool.Input{Options: opts, Raw: raw})
+	u := mustURL(t, "https://api.example.com/v1")
+	if _, err := r.Select(context.Background(), u, nil); !errors.Is(err, ErrNoEligible) {
+		t.Fatalf("a node that never connected must stay unroutable, got %v", err)
+	}
+	candidates := r.Diagnose(u, nil)
+	if len(candidates) != 1 || candidates[0].Reason != "unprobed" {
+		t.Fatalf("diagnose = %+v", candidates)
+	}
+	entry.MarkHealthy()
+	if _, err := r.Select(context.Background(), u, nil); err != nil {
+		t.Fatalf("a healthy signal must make the node routable: %v", err)
+	}
 }
 
 func TestSelectRequiresEligibleNode(t *testing.T) {

@@ -19,6 +19,12 @@ export type SortState = {
   order: "asc" | "desc";
 };
 
+export type SelectAllState = {
+  selected: Set<string>;
+  onChange: (next: Set<string>) => void;
+  disabled?: boolean;
+};
+
 type DataTableProps<T> = {
   columns: DataColumn<T>[];
   rows: T[] | undefined;
@@ -36,6 +42,7 @@ type DataTableProps<T> = {
   className?: string;
   skeletonRows?: number;
   maxHeight?: number;
+  selection?: SelectAllState;
 };
 
 export function DataTable<T>({
@@ -55,12 +62,35 @@ export function DataTable<T>({
   className,
   skeletonRows = 6,
   maxHeight,
+  selection,
 }: DataTableProps<T>) {
   if (error) {
     return <ErrorNotice message={error} />;
   }
   const showSkeleton = loading && !rows;
   const rowList = rows ?? [];
+  const pageKeys = rowList.map(rowKey);
+  const allSelected = pageKeys.length > 0 && pageKeys.every((key) => selection?.selected.has(key));
+  const someSelected = pageKeys.some((key) => selection?.selected.has(key));
+
+  const toggleAll = () => {
+    if (!selection) return;
+    const next = new Set(selection.selected);
+    if (allSelected) {
+      for (const key of pageKeys) next.delete(key);
+    } else {
+      for (const key of pageKeys) next.add(key);
+    }
+    selection.onChange(next);
+  };
+
+  const toggleRow = (key: string) => {
+    if (!selection) return;
+    const next = new Set(selection.selected);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    selection.onChange(next);
+  };
 
   return (
     <div className={cn("dt-wrap", className)}>
@@ -72,6 +102,20 @@ export function DataTable<T>({
           {caption ? <caption className="sr-only">{caption}</caption> : null}
           <thead>
             <tr>
+              {selection ? (
+                <th className="dt-check">
+                  <input
+                    type="checkbox"
+                    checked={allSelected}
+                    disabled={selection.disabled || pageKeys.length === 0}
+                    ref={(element) => {
+                      if (element) element.indeterminate = someSelected && !allSelected;
+                    }}
+                    onChange={toggleAll}
+                    aria-label="选择本页全部节点"
+                  />
+                </th>
+              ) : null}
               {columns.map((column) => {
                 const active = Boolean(sort && column.sortKey && sort.key === column.sortKey);
                 return (
@@ -110,6 +154,7 @@ export function DataTable<T>({
             {showSkeleton
               ? Array.from({ length: skeletonRows }).map((_, index) => (
                   <tr key={`skeleton-${index}`}>
+                    {selection ? <td className="dt-check" /> : null}
                     {columns.map((column) => (
                       <td key={column.key} className={cn(column.align && `dt-align-${column.align}`)}>
                         <Skeleton width="72%" />
@@ -134,6 +179,18 @@ export function DataTable<T>({
                         : undefined
                     }
                   >
+                    {selection ? (
+                      <td className="dt-check">
+                        <input
+                          type="checkbox"
+                          checked={selection.selected.has(rowKey(row))}
+                          disabled={selection.disabled}
+                          onChange={() => toggleRow(rowKey(row))}
+                          onClick={(event) => event.stopPropagation()}
+                          aria-label="选择该节点"
+                        />
+                      </td>
+                    ) : null}
                     {columns.map((column) => (
                       <td key={column.key} className={cn(column.align && `dt-align-${column.align}`, column.className)}>
                         {column.cell(row)}

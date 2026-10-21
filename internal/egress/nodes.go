@@ -92,6 +92,15 @@ type nodeMatch struct {
 	eligible   bool
 }
 
+// entryRegionAddress prefers the observed public exit address over the proxy
+// endpoint, so region labels describe where traffic actually leaves.
+func entryRegionAddress(entry *node.Entry) string {
+	if ip := entry.EgressIP(); ip != "" {
+		return ip
+	}
+	return entry.Options.Server
+}
+
 // Nodes returns the pool after filtering, sorting and paging. Scores come from
 // the router for the primary target; nodes the router cannot score keep a zero
 // score and stay listed.
@@ -140,7 +149,7 @@ func (e *Engine) Nodes(query NodeQuery) NodePage {
 			failures:  int(entry.Failures()),
 			createdAt: entry.CreatedAt,
 		}
-		if result, ok := e.regionFor(entry.Options.Server); ok {
+		if result, ok := e.regionFor(entryRegionAddress(entry)); ok {
 			match.region = result.Country
 			match.regionName = result.Name
 		}
@@ -330,7 +339,7 @@ func (e *Engine) NodeDetail(id string) (NodeView, bool) {
 	target := e.PrimaryTarget()
 	now := time.Now()
 	view := NodeView{Snapshot: entry.Snapshot(targetURLString(target), now), Status: entryStatus(entry, now)}
-	if result, ok := e.regionFor(entry.Options.Server); ok {
+	if result, ok := e.regionFor(entryRegionAddress(entry)); ok {
 		view.Region = result.Country
 		view.RegionName = result.Name
 	}

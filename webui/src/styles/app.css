@@ -216,7 +216,7 @@
 
 .main {
   min-width: 0;
-  padding: var(--space-5) var(--space-6) var(--space-10);
+  padding: 10px 14px 12px;
 }
 
 .mobile-bar {
@@ -228,7 +228,7 @@
   margin: 0 auto;
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-2);
 }
 
 /* ---------- 页头 ---------- */
@@ -237,14 +237,14 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: var(--space-3);
-  padding-bottom: var(--space-3);
+  padding-bottom: 6px;
   border-bottom: 1px solid var(--border);
 }
 
 .topbar h1 {
   font-size: var(--text-xl);
   font-weight: var(--weight-semibold);
-  letter-spacing: -0.01em;
+  letter-spacing: -0.02em;
   line-height: var(--leading-tight);
 }
 
@@ -284,6 +284,10 @@
   border: 1px solid var(--border);
   background: var(--surface);
   box-shadow: none;
+}
+
+[hidden] {
+  display: none !important;
 }
 
 .placeholder-card {
@@ -947,16 +951,35 @@
   letter-spacing: 0.04em;
   text-transform: uppercase;
   text-align: left;
-  padding: var(--space-2) var(--space-3);
+  padding: 6px var(--space-2);
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
 
 .dt td {
-  padding: var(--space-2) var(--space-3);
+  padding: 4px var(--space-2);
   border-bottom: 1px solid var(--border-subtle);
   color: var(--text);
   vertical-align: middle;
+}
+
+/* 多选列：仅占复选宽度，不挤压数据列 */
+.dt-check {
+  width: 34px;
+  text-align: center;
+}
+
+.dt-check input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+
+.selection-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 
 .dt tbody tr:last-child td {
@@ -1134,10 +1157,10 @@
 
 /* ---------- 面板 / 指标 / 图表 ---------- */
 .panel {
-  padding: var(--space-4);
+  padding: 10px;
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-2);
 }
 
 .panel-head {
@@ -1159,33 +1182,49 @@
 
 .chart-wrap {
   width: 100%;
-  height: 240px;
+  height: 170px;
+}
+
+.chart-wrap-tall {
+  height: 200px;
+}
+
+.overview-page {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.overview-charts {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: var(--space-3);
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--space-1);
 }
 
 .stat-card {
-  padding: var(--space-3) var(--space-4);
+  padding: 4px var(--space-2);
   border-radius: var(--radius-lg);
   border: 1px solid var(--border);
   background: var(--surface);
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 0;
 }
 
 .stat-label {
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);
   color: var(--text-muted);
 }
 
 .stat-value {
   font-family: var(--font-display);
-  font-size: var(--text-2xl);
+  font-size: var(--text-lg);
   font-weight: var(--weight-semibold);
   line-height: var(--leading-tight);
   letter-spacing: -0.01em;
@@ -1210,14 +1249,14 @@
 
 .grid-2 {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
-  gap: var(--space-4);
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: var(--space-3);
 }
 
 .grid-3 {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: var(--space-4);
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--space-3);
 }
 
 .timeline {
@@ -1230,7 +1269,7 @@
   display: grid;
   grid-template-columns: minmax(120px, 1.2fr) minmax(0, 1fr) auto;
   gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
+  padding: 2px var(--space-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--surface);
@@ -1319,9 +1358,14 @@
   background: var(--surface-sunken);
   color: var(--text-muted);
   overflow: auto;
-  max-height: 420px;
+  max-height: 260px;
   font-size: var(--text-sm);
   line-height: 1.5;
+}
+
+.code-card pre {
+  max-height: 140px;
+  overflow: auto;
 }
 
 .nowrap {
@@ -1336,7 +1380,7 @@
 /* recharts：坐标轴与 tooltip 跟随主题 */
 .recharts-cartesian-axis-tick text {
   fill: var(--text-subtle);
-  font-size: 11px;
+  font-size: var(--text-xs);
 }
 
 /* 系列颜色走类规则，避免 SVG 呈现属性中的 var() 在 Firefox 下不解析 */
@@ -1495,4 +1539,50 @@
   font-size: var(--text-base);
   text-align: right;
   word-break: break-all;
+}
+
+/* GeoIP：紧凑信息网格 + 固定宽度控件 */
+.geoip-info {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 6px 16px;
+  margin: 0;
+}
+
+.geoip-info > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+  border-bottom: 1px dashed var(--border);
+  padding-bottom: 3px;
+}
+
+.geoip-info dt {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.geoip-info dd {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  text-align: right;
+}
+
+.geoip-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.field-inline > .select {
+  width: auto;
+  min-width: 120px;
 }

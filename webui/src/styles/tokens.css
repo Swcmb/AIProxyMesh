@@ -5,10 +5,10 @@
  */
 
 :root {
-  /* 字体 */
-  --font-sans: "Manrope", "PingFang SC", "Microsoft YaHei", sans-serif;
-  --font-display: "Sora", "PingFang SC", "Microsoft YaHei", sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  /* 字体：Geist Sans（Vercel Geist）+ 中文回退；等宽用 Geist Mono */
+  --font-sans: "Geist Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-display: "Geist Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   --text-2xs: 10px;
   --text-xs: 11px;
   --text-sm: 12px;
@@ -19,7 +19,7 @@
   --text-2xl: 26px;
   --leading-tight: 1.25;
   --leading-normal: 1.5;
-  --weight-normal: 450;
+  --weight-normal: 400;
   --weight-medium: 500;
   --weight-semibold: 600;
   --weight-bold: 700;
@@ -60,8 +60,8 @@
   /* 布局 */
   --sidebar-width: 232px;
   --content-max: 1440px;
-  --control-height: 32px;
-  --control-height-sm: 28px;
+  --control-height: 30px;
+  --control-height-sm: 26px;
 }
 
 /* ---------- 深色（默认） ---------- */

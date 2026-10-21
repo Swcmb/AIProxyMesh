@@ -75,6 +75,8 @@
 | `subscriptions[].content` | 粘贴的节点清单，与 `url` 互斥；粘贴源不定时刷新，保存时解析一次 |
 | `subscriptions[].refresh_seconds` | 0 表示仅手动刷新；>0 时最小 30 秒；粘贴源必须为 0 |
 | `subscriptions[].protocols` | 可选白名单（`http`/`https`/`socks5`/`socks5h`）；配置后该订阅只导入列出的协议，留空沿用全局 `egress.protocols` |
+| `subscriptions[].ephemeral` | 临时源标记；开启后连续熔断超过 `evict_delay_seconds` 的节点会从该订阅驱逐并减引用（默认 600 秒，范围 60–86400） |
+| `subscriptions[].evict_delay_seconds` | 临时源的驱逐延迟；仅在 `ephemeral: true` 时生效 |
 | `import_legacy_proxies` | 默认 true；把 `proxies` / `proxyfile` 作为 `legacy` 源导入 |
 | `schedule.*` | H/L/R/U 权重，自动归一化；全零使用默认值 |
 | `protocols.*` | 关闭的协议保留节点可见但不参与调度 |
@@ -84,6 +86,9 @@
 | `failover.request_method_policy` | 方法级重试策略，默认允许 |
 | `failover.honor_retry_after` | 是否解析并遵循 `Retry-After` |
 | `probe.targets` | 留空时从 `upstream.zen/go/anonymous` 派生；探测只到 origin |
+| `probe.egress_ip_enabled` | 是否启用出口 IP 探测（默认 true）；结果写入节点 `egress_ip`，地区优先按真实出口解析 |
+| `probe.egress_ip_interval_seconds` | 出口 IP 探测周期（60–604800，默认 21600）；每 13–17 秒抖动扫描，每轮最多入队 250 个 |
+| `probe.egress_ip_target` | 出口 IP 探测地址；默认 `https://cloudflare.com/cdn-cgi/trace`，解析响应中的 `ip=` 行 |
 | `state_path` | SQLite 路径；默认 `config.json.egress.db` |
 | `max_latency_entries` | 每节点延迟表上限（1–4096） |
 | `geoip` | 国家地区库配置；该段存在即启用地区解析，`{"enabled": false}` 关闭 |

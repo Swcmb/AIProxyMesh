@@ -46,6 +46,12 @@ func TestEgressDefaults(t *testing.T) {
 	if egress.Probe.IntervalSeconds != 60 || egress.Probe.TimeoutSeconds != 10 || egress.Probe.Concurrency != 8 {
 		t.Fatalf("probe defaults = %+v", egress.Probe)
 	}
+	if egress.Probe.EgressIPEnabled == nil || !*egress.Probe.EgressIPEnabled {
+		t.Fatal("egress IP probing must default to enabled")
+	}
+	if egress.Probe.EgressIPIntervalSeconds != 21600 || egress.Probe.EgressIPTarget == "" {
+		t.Fatalf("egress ip defaults = %+v", egress.Probe)
+	}
 	if egress.Schedule.HealthWeight != 0.30 || egress.Schedule.UpstreamSuccessWeight != 0.40 {
 		t.Fatalf("schedule defaults = %+v", egress.Schedule)
 	}
@@ -67,12 +73,15 @@ func TestEgressDefaults(t *testing.T) {
 
 func TestEgressValidation(t *testing.T) {
 	cases := map[string]string{
-		"duplicate id":   `"subscriptions":[{"id":"a","url":"https://x.test","enabled":true},{"id":"a","url":"https://y.test","enabled":true}]`,
-		"bad url":        `"subscriptions":[{"id":"a","url":"ftp://x.test","enabled":true}]`,
-		"negative":       `"schedule":{"health_weight":-1,"latency_weight":0.1,"routing_weight":0.1,"upstream_success_weight":0.1}`,
-		"cooldown":       `"cooldown":{"base_seconds":600,"max_seconds":30}`,
-		"probe interval": `"probe":{"interval_seconds":5,"timeout_seconds":2,"concurrency":2}`,
-		"bad target":     `"probe":{"targets":["not a url"]}`,
+		"duplicate id":         `"subscriptions":[{"id":"a","url":"https://x.test","enabled":true},{"id":"a","url":"https://y.test","enabled":true}]`,
+		"bad url":              `"subscriptions":[{"id":"a","url":"ftp://x.test","enabled":true}]`,
+		"negative":             `"schedule":{"health_weight":-1,"latency_weight":0.1,"routing_weight":0.1,"upstream_success_weight":0.1}`,
+		"cooldown":             `"cooldown":{"base_seconds":600,"max_seconds":30}`,
+		"probe interval":       `"probe":{"interval_seconds":5,"timeout_seconds":2,"concurrency":2}`,
+		"bad target":           `"probe":{"targets":["not a url"]}`,
+		"egress ip interval":   `"probe":{"egress_ip_interval_seconds":5}`,
+		"bad egress ip target": `"probe":{"egress_ip_target":"not a url"}`,
+		"ephemeral delay":      `"subscriptions":[{"id":"a","url":"https://x.test","enabled":true,"ephemeral":true,"evict_delay_seconds":5}]`,
 	}
 	for name, fragment := range cases {
 		body := `{"server_keys":["local-key"],"egress":{"enabled":true,` + fragment + `}}`

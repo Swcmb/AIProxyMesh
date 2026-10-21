@@ -282,6 +282,9 @@ func (r *Router) eligible(entry *node.Entry, host string, now time.Time, exclude
 	if !r.pool.Active(entry) {
 		return false
 	}
+	if !entry.EverHealthy() {
+		return false
+	}
 	if entry.Cooling(now) {
 		return false
 	}
@@ -526,6 +529,8 @@ func (r *Router) Diagnose(target *url.URL, exclude map[string]struct{}) []Candid
 			candidate.Reason = "protocol_disabled"
 		case !r.pool.Active(entry):
 			candidate.Reason = "subscription_disabled"
+		case !entry.EverHealthy():
+			candidate.Reason = "unprobed"
 		case entry.Cooling(now):
 			candidate.Reason = "cooling_down"
 			until := time.Unix(0, entry.CooldownUntil()).UTC()

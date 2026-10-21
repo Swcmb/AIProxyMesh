@@ -32,6 +32,7 @@ docker build -t mesh:local .
 - **上游地址唯一来源**：`upstream.zen/go/anonymous`；禁止新增 `target_domain` 或第二份目标地址。
 - **尝试预算**：唯一总预算 = `retry.max_attempts`；匿名阶段与各 tier 共享，换出口消耗一次。
 - **冷却分层**：节点层 `egress.cooldown`（30–900s，`Retry-After` 可延长至 24h）与通道层 `performance.failure_cooldown_seconds`（Key）独立；同一失败只触一层。
+- **节点准入与探测**：新节点首次连通信号（主动探测或真实流量）之前不进入路由（`direct` 除外）；主动探测使用双优先级固定 worker 池，13–17s 抖动扫描；出口 IP 按 `egress.probe.egress_ip_*` 低频探测并优先用于地区解析；`ephemeral: true` 的订阅会驱逐连续熔断超过 `evict_delay_seconds` 的节点。
 - **归因纪律**：401/403 与上游全网共识只走通道层；连接失败/单出口 429/可归因 5xx 只走节点层；direct 连接失败视为上游不可达。
 - **错误终止**：400/422 的请求级拒绝（上下文超长、参数非法）立即原样返回，不跨出口、Key 或 tier 重试；匿名通道可用 `models.anonymous_backoff` 熔断。
 - **单一出口池**：`proxies` / `proxyfile` 经兼容层进入同一节点池；不保留平台管理、请求头规则、粘性租约、反向代理、多接入点模块。

@@ -82,6 +82,33 @@ func TestProbeTransportFailure(t *testing.T) {
 	}
 }
 
+func TestProbeIDsStaysBoundedToRequested(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer server.Close()
+
+	manager, p := newManager(t, []string{server.URL})
+	optsA := node.Options{Type: node.HTTP, Server: "127.0.0.1", Port: 1}
+	optsB := node.Options{Type: node.HTTP, Server: "127.0.0.1", Port: 2}
+	rawA, _ := json.Marshal(optsA)
+	rawB, _ := json.Marshal(optsB)
+	entryA, _ := p.Add("legacy", pool.Input{Options: optsA, Raw: rawA})
+	entryB, _ := p.Add("legacy", pool.Input{Options: optsB, Raw: rawB})
+	other := directEntry(p)
+
+	probed := manager.ProbeIDs(context.Background(), []string{
+		entryA.ID(), entryB.ID(), "not-a-hash", "00000000000000000000000000000000",
+	})
+	if probed != 2 {
+		t.Fatalf("probed = %d, want 2", probed)
+	}
+	if entryA.LastProbeAt() == 0 || entryB.LastProbeAt() == 0 {
+		t.Fatal("requested nodes must be probed")
+	}
+	if other.LastProbeAt() != 0 {
+		t.Fatal("nodes outside the requested batch must not be probed")
+	}
+}
+
 func TestProbeAllSkipsUnsupported(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer server.Close()
@@ -109,5 +136,68 @@ func TestConfigureNormalizesTargets(t *testing.T) {
 	}
 	if cfg.Interval != time.Minute || cfg.Concurrency != 8 {
 		t.Fatalf("defaults = %+v", cfg)
+	}
+}
+
+func TestParseEgressIP(t *testing.T) {
+	if got := parseEgressIP([]byte("fl=abc\nip=203.0.113.7\nts=1\n")); got != "203.0.113.7" {
+		t.Fatalf("ip = %q", got)
+	}
+	if got := parseEgressIP([]byte("ip=not-an-ip\n")); got != "" {
+		t.Fatalf("invalid ip must be rejected, got %q", got)
+	}
+}
+
+func TestProbeEgressIPRecordsAddress(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("fl=test\nip=203.0.113.7\n"))
+	}))
+	defer server.Close()
+
+	manager, p := newManager(t, nil)
+	manager.Configure(Config{
+		EgressIPEnabled:  true,
+		EgressIPInterval: time.Hour,
+		EgressIPTarget:   server.URL,
+		Timeout:          time.Second,
+		Concurrency:      1,
+	})
+	entry := directEntry(p)
+	manager.ProbeEgressIP(context.Background(), entry)
+	if entry.EgressIP() != "203.0.113.7" {
+		t.Fatalf("egress ip = %q", entry.EgressIP())
+	}
+	if entry.LastEgressAttempt() == 0 {
+		t.Fatal("attempt timestamp must advance")
+	}
+	if !entry.EverHealthy() {
+		t.Fatal("a successful trace must admit the node")
+	}
+}
+
+func TestEnqueuePrioritizesPendingNodes(t *testing.T) {
+	manager, p := newManager(t, []string{"http://127.0.0.1:1"})
+	opts := node.Options{Type: node.HTTP, Server: "127.0.0.1", Port: 1}
+	raw, _ := json.Marshal(opts)
+	pending, _ := p.Add("sub", pool.Input{Options: opts, Raw: raw})
+	other := node.Options{Type: node.HTTP, Server: "127.0.0.1", Port: 2}
+	otherRaw, _ := json.Marshal(other)
+	healthy, _ := p.Add("sub", pool.Input{Options: other, Raw: otherRaw})
+	healthy.MarkHealthy()
+
+	ctx := context.Background()
+	manager.enqueue(ctx, job{entry: pending, ctx: ctx})
+	manager.enqueue(ctx, job{entry: healthy, ctx: ctx})
+	if len(manager.highCh) != 1 || len(manager.normalCh) != 1 {
+		t.Fatalf("priority routing: high=%d normal=%d", len(manager.highCh), len(manager.normalCh))
+	}
+}
+
+func TestScanIntervalStaysInResinWindow(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		interval := scanInterval()
+		if interval < 13*time.Second || interval > 17*time.Second {
+			t.Fatalf("scan interval = %s", interval)
+		}
 	}
 }

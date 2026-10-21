@@ -451,6 +451,9 @@ export interface EgressNode {
   aliases?: EgressNodeAlias[];
   failures: number;
   cooldown_until?: string;
+  cooldown_since?: string;
+  ever_healthy: boolean;
+  egress_ip?: string;
   health_score: number;
   latency_ms?: number;
   has_latency: boolean;
@@ -522,6 +525,8 @@ export interface EgressSubscription {
   last_fetch_at?: string;
   next_fetch_at?: string;
   refresh_seconds: number;
+  ephemeral?: boolean;
+  evict_delay_seconds?: number;
 }
 
 export interface EgressSnapshot {
@@ -531,6 +536,19 @@ export interface EgressSnapshot {
   nodes?: EgressNode[];
   subscriptions?: EgressSubscription[];
 }
+
+export interface BatchProbeJob {
+  id: string;
+  total: number;
+  done: number;
+  running: boolean;
+  started_at: string;
+  finished_at?: string;
+}
+
+export type BatchProbeResponse =
+  | { mode: "sync"; probed: number; requested: number }
+  | { mode: "async"; started: boolean; job: BatchProbeJob };
 
 export interface EgressEvent {
   id: number;
@@ -658,6 +676,8 @@ export interface ConfigView {
       content_lines?: number;
       enabled: boolean;
       refresh_seconds?: number;
+      ephemeral?: boolean;
+      evict_delay_seconds?: number;
     }[];
     import_legacy_proxies?: boolean;
     schedule: {
@@ -679,6 +699,9 @@ export interface ConfigView {
       interval_seconds?: number;
       timeout_seconds?: number;
       concurrency?: number;
+      egress_ip_enabled?: boolean;
+      egress_ip_interval_seconds?: number;
+      egress_ip_target?: string;
     };
     state_path?: string;
     max_latency_entries?: number;

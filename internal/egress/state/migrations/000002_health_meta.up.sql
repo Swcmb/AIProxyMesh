@@ -1,0 +1,4 @@
+ALTER TABLE egress_nodes ADD COLUMN cooldown_since INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE egress_nodes ADD COLUMN ever_healthy INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE egress_nodes ADD COLUMN egress_ip TEXT NOT NULL DEFAULT '';
+ALTER TABLE egress_nodes ADD COLUMN last_egress_update INTEGER NOT NULL DEFAULT 0;

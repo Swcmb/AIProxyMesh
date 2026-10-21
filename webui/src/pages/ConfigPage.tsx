@@ -12,6 +12,7 @@ import { Input } from "../components/ui/Input";
 import { Modal } from "../components/ui/Modal";
 import { Select } from "../components/ui/Select";
 import { Switch } from "../components/ui/Switch";
+import { Tabs } from "../components/ui/Tabs";
 import { Textarea } from "../components/ui/Textarea";
 import { useToast } from "../components/ui/Toast";
 import { configUpdateFromView } from "../lib/config-update";
@@ -35,6 +36,7 @@ export function ConfigPage() {
   const [conflictOpen, setConflictOpen] = useState(false);
   const [reloadConfirmOpen, setReloadConfirmOpen] = useState(false);
   const [account, setAccount] = useState({ current: "", username: "", password: "" });
+  const [section, setSection] = useState("basic");
 
   useEffect(() => {
     if (config.data && !draft) {
@@ -205,7 +207,20 @@ export function ConfigPage() {
       ) : null}
       {reload.isError ? <ErrorNotice message={formatApiErrorMessage(reload.error)} /> : null}
 
-      <div className="card panel">
+      <Tabs
+        ariaLabel="设置分组"
+        value={section}
+        onChange={setSection}
+        items={[
+          { key: "basic", label: "基本" },
+          { key: "secrets", label: "密钥" },
+          { key: "egress", label: "出口调度" },
+          { key: "runtime", label: "运行时" },
+          { key: "admin", label: "管理端" },
+        ]}
+      />
+
+      <div className="card panel" hidden={section !== "basic"}>
         <div className="panel-head">
           <h3>基本</h3>
           <span className="badge badge-neutral">core</span>
@@ -270,7 +285,7 @@ export function ConfigPage() {
         </div>
       </div>
 
-      <div className="card panel">
+      <div className="card panel" hidden={section !== "secrets"}>
         <div className="panel-head">
           <h3>密钥</h3>
           <div className="field-inline">
@@ -315,7 +330,7 @@ export function ConfigPage() {
         {reveal.isError ? <ErrorNotice message={formatApiErrorMessage(reveal.error)} /> : null}
       </div>
 
-      <div className="card panel">
+      <div className="card panel" hidden={section !== "egress"}>
         <div className="panel-head">
           <h3>出口调度（egress）</h3>
           <span className={`badge ${egress?.enabled ? "badge-success" : "badge-muted"}`}>
@@ -512,7 +527,7 @@ export function ConfigPage() {
         )}
       </div>
 
-      <div className="card panel">
+      <div className="card panel" hidden={section !== "runtime"}>
         <div className="panel-head">
           <h3>性能、日志与模型</h3>
           <span className="badge badge-neutral">runtime</span>
@@ -601,7 +616,7 @@ export function ConfigPage() {
         </label>
       </div>
 
-      <div className="card panel">
+      <div className="card panel" hidden={section !== "admin"}>
         <div className="panel-head">
           <h3>管理端与账号</h3>
           <ShieldCheck size={15} className="muted" />
@@ -672,7 +687,7 @@ export function ConfigPage() {
         {updateAccount.isError ? <ErrorNotice message={formatApiErrorMessage(updateAccount.error)} /> : null}
       </div>
 
-      <div className="card panel">
+      <div className="card panel" hidden={section !== "admin"}>
         <div className="panel-head">
           <h3>原始配置预览</h3>
           <span className="badge badge-neutral">只读</span>

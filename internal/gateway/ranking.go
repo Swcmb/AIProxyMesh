@@ -101,12 +101,24 @@ func (g *Gateway) rankingInputs() []ranking.Input {
 	now := time.Now().UTC()
 	_, byModel := g.routeSamples()
 	hasZen, hasGo := g.zenNodes.Len() > 0, g.goNodes.Len() > 0
+	// Without any authenticated route the anonymous free lane is the only way
+	// to serve a model; rank those models instead of gating the whole catalog.
+	hasAnonymous := g.cfg.AnonymousEnabled() && !hasZen && !hasGo
 	models := g.catalog.List()
 	inputs := make([]ranking.Input, 0, len(models))
 	for _, model := range models {
 		merged := ranking.Input{ModelID: model, UpdatedAt: now}
 		for _, tier := range []config.Tier{config.TierZen, config.TierGo} {
 			mergeInput(&merged, g.tierInput(model, tier, hasZen, hasGo))
+		}
+		if hasAnonymous && !merged.Available {
+			if route, err := g.catalog.Route(model, hasZen, hasGo, true); err == nil && route.Anonymous && route.Protocol != wire.SystemOne {
+				merged.Available = true
+				merged.Provider = "anonymous"
+				free := 0.0
+				merged.CostPerTask = &free
+				merged.QuotaCostPerTask = &free
+			}
 		}
 		applySample(&merged, byModel[model])
 		inputs = append(inputs, merged)
