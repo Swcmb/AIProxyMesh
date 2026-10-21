@@ -370,7 +370,7 @@ export interface RankingPreset {
 }
 
 export interface RankingResult {
-  provider: string;
+  provider?: string;
   model_id: string;
   task_type: string;
   gate: boolean;
@@ -399,7 +399,7 @@ export interface RankingsResponse {
   preset: RankingPreset;
   generated_at: string;
   sample_hours: number;
-  routes: RankingResult[];
+  models: RankingResult[];
 }
 
 export interface RankingTasksResponse {

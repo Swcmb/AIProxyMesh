@@ -37,8 +37,8 @@ export function RotationPage() {
         description="两个别名按综合排名自动排序，按顺序故障切换；切换状态持久化并在重启后恢复。"
         actions={
           <>
-            <Link className="muted" to="/rankings">
-              查看排名依据 <ArrowRight size={13} />
+            <Link className="muted" to="/models">
+              查看模型排名 <ArrowRight size={13} />
             </Link>
             <Button variant="secondary" onClick={() => queryClient.invalidateQueries({ queryKey: ["rotation"] })}>
               <RefreshCw size={15} /> 刷新
