@@ -1,10 +1,16 @@
 {
   "listen": "0.0.0.0:8080",
-  "server_keys": ["sk-local-change-me-please-123456"],
-  "zen_keys": ["sk-zen-change-me"],
+  "server_keys": [
+    "sk-local-change-me-please-123456"
+  ],
+  "zen_keys": [
+    "sk-zen-change-me"
+  ],
   "go_keys": [],
   "anonymous": true,
-  "proxies": ["direct"],
+  "proxies": [
+    "direct"
+  ],
   "proxyfile": "",
   "upstream": {
     "zen": "https://opencode.ai/zen",
@@ -45,8 +51,12 @@
   "prefer": "go",
   "reasoning": {},
   "rotation": {
-    "sota": { "alias": "sota" },
-    "sweet": { "alias": "sweet" },
+    "sota": {
+      "alias": "sota"
+    },
+    "sweet": {
+      "alias": "sweet"
+    },
     "first_output_seconds": 30
   },
   "ranking": {
@@ -59,7 +69,10 @@
     "standard_cached_tokens": 20000,
     "go_monthly_cost_usd": 10,
     "go_monthly_tasks": 1000,
-    "quota_headroom": { "zen": 100, "go": 100 },
+    "quota_headroom": {
+      "zen": 100,
+      "go": 100
+    },
     "capabilities": {}
   },
   "webui": {
@@ -71,15 +84,7 @@
   },
   "egress": {
     "enabled": true,
-    "subscriptions": [
-      {
-        "id": "primary",
-        "name": "primary",
-        "url": "https://example.com/subscription",
-        "enabled": true,
-        "refresh_seconds": 3600
-      }
-    ],
+    "subscriptions": [],
     "import_legacy_proxies": true,
     "schedule": {
       "health_weight": 0.3,
