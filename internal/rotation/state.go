@@ -176,6 +176,28 @@ func (m *Manager) Snapshot() Snapshot {
 	b, _ := json.Marshal(m.state)
 	var s Snapshot
 	_ = json.Unmarshal(b, &s)
+	// Nil slices serialize as null and break the console's list reads; an empty
+	// rotation is a valid state, so report it as empty lists instead.
+	if s.Attempts == nil {
+		s.Attempts = []Attempt{}
+	}
+	if s.Groups == nil {
+		s.Groups = []*Group{}
+	}
+	for _, group := range s.Groups {
+		if group.Order == nil {
+			group.Order = []string{}
+		}
+		if group.Switches == nil {
+			group.Switches = []Switch{}
+		}
+		if group.Paused == nil {
+			group.Paused = map[string]time.Time{}
+		}
+		if group.Available == nil {
+			group.Available = map[string]bool{}
+		}
+	}
 	return s
 }
 func (m *Manager) group(id string) *Group {
