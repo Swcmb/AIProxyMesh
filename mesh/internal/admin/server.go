@@ -81,6 +81,7 @@ func (a *Server) Handler() http.Handler {
 	mux.Handle("GET /api/egress/nodes/{id}", a.authenticate(http.HandlerFunc(a.handleEgressNodeDetail)))
 	mux.Handle("POST /api/egress/nodes/{id}/probe", a.authenticate(a.csrf(http.HandlerFunc(a.handleEgressProbe))))
 	mux.Handle("GET /api/egress/subscriptions", a.authenticate(http.HandlerFunc(a.handleEgressSubscriptions)))
+	mux.Handle("GET /api/egress/subscription-presets", a.authenticate(http.HandlerFunc(a.handleSubscriptionPresets)))
 	mux.Handle("POST /api/egress/subscriptions", a.authenticate(a.csrf(http.HandlerFunc(a.handleEgressSubscriptionCreate))))
 	mux.Handle("GET /api/egress/subscriptions/{id}", a.authenticate(http.HandlerFunc(a.handleEgressSubscriptionDetail)))
 	mux.Handle("PATCH /api/egress/subscriptions/{id}", a.authenticate(a.csrf(http.HandlerFunc(a.handleEgressSubscriptionUpdate))))

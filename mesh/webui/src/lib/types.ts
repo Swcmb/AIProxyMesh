@@ -173,6 +173,15 @@ export interface MonitorSnapshot {
   upstream: UpstreamSnapshot;
 }
 
+export interface SubscriptionPreset {
+  id: string;
+  name: string;
+  url: string;
+  format: string;
+  description: string;
+  risk: string;
+}
+
 export interface RequestLogRecord {
   id: number;
   request_id: string;
