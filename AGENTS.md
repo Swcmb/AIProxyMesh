@@ -40,6 +40,8 @@ docker build -t mesh:local .
 
 - `.github/workflows/checks.yml`、`release.yml`：Go 矩阵、test/race、WebUI 构建；`v*` 标签发布六平台二进制与 GHCR 镜像。
 - `.github/workflows/update-dependencies.yml`：每天更新 Go 补丁依赖与前端依赖；有变化时推送 `main` 并显式触发 checks。
+- `.github/workflows/upstream-sync.yml` + `.github/scripts/upstream-sync.sh`：每天拉取 opencode2api / Resin，逐文件尝试 `git apply --3way`（按 `mesh/` 前缀映射），干净的改动开草稿 PR，冲突写带 `upstream-sync` 标签的 Issue；状态在 `project-context/upstream-state.json`。
+- `.github/workflows/version-bump.yml`：带 `upstream-sync` 标签的 PR 合入后按保守规则升版、打 `v*` 标签，并显式分发 release 与 checks（`GITHUB_TOKEN` 推送不会触发工作流）。
 - 失败邮件由 `notify-failure.yml` 处理，依赖仓库 Secrets：`SMTP_SERVER`、`SMTP_USERNAME`、`SMTP_PASSWORD`、`NOTIFY_EMAIL`（可选 `SMTP_PORT`、`SMTP_SECURE`、`SMTP_FROM`）。
 
 ## 文档

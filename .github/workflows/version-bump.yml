@@ -1,0 +1,150 @@
+name: Version bump after sync
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: write
+
+concurrency:
+  group: version-bump
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    name: Tag the next release
+    if: >-
+      github.event.pull_request.merged == true &&
+      contains(github.event.pull_request.labels.*.name, 'upstream-sync')
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GIT_AUTHOR_NAME: github-actions[bot]
+      GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+      GIT_COMMITTER_NAME: github-actions[bot]
+      GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Read the sync marker
+        id: marker
+        run: |
+          set -euo pipefail
+          # The PR body is untrusted input: read it through the API and parse it
+          # with a fixed pattern instead of interpolating it into the shell.
+          body=$(gh pr view "$PR_NUMBER" --json body --jq .body)
+          marker=$(printf '%s\n' "$body" | grep -o '<!-- upstream-sync: [^>]*-->' | head -1 || true)
+          if [ -z "$marker" ]; then
+            echo "missing=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          cleaned=$(printf '%s' "$marker" | sed 's/<!-- upstream-sync: //; s/ -->$//')
+          read -r name from to bump blocked <<<"$cleaned"
+          case "$bump" in minor) ;; *) bump=patch ;; esac
+          case "$blocked" in blocked=1) blocked=1 ;; *) blocked=0 ;; esac
+          {
+            echo "missing=false"
+            echo "name=$name"
+            echo "from=$from"
+            echo "to=$to"
+            echo "bump=$bump"
+            echo "blocked=$blocked"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Report a malformed marker
+        if: steps.marker.outputs.missing == 'true'
+        run: |
+          set -euo pipefail
+          title="[sync] 同步 PR 缺少版本标记"
+          existing=$(gh issue list --state open --label upstream-sync --limit 100 --json number,title \
+            --jq ".[] | select(.title == \"$title\") | .number" | head -1)
+          body="PR #$PR_NUMBER 已合入，但正文缺少 \`<!-- upstream-sync: ... -->\` 标记，未发版。"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body" >/dev/null
+          else
+            gh issue create --title "$title" --label upstream-sync --body "$body" >/dev/null
+          fi
+
+      - name: Bump, tag and dispatch
+        if: steps.marker.outputs.missing == 'false'
+        env:
+          NAME: ${{ steps.marker.outputs.name }}
+          TO: ${{ steps.marker.outputs.to }}
+          BUMP: ${{ steps.marker.outputs.bump }}
+          BLOCKED: ${{ steps.marker.outputs.blocked }}
+        run: |
+          set -euo pipefail
+          latest=$(git tag --list 'v[0-9]*' --sort=-v:refname | head -1)
+          latest=${latest:-v0.0.0}
+          IFS=. read -r major minor patch <<<"${latest#v}"
+          if [ "$BUMP" = "minor" ]; then
+            minor=$((minor + 1))
+            patch=0
+          else
+            patch=$((patch + 1))
+          fi
+          next="v$major.$minor.$patch"
+          if git ls-remote --tags origin "$next" | grep -q .; then
+            echo "tag $next already exists" >&2
+            exit 1
+          fi
+
+          # The marker is written by our own workflow, but a PR body is still
+          # editable: validate the values before they reach the state file.
+          case "$TO" in
+            *[!0-9a-f]* | "") echo "invalid target sha" >&2; exit 1 ;;
+          esac
+          if [ "${#TO}" -ne 40 ]; then
+            echo "invalid target sha length" >&2
+            exit 1
+          fi
+
+          python3 - "$NAME" "$TO" "$BLOCKED" <<'PY'
+          import json, sys
+          path = "project-context/upstream-state.json"
+          name, to_sha, blocked = sys.argv[1], sys.argv[2], sys.argv[3] == "1"
+          data = json.load(open(path, encoding="utf-8"))
+          if name not in data["upstreams"]:
+              raise SystemExit(f"unknown upstream {name!r}")
+          upstream = data["upstreams"][name]
+          if not blocked:
+              upstream["synced_sha"] = to_sha
+              upstream["blocked_sha"] = ""
+              upstream["blocked_issue"] = 0
+          json.dump(data, open(path, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+          open(path, "a", encoding="utf-8").write("\n")
+          PY
+
+          git add project-context/upstream-state.json
+          if ! git diff --cached --quiet; then
+            git commit -q -m "chore(release): $next"
+            git push -q origin HEAD:main
+          fi
+          git tag "$next"
+          git push -q origin "$next"
+          # A tag pushed with GITHUB_TOKEN does not trigger push workflows.
+          gh workflow run release.yml -f tag="$next"
+          gh workflow run checks.yml
+
+      - name: Report a failed release
+        if: failure()
+        run: |
+          set -euo pipefail
+          title="[release] 发布失败"
+          existing=$(gh issue list --state open --label upstream-sync --limit 100 --json number,title \
+            --jq ".[] | select(.title == \"$title\") | .number" | head -1)
+          body="同步 PR #$PR_NUMBER 的版本升级或发布分发失败。运行：https://github.com/$GITHUB_REPOSITORY/actions"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body" >/dev/null
+          else
+            gh issue create --title "$title" --label upstream-sync --body "$body" >/dev/null
+          fi
