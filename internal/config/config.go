@@ -137,8 +137,7 @@ type LoggingConfig struct {
 
 // RequestsLogConfig configures the persistent request log.
 type RequestsLogConfig struct {
-	// Enabled defaults to true; the section is written to disk only when it
-	// differs from that, so an absent section keeps the log on.
+	// Enabled defaults to false: recording every request is opt-in.
 	Enabled       *bool  `json:"enabled,omitempty"`
 	StatePath     string `json:"state_path,omitempty"`
 	RetentionDays int    `json:"retention_days,omitempty"`
@@ -147,9 +146,10 @@ type RequestsLogConfig struct {
 	BufferSize int `json:"buffer_size,omitempty"`
 }
 
-// IsEnabled reports whether request persistence is on.
+// IsEnabled reports whether request persistence is on. An absent section
+// leaves it off, so a fresh configuration records nothing.
 func (r *RequestsLogConfig) IsEnabled() bool {
-	return r != nil && (r.Enabled == nil || *r.Enabled)
+	return r != nil && r.Enabled != nil && *r.Enabled
 }
 
 // SameSourceAs reports whether two settings point at the same database, which is

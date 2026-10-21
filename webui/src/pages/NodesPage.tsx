@@ -11,6 +11,8 @@ import { Select } from "../components/ui/Select";
 import { Switch } from "../components/ui/Switch";
 import { formatDateTime, formatPercent, formatRelativeTime } from "../lib/time";
 import { formatApiErrorMessage } from "../lib/error-message";
+import { configUpdateFromView } from "../lib/config-update";
+import type { ConfigView } from "../lib/types";
 
 const statusLabels: Record<string, string> = {
   healthy: "健康",
@@ -283,7 +285,13 @@ export function NodesPage() {
           <label className="field-group">
             <span className="field-label">地区</span>
             <Select value={filters.region} onChange={(event) => patch({ region: event.target.value, offset: 0 })} disabled={(page.facets?.regions ?? []).length === 0}>
-              <option value="all">{(page.facets?.regions ?? []).length === 0 ? "未启用 GeoIP" : "全部地区"}</option>
+              <option value="all">
+                {(page.facets?.regions ?? []).length === 0
+                  ? page.facets?.geoip_enabled
+                    ? "全部地区（暂无归属）"
+                    : "未启用 GeoIP"
+                  : "全部地区"}
+              </option>
               {(page.facets?.regions ?? []).map((item) => (
                 <option key={item} value={item}>
                   {flagEmoji(item)} {item}
@@ -490,10 +498,36 @@ export function NodesPage() {
   );
 }
 
+// geoipMirrors are the GitHub accelerators offered for the country database.
+// The official release URL is kept first so a fresh install uses it directly.
+const geoipMirrors = [
+  {
+    id: "direct",
+    label: "GitHub 官方",
+    url: "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country.mmdb",
+  },
+  {
+    id: "jsdelivr",
+    label: "jsDelivr（推荐）",
+    url: "https://fastly.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/country.mmdb",
+  },
+  {
+    id: "ghproxy",
+    label: "ghproxy 镜像",
+    url: "https://mirror.ghproxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country.mmdb",
+  },
+  {
+    id: "ghfast",
+    label: "ghfast.top 加速",
+    url: "https://ghfast.top/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country.mmdb",
+  },
+];
+
 function GeoIPPanel({ enabled }: { enabled: boolean }) {
   const queryClient = useQueryClient();
   const [probe, setProbe] = useState("");
   const [answer, setAnswer] = useState<GeoIPLookupResponse | null>(null);
+  const [source, setSource] = useState("");
   const status = useQuery({
     queryKey: ["egress", "geoip"],
     queryFn: () => api.get<GeoIPStatusResponse>("/api/egress/geoip"),
@@ -507,6 +541,28 @@ function GeoIPPanel({ enabled }: { enabled: boolean }) {
   const lookup = useMutation({
     mutationFn: (ip: string) => api.get<GeoIPLookupResponse>(`/api/egress/geoip/lookup?ip=${encodeURIComponent(ip)}`),
     onSuccess: (data) => setAnswer(data),
+  });
+  const config = useQuery({
+    queryKey: ["config"],
+    queryFn: () => api.get<ConfigView>("/api/config"),
+    enabled,
+    staleTime: 30_000,
+  });
+  const applySource = useMutation({
+    mutationFn: async (url: string) => {
+      const cfg = config.data;
+      if (!cfg || !cfg.egress) throw new Error("配置尚未加载");
+      const merged = {
+        ...cfg.egress,
+        geoip: { ...(cfg.egress.geoip ?? {}), enabled: true, url },
+      };
+      await api.put("/api/config", configUpdateFromView(cfg, merged));
+      return api.post<GeoIPStatusResponse>("/api/egress/geoip/update");
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["egress", "geoip"] });
+      queryClient.invalidateQueries({ queryKey: ["config"] });
+    },
   });
 
   if (!enabled) {
@@ -522,6 +578,8 @@ function GeoIPPanel({ enabled }: { enabled: boolean }) {
   }
 
   const info = status.data?.status;
+  const currentURL = info?.url ?? "";
+  const selectedSource = source || geoipMirrors.find((mirror) => mirror.url === currentURL)?.id || "custom";
   return (
     <div className="card panel">
       <div className="panel-head">
@@ -563,6 +621,27 @@ function GeoIPPanel({ enabled }: { enabled: boolean }) {
         </div>
       </dl>
       <div className="field-inline" style={{ marginTop: 12 }}>
+        <span className="muted">下载源</span>
+        <Select value={selectedSource} onChange={(event) => setSource(event.target.value)} aria-label="GeoIP 下载源" style={{ minWidth: 180 }}>
+          <option value="custom">自定义（当前配置）</option>
+          {geoipMirrors.map((mirror) => (
+            <option key={mirror.id} value={mirror.id}>
+              {mirror.label}
+            </option>
+          ))}
+        </Select>
+        <Button
+          variant="secondary"
+          disabled={selectedSource === "custom" || applySource.isPending}
+          onClick={() => {
+            const mirror = geoipMirrors.find((item) => item.id === selectedSource);
+            if (mirror) applySource.mutate(mirror.url);
+          }}
+        >
+          {applySource.isPending ? "更新中…" : "应用镜像并更新"}
+        </Button>
+      </div>
+      <div className="field-inline" style={{ marginTop: 12 }}>
         <Button variant="secondary" disabled={update.isPending} onClick={() => update.mutate()}>
           <RefreshCw size={14} /> 立即更新库
         </Button>
@@ -583,7 +662,9 @@ function GeoIPPanel({ enabled }: { enabled: boolean }) {
           )}
         </p>
       ) : null}
-      {update.isError || lookup.isError ? <ErrorNotice message={formatApiErrorMessage(update.error ?? lookup.error)} /> : null}
+      {update.isError || lookup.isError || applySource.isError ? (
+        <ErrorNotice message={formatApiErrorMessage(update.error ?? lookup.error ?? applySource.error)} />
+      ) : null}
     </div>
   );
 }

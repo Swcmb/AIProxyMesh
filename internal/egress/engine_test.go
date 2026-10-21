@@ -75,8 +75,8 @@ func TestEngineRestoresAndSelects(t *testing.T) {
 	if !snapshot.Enabled || snapshot.Counts.Total != 2 || snapshot.Counts.Eligible != 2 {
 		t.Fatalf("snapshot = %+v", snapshot)
 	}
-	if len(snapshot.Subscriptions) != 1 || snapshot.Subscriptions[0].ID != "legacy" {
-		t.Fatalf("subscriptions = %+v", snapshot.Subscriptions)
+	if len(snapshot.Subscriptions) != 0 {
+		t.Fatalf("legacy must stay internal, subscriptions = %+v", snapshot.Subscriptions)
 	}
 }
 
@@ -270,7 +270,7 @@ func TestEngineImportDedupProbeSmoke(t *testing.T) {
 	if snapshot.Counts.Total != 1 || snapshot.Counts.Eligible != 1 {
 		t.Fatalf("counts = %+v", snapshot.Counts)
 	}
-	if len(snapshot.Subscriptions) != 2 {
-		t.Fatalf("subscriptions = %+v", snapshot.Subscriptions)
+	if len(snapshot.Subscriptions) != 1 || snapshot.Subscriptions[0].ID != "remote" {
+		t.Fatalf("only the remote source is visible, subscriptions = %+v", snapshot.Subscriptions)
 	}
 }

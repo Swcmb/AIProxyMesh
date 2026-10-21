@@ -39,7 +39,7 @@
     "ring_size": 2000,
     "dump_request_bodies": false,
     "requests": {
-      "enabled": true,
+      "enabled": false,
       "state_path": "/data/requests.db",
       "retention_days": 7,
       "max_rows": 200000,

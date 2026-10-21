@@ -88,7 +88,9 @@ func TestEgressSummaryAndNodes(t *testing.T) {
 	server.handleEgressSubscriptions(recorder, httptest.NewRequest(http.MethodGet, "/api/egress/subscriptions", nil))
 	body = decodeBody(t, recorder)
 	subs := body["subscriptions"].([]any)
-	if len(subs) != 1 || subs[0].(map[string]any)["id"] != "legacy" {
+	// The legacy proxies/proxyfile source feeds the pool but is not a
+	// user-visible subscription.
+	if len(subs) != 0 {
 		t.Fatalf("subscriptions = %v", subs)
 	}
 }

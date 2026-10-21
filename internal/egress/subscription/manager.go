@@ -32,6 +32,9 @@ type Source struct {
 	Enabled   bool
 	Protocols []string
 	Refresh   time.Duration
+	// Internal sources feed the pool but are not operator-visible
+	// subscriptions: the legacy proxies/proxyfile compatibility layer is one.
+	Internal bool
 }
 
 // Status is the operator-facing state of one subscription.
@@ -51,6 +54,7 @@ type Status struct {
 	LastFetchAt     *time.Time `json:"last_fetch_at,omitempty"`
 	NextFetchAt     *time.Time `json:"next_fetch_at,omitempty"`
 	IntervalSeconds int        `json:"refresh_seconds"`
+	Internal        bool       `json:"-"`
 }
 
 // SourceProvider returns the current subscription sources. It is called on
@@ -211,6 +215,9 @@ func (m *Manager) Statuses() []Status {
 	defer m.mu.Unlock()
 	out := make([]Status, 0, len(m.statuses))
 	for _, status := range m.statuses {
+		if status.Internal {
+			continue
+		}
 		out = append(out, *status)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
@@ -309,6 +316,7 @@ func (m *Manager) statusFor(source Source) *Status {
 	status.Name = source.Name
 	status.URL = maskURL(source.URL)
 	status.Enabled = source.Enabled
+	status.Internal = source.Internal
 	status.Inline = source.Content != ""
 	status.IntervalSeconds = int(source.Refresh / time.Second)
 	return status
