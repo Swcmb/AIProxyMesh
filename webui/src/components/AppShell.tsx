@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
+  BookOpen,
   Boxes,
   FlaskConical,
   Gauge,
@@ -24,6 +25,7 @@ import { fetchSession, logout } from "../lib/api";
 const navItems = [
   { label: "总览", path: "/overview", icon: LayoutDashboard },
   { label: "模型管理", path: "/models", icon: Boxes },
+  { label: "接入手册", path: "/access", icon: BookOpen },
   { label: "上游管理", path: "/upstreams", icon: KeyRound },
   { label: "模型轮转", path: "/rotation", icon: RefreshCw },
   { label: "API Key", path: "/api-keys", icon: KeyRound },
