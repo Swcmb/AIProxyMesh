@@ -16,24 +16,21 @@ func loadLoggingConfig(t *testing.T, logging string) Config {
 	return cfg
 }
 
-func TestRequestsLogDefaultsToOff(t *testing.T) {
+func TestRequestsLogDefaultsToOn(t *testing.T) {
 	cfg := loadLoggingConfig(t, `{"level": "info", "ring_size": 2000}`)
 	requests := cfg.Logging.Requests
-	if requests.IsEnabled() {
-		t.Fatal("an absent requests section must not record by default")
+	if !requests.IsEnabled() {
+		t.Fatal("an absent requests section must record by default")
 	}
-	if requests.StatePath != "" {
-		t.Fatalf("a disabled log must not derive a path: %q", requests.StatePath)
+	if filepath.Base(requests.StatePath) != "config.json.requests.db" {
+		t.Fatalf("a default-enabled log must derive a path from the config file: %q", requests.StatePath)
+	}
+	if requests.RetentionDays != 7 || requests.MaxRows != 200000 {
+		t.Fatalf("unexpected defaults: %+v", requests)
 	}
 	enabled := loadLoggingConfig(t, `{"level": "info", "ring_size": 2000, "requests": {"enabled": true}}`)
 	if !enabled.Logging.Requests.IsEnabled() {
 		t.Fatal("explicit enabled true must turn persistence on")
-	}
-	if filepath.Base(enabled.Logging.Requests.StatePath) != "config.json.requests.db" {
-		t.Fatalf("expected a path derived from the config file, got %q", enabled.Logging.Requests.StatePath)
-	}
-	if enabled.Logging.Requests.RetentionDays != 7 || enabled.Logging.Requests.MaxRows != 200000 {
-		t.Fatalf("unexpected defaults: %+v", enabled.Logging.Requests)
 	}
 }
 
