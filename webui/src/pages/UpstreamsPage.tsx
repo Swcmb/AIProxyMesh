@@ -113,7 +113,7 @@ export function UpstreamsPage() {
           <h3>旧代理来源</h3>
           <span className="badge badge-neutral">legacy</span>
         </div>
-        {cfg.proxies.length === 0 && !cfg.proxyfile ? (
+        {(cfg.proxies ?? []).length === 0 && !cfg.proxyfile ? (
           <EmptyState title="未配置 proxies/proxyfile" hint="启用 egress 后默认将直接连接作为出口节点导入" />
         ) : (
           <div className="data-table-wrap scroll-x">

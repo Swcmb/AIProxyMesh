@@ -279,7 +279,7 @@ export function RequestsPage() {
         </button>
         <button className={tab === "events" ? "tab-active" : ""} onClick={() => setTab("events")}>
           出口事件{" "}
-          {events.data ? <span className="badge badge-neutral">{events.data.events.length}</span> : null}
+          {events.data ? <span className="badge badge-neutral">{(events.data.events ?? []).length}</span> : null}
         </button>
       </div>
 
@@ -503,7 +503,7 @@ export function RequestsPage() {
             <span className="badge badge-neutral">持久化</span>
           </div>
           {events.isError ? <ErrorNotice message={formatApiErrorMessage(events.error)} /> : null}
-          {(events.data?.events.length ?? 0) === 0 ? (
+          {(events.data?.events ?? []).length === 0 ? (
             <EmptyState title="暂无出口事件" hint="请求失败或切换出口后记录" />
           ) : (
             <div className="data-table-wrap scroll-x">
