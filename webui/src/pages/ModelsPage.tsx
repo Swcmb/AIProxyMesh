@@ -93,7 +93,7 @@ export function ModelsPage() {
             : "模型目录、原生协议、可用性与免费模型状态。"
         }
         actions={
-          <div className="field-inline">
+          <div className="field-inline header-filters">
             <Select value={task} onChange={(event) => setTask(event.target.value)} aria-label="排名基准">
               {(taskOptions.length ? taskOptions : fallbackTasks.map((value) => ({ value, label: value }))).map((option) => (
                 <option key={option.value} value={option.value}>

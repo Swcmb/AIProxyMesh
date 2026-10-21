@@ -69,7 +69,7 @@ func (g *Gateway) probeFreeModel(ctx context.Context, model string) probeResult 
 	if !g.catalog.IsFreeModel(model) {
 		return probeResult{reason: "not_free"}
 	}
-	d := g.catalog.Diagnostic(model, wire.Chat, g.zenNodes.Len() > 0, false, g.cfg.Anonymous)
+	d := g.catalog.Diagnostic(model, wire.Chat, g.zenNodes.Len() > 0, false, g.cfg.AnonymousEnabled())
 	protocol := d.NativeProtocols[config.TierZen]
 	if !d.AvailableZen || !g.catalog.Supported(model) {
 		return probeResult{reason: "unsupported_probe"}
@@ -89,7 +89,7 @@ func (g *Gateway) probeFreeModel(ctx context.Context, model string) probeResult 
 	if g.egressEnabled() {
 		// Availability probes are diagnostic: reuse the exit pool client but
 		// never attribute model-level 4xx responses to the exit.
-		if g.cfg.Anonymous {
+		if g.cfg.AnonymousEnabled() {
 			if target, err := g.egressTarget(g.cfg.Upstream.Anonymous); err == nil {
 				if attempt, selErr := g.selectEgress(ctx, target, nil, ids.Session); selErr == nil {
 					lanes = append(lanes, lane{anonymousZenKey, "anonymous", g.cfg.Upstream.Anonymous, attempt.Client()})
@@ -109,7 +109,7 @@ func (g *Gateway) probeFreeModel(ctx context.Context, model string) probeResult 
 			}
 		}
 	} else {
-		if g.cfg.Anonymous {
+		if g.cfg.AnonymousEnabled() {
 			cursor := g.anonymous.CursorFor(ids.Session)
 			if node := cursor.Next(); node != nil {
 				lanes = append(lanes, lane{anonymousZenKey, "anonymous", g.cfg.Upstream.Anonymous, node.proxy.client})

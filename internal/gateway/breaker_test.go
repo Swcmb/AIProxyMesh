@@ -53,7 +53,7 @@ func TestAnonymousBreakerTripsAndCloses(t *testing.T) {
 func TestPausedLaneSkipsTheUpstream(t *testing.T) {
 	fake := newFakeUpstream(t)
 	cfg := testConfig(fake.server.URL, nil)
-	cfg.Anonymous = true
+	cfg.Anonymous = ptrBool(true)
 	cfg.Models.AnonymousBackoff = &config.AnonymousBackoffConfig{Threshold: 1, BaseHours: 1, MaxHours: 2}
 	g, err := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), telemetry.NewMonitor())
 	if err != nil {
@@ -85,7 +85,7 @@ func TestAnonymousFailureFeedsTheBreaker(t *testing.T) {
 		return true
 	}
 	cfg := testConfig(fake.server.URL, nil)
-	cfg.Anonymous = true
+	cfg.Anonymous = ptrBool(true)
 	cfg.Models.AnonymousBackoff = &config.AnonymousBackoffConfig{Threshold: 1, BaseHours: 1, MaxHours: 2}
 	g, err := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), telemetry.NewMonitor())
 	if err != nil {

@@ -24,20 +24,28 @@ type Config struct {
 	ServerKeyMetadata map[string]ServerKeyMetadata `json:"server_key_metadata,omitempty"`
 	ZenKeys           []string                     `json:"zen_keys"`
 	GoKeys            []string                     `json:"go_keys"`
-	Anonymous         bool                         `json:"anonymous"`
-	Proxies           []string                     `json:"proxies"`
-	ProxyFile         string                       `json:"proxyfile"`
-	Upstream          UpstreamConfig               `json:"upstream"`
-	Retry             RetryConfig                  `json:"retry"`
-	Models            ModelsConfig                 `json:"models"`
-	Performance       PerformanceConfig            `json:"performance"`
-	Logging           LoggingConfig                `json:"logging"`
-	WebUI             WebUIConfig                  `json:"webui"`
-	Prefer            Tier                         `json:"prefer"`
-	Reasoning         ReasoningConfig              `json:"reasoning"`
-	Egress            *EgressConfig                `json:"egress,omitempty"`
+	// Anonymous enables the keyless free-tier lane. A missing field means
+	// enabled, so a fresh configuration starts on the free lane.
+	Anonymous   *bool             `json:"anonymous,omitempty"`
+	Proxies     []string          `json:"proxies"`
+	ProxyFile   string            `json:"proxyfile"`
+	Upstream    UpstreamConfig    `json:"upstream"`
+	Retry       RetryConfig       `json:"retry"`
+	Models      ModelsConfig      `json:"models"`
+	Performance PerformanceConfig `json:"performance"`
+	Logging     LoggingConfig     `json:"logging"`
+	WebUI       WebUIConfig       `json:"webui"`
+	Prefer      Tier              `json:"prefer"`
+	Reasoning   ReasoningConfig   `json:"reasoning"`
+	Egress      *EgressConfig     `json:"egress,omitempty"`
 
 	effectiveProxies []string
+}
+
+// AnonymousEnabled reports whether the keyless free-tier lane is on. An absent
+// field means enabled.
+func (c Config) AnonymousEnabled() bool {
+	return c.Anonymous == nil || *c.Anonymous
 }
 
 // ReasoningConfig forces a thinking level for requests that do not state one.
@@ -299,7 +307,7 @@ func Normalize(path string, cfg Config) (Config, error) {
 	if cfg.FirstEnabledServerKey() == "" {
 		return Config{}, errors.New("至少保留一个启用的 API Key")
 	}
-	if !cfg.Anonymous && len(cfg.ZenKeys) == 0 && len(cfg.GoKeys) == 0 {
+	if !cfg.AnonymousEnabled() && len(cfg.ZenKeys) == 0 && len(cfg.GoKeys) == 0 {
 		return Config{}, errors.New("zen_keys or go_keys must contain at least one upstream key unless anonymous is enabled")
 	}
 	if cfg.Retry.MaxAttempts < 1 {

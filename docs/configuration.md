@@ -10,7 +10,7 @@
 | `server_keys` | string[] | 客户端访问网关的本地 Key；至少一个启用的 Key |
 | `server_key_metadata` | object | 内部维护的名称/启停/创建时间，不建议手改 |
 | `zen_keys` / `go_keys` | string[] | 上游 Key 池 |
-| `anonymous` | bool | 启用 OpenCode `public` 匿名通道 |
+| `anonymous` | bool | 启用 OpenCode `public` 匿名通道；缺省为开，显式 `false` 关闭 |
 | `proxies` | string[] | 旧代理列表：`direct` 或 `http(s)://` / `socks5(h)://` |
 | `proxyfile` | string | 旧代理文件路径，支持注释与逐行 URL |
 | `upstream` | object | `zen` / `go` / `anonymous` 三个上游基址；唯一目标来源 |
