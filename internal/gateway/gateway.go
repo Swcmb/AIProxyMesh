@@ -92,7 +92,7 @@ func New(cfg config.Config, logger *slog.Logger, monitor *telemetry.Monitor) (*G
 		transports:     transports,
 		zenNodes:       zenNodes,
 		goNodes:        goNodes,
-		anonymous:      newAnonymousPool(cfg.Anonymous, transports, cooldown),
+		anonymous:      newAnonymousPool(cfg.Anonymous, transports, cooldown, anonymousBackoffFromConfig(cfg.Models.AnonymousBackoff)),
 		catalog:        catalog,
 		monitor:        monitor,
 		attemptTimeout: attemptDeadline(cfg),
@@ -185,6 +185,16 @@ func (g *Gateway) authenticate(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// requestScope names the authenticated caller. Derived upstream sessions are
+// mixed with it so two callers whose conversations begin identically never
+// share a session, a preferred key, or an anonymous exit.
+func requestScope(r *http.Request) string {
+	if meta := telemetry.MetaFromContext(r.Context()); meta != nil {
+		return meta.ServerKeyID
+	}
+	return ""
+}
+
 func (g *Gateway) handleInference(external wire.Protocol) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBody))
@@ -246,7 +256,7 @@ func (g *Gateway) handleInference(external wire.Protocol) http.HandlerFunc {
 			wire.WriteError(w, external, http.StatusBadRequest, err.Error(), "invalid_request_error", "")
 			return
 		}
-		ids := identity.DeriveRequestIDs(r, payload)
+		ids := identity.DeriveRequestIDs(r, payload, requestScope(r))
 		if meta != nil {
 			meta.Request = ids.Request
 			meta.Session = ids.Session
@@ -424,7 +434,7 @@ func (g *Gateway) forwardSystemOne(w http.ResponseWriter, r *http.Request, body 
 	for _, tier := range route.KeyTiers {
 		bodies[tier] = body
 	}
-	ids := identity.DeriveRequestIDs(r, payload)
+	ids := identity.DeriveRequestIDs(r, payload, requestScope(r))
 	if meta != nil {
 		meta.Request = ids.Request
 		meta.Session = ids.Session

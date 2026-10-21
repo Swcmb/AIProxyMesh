@@ -40,6 +40,20 @@ type anonymousPool struct {
 	nodes    []*anonymousNode
 	next     atomic.Uint64
 	cooldown time.Duration
+	// backoff stops the whole lane after repeated failures instead of poking a
+	// flagged upstream forever: after threshold consecutive failed attempts the
+	// lane pauses for base, doubling every further trip up to max. A success
+	// closes the breaker.
+	backoff        anonymousBackoff
+	breakerUntil   atomic.Int64
+	breakerStrikes atomic.Int32
+	consecutive    atomic.Int32
+}
+
+type anonymousBackoff struct {
+	threshold int32
+	base      time.Duration
+	max       time.Duration
 }
 
 type anonymousNode struct {
@@ -54,8 +68,8 @@ type anonymousCursor struct {
 	offset int
 }
 
-func newAnonymousPool(enabled bool, transports *transportPool, cooldown time.Duration) *anonymousPool {
-	pool := &anonymousPool{cooldown: cooldown}
+func newAnonymousPool(enabled bool, transports *transportPool, cooldown time.Duration, backoff anonymousBackoff) *anonymousPool {
+	pool := &anonymousPool{cooldown: cooldown, backoff: backoff}
 	if !enabled || transports == nil {
 		return pool
 	}
@@ -110,6 +124,49 @@ func (p *anonymousPool) MarkSuccess(node *anonymousNode) {
 	}
 	node.failures.Store(0)
 	node.cooldownUntil.Store(0)
+}
+
+// Paused reports whether the breaker currently holds the lane shut.
+func (p *anonymousPool) Paused() bool {
+	if p == nil {
+		return false
+	}
+	until := p.breakerUntil.Load()
+	return until != 0 && time.Now().UnixNano() < until
+}
+
+// NoteSuccess closes the breaker and forgets the strikes.
+func (p *anonymousPool) NoteSuccess() {
+	if p == nil {
+		return
+	}
+	p.consecutive.Store(0)
+	p.breakerStrikes.Store(0)
+	p.breakerUntil.Store(0)
+}
+
+// NoteFailure records one failed attempt. It reports the pause window when the
+// consecutive-failure threshold trips the breaker.
+func (p *anonymousPool) NoteFailure() (time.Duration, bool) {
+	if p == nil || p.backoff.threshold < 1 {
+		return 0, false
+	}
+	if p.consecutive.Add(1) < p.backoff.threshold {
+		return 0, false
+	}
+	return p.trip()
+}
+
+// trip opens the breaker for the next backoff window and returns it.
+func (p *anonymousPool) trip() (time.Duration, bool) {
+	p.consecutive.Store(0)
+	strike := p.breakerStrikes.Add(1)
+	pause := p.backoff.base << min(strike-1, 30)
+	if pause > p.backoff.max || pause <= 0 {
+		pause = p.backoff.max
+	}
+	p.breakerUntil.Store(time.Now().Add(pause).UnixNano())
+	return pause, true
 }
 
 // RestoreProxy clears cooldowns for anonymous nodes bound to a recovered

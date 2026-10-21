@@ -28,6 +28,7 @@ docker build -t mesh:local .
 - **尝试预算**：唯一总预算 = `retry.max_attempts`；匿名阶段与各 tier 共享，换出口消耗一次。
 - **冷却分层**：节点层 `egress.cooldown`（30–900s，`Retry-After` 可延长至 24h）与通道层 `performance.failure_cooldown_seconds`（Key）独立；同一失败只触一层。
 - **归因纪律**：401/403 与上游全网共识只走通道层；连接失败/单出口 429/可归因 5xx 只走节点层；direct 连接失败视为上游不可达。
+- **错误终止**：400/422 的请求级拒绝（上下文超长、参数非法）立即原样返回，不跨出口、Key 或 tier 重试；匿名通道可用 `models.anonymous_backoff` 熔断。
 - **单一出口池**：`proxies` / `proxyfile` 经兼容层进入同一节点池；不保留平台管理、请求头规则、粘性租约、反向代理、多接入点模块。
 - **模型排名**：排名对象是「模型 + 任务类型」，Zen/Go 作为接入路线合并（费用取最省、可用性与能力取最好、遥测汇总）；综合分 `G × (Q/E/A/F)`，硬性准入先行，模型管理页的列表按此顺序排列。
 - **轮转顺序**：`sota` / `sweet` 的模型顺序由排名引擎按 `ranking.sota_task` / `ranking.sweet_task` 自动生成；配置与 API 不再接受手写顺序。

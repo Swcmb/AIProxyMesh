@@ -76,7 +76,7 @@ func (g *Gateway) handleRotation(w http.ResponseWriter, r *http.Request, externa
 	g.syncRotation()
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(g.cfg.Retry.TimeoutSeconds)*time.Second)
 	defer cancel()
-	ids := identity.DeriveRequestIDs(r, payload)
+	ids := identity.DeriveRequestIDs(r, payload, requestScope(r))
 	meta := telemetry.MetaFromRequest(r)
 	if meta != nil {
 		meta.Request = ids.Request

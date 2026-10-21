@@ -74,6 +74,45 @@ type ModelsConfig struct {
 	// FreeOnly limits discovery and routing to free models, even when Zen or
 	// Go keys could serve paid ones. Free models may still fall back to keys.
 	FreeOnly bool `json:"free_only"`
+	// AnonymousBackoff configures a circuit breaker for the keyless lane: after
+	// Threshold consecutive failed attempts the whole lane pauses for BaseHours,
+	// doubling on every further trip up to MaxHours. An absent block leaves the
+	// lane unpaused.
+	AnonymousBackoff *AnonymousBackoffConfig `json:"anonymous_backoff,omitempty"`
+}
+
+// AnonymousBackoffConfig tunes the keyless lane's circuit breaker. Zero fields
+// take the defaults applied by Normalize.
+type AnonymousBackoffConfig struct {
+	Threshold int `json:"threshold,omitempty"`
+	BaseHours int `json:"base_hours,omitempty"`
+	MaxHours  int `json:"max_hours,omitempty"`
+}
+
+// Normalize fills defaults and rejects nonsensical windows.
+func (b *AnonymousBackoffConfig) Normalize() error {
+	if b == nil {
+		return nil
+	}
+	if b.Threshold == 0 {
+		b.Threshold = 6
+	}
+	if b.BaseHours == 0 {
+		b.BaseHours = 1
+	}
+	if b.MaxHours == 0 {
+		b.MaxHours = 24
+	}
+	if b.Threshold < 1 {
+		return errors.New("models.anonymous_backoff.threshold must be at least 1")
+	}
+	if b.BaseHours < 1 {
+		return errors.New("models.anonymous_backoff.base_hours must be at least 1")
+	}
+	if b.MaxHours < b.BaseHours {
+		return errors.New("models.anonymous_backoff.max_hours must not be smaller than base_hours")
+	}
+	return nil
 }
 
 type LoggingConfig struct {
@@ -319,6 +358,9 @@ func Normalize(path string, cfg Config) (Config, error) {
 		default:
 			return Config{}, fmt.Errorf("unsupported proxy scheme %q", u.Scheme)
 		}
+	}
+	if err := cfg.Models.AnonymousBackoff.Normalize(); err != nil {
+		return Config{}, err
 	}
 	for model, protocol := range cfg.Models.Protocols {
 		if model == "" || !wire.Valid(wire.Protocol(protocol)) {
