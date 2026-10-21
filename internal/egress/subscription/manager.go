@@ -25,12 +25,13 @@ var ErrUnknownSource = errors.New("subscription: unknown source")
 
 // Source is one configured subscription.
 type Source struct {
-	ID      string
-	Name    string
-	URL     string
-	Content string
-	Enabled bool
-	Refresh time.Duration
+	ID        string
+	Name      string
+	URL       string
+	Content   string
+	Enabled   bool
+	Protocols []string
+	Refresh   time.Duration
 }
 
 // Status is the operator-facing state of one subscription.
@@ -193,8 +194,9 @@ func (m *Manager) Refresh(ctx context.Context, id string) error {
 		m.fail(source, fmt.Errorf("parse: %w", err))
 		return err
 	}
-	inputs := make([]pool.Input, 0, len(result.Nodes))
-	for _, entry := range result.Nodes {
+	nodes := filterProtocols(result.Nodes, source.Protocols, &result.Stats)
+	inputs := make([]pool.Input, 0, len(nodes))
+	for _, entry := range nodes {
 		inputs = append(inputs, pool.Input{Options: entry.Options, Raw: entry.Raw})
 	}
 	diff := m.pool.ReplaceSubscription(id, inputs)
@@ -346,4 +348,35 @@ func (m *Manager) logf(id string, err error) {
 		return
 	}
 	m.logger.Warn("subscription refresh failed", "component", "egress", "event", "subscription_refresh_failed", "subscription", id, "error", err)
+}
+
+// filterProtocols drops nodes outside a source's scheme allowlist and keeps the
+// reported stats in sync, so the UI shows what the filter removed.
+func filterProtocols(nodes []parser.Node, allow []string, stats *parser.Stats) []parser.Node {
+	if len(allow) == 0 {
+		return nodes
+	}
+	allowed := make(map[string]bool, len(allow))
+	for _, name := range allow {
+		allowed[name] = true
+	}
+	out := nodes[:0]
+	for _, entry := range nodes {
+		if allowed[string(entry.Options.Type)] {
+			out = append(out, entry)
+			continue
+		}
+		stats.Skipped++
+	}
+	stats.Total = len(out)
+	stats.Supported = 0
+	stats.Unsupported = 0
+	for _, entry := range out {
+		if entry.Options.Supported() {
+			stats.Supported++
+		} else {
+			stats.Unsupported++
+		}
+	}
+	return out
 }

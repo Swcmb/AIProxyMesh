@@ -7,8 +7,10 @@ package parser
 
 import (
 	"encoding/base64"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/url"
 	"strconv"
 	"strings"
@@ -46,6 +48,11 @@ func Parse(data []byte) (Result, error) {
 	text := normalizeText(data)
 	text = maybeBase64(text)
 
+	if looksLikeCSV(text) {
+		if result := parseCSV(text); len(result.Nodes) > 0 {
+			return finalize(result, "csv"), nil
+		}
+	}
 	if looksLikeJSON(text) {
 		if result, err := parseJSON(text); err == nil && len(result.Nodes) > 0 {
 			return finalize(result, "json"), nil
@@ -603,4 +610,92 @@ func uint16FromAny(value any) uint16 {
 		}
 	}
 	return 0
+}
+
+// looksLikeCSV matches the hproxy free-proxy-list header. The CSV source is a
+// table, not a proxy list, so it needs its own branch before URI parsing.
+func looksLikeCSV(text string) bool {
+	line, _, _ := strings.Cut(text, "\n")
+	line = strings.ToLower(strings.TrimSpace(line))
+	return strings.HasPrefix(line, "ip,port,protocols") || strings.HasPrefix(line, "ip, port, protocols")
+}
+
+// parseCSV converts the hproxy table (ip,port,protocols,...,alive) into proxy
+// URIs and reuses the URI parser, so dedupe and unsupported handling stay in
+// one place.
+func parseCSV(text string) Result {
+	reader := csv.NewReader(strings.NewReader(text))
+	reader.FieldsPerRecord = -1
+	reader.TrimLeadingSpace = true
+	reader.LazyQuotes = true
+	rows, err := reader.ReadAll()
+	if err != nil || len(rows) < 2 {
+		return Result{}
+	}
+	index := make(map[string]int, len(rows[0]))
+	for i, name := range rows[0] {
+		index[strings.ToLower(strings.TrimSpace(name))] = i
+	}
+	ipColumn, hasIP := index["ip"]
+	portColumn, hasPort := index["port"]
+	protocolColumn, hasProtocol := index["protocols"]
+	if !hasIP || !hasPort || !hasProtocol {
+		return Result{}
+	}
+	aliveColumn, hasAlive := index["alive"]
+
+	var lines []string
+	skipped := 0
+	for _, row := range rows[1:] {
+		if hasAlive {
+			switch strings.ToLower(strings.TrimSpace(cell(row, aliveColumn))) {
+			case "true", "1", "yes":
+			default:
+				skipped++
+				continue
+			}
+		}
+		ip := strings.TrimSpace(cell(row, ipColumn))
+		port := strings.TrimSpace(cell(row, portColumn))
+		if ip == "" || port == "" {
+			skipped++
+			continue
+		}
+		for _, scheme := range csvProtocols(cell(row, protocolColumn)) {
+			lines = append(lines, scheme+"://"+net.JoinHostPort(ip, port))
+		}
+	}
+	result := parseURILines(strings.Join(lines, "\n"))
+	result.Stats.Skipped += skipped
+	return result
+}
+
+func cell(row []string, index int) string {
+	if index < 0 || index >= len(row) {
+		return ""
+	}
+	return row[index]
+}
+
+// csvProtocols returns the schemes this gateway understands. The hproxy field
+// may carry several protocols and, depending on the export, may quote them.
+func csvProtocols(value string) []string {
+	seen := make(map[string]bool, 4)
+	var schemes []string
+	for _, field := range strings.FieldsFunc(value, func(r rune) bool {
+		return r == ',' || r == ';' || r == '|' || r == ' '
+	}) {
+		scheme := strings.ToLower(strings.TrimSpace(field))
+		switch scheme {
+		case "http", "https", "socks5", "socks5h":
+		default:
+			continue
+		}
+		if seen[scheme] {
+			continue
+		}
+		seen[scheme] = true
+		schemes = append(schemes, scheme)
+	}
+	return schemes
 }

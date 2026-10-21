@@ -15,12 +15,13 @@ import (
 // left out of an update keeps its stored value; URL and content are mutually
 // exclusive, and sending neither keeps the stored source.
 type subscriptionPayload struct {
-	ID             string  `json:"id"`
-	Name           *string `json:"name,omitempty"`
-	URL            *string `json:"url,omitempty"`
-	Content        *string `json:"content,omitempty"`
-	Enabled        *bool   `json:"enabled,omitempty"`
-	RefreshSeconds *int    `json:"refresh_seconds,omitempty"`
+	ID             string    `json:"id"`
+	Name           *string   `json:"name,omitempty"`
+	URL            *string   `json:"url,omitempty"`
+	Content        *string   `json:"content,omitempty"`
+	Enabled        *bool     `json:"enabled,omitempty"`
+	RefreshSeconds *int      `json:"refresh_seconds,omitempty"`
+	Protocols      *[]string `json:"protocols,omitempty"`
 }
 
 func (a *Server) egressSubscriptions() []config.EgressSubscription {
@@ -91,6 +92,7 @@ func (a *Server) handleEgressSubscriptionCreate(w http.ResponseWriter, r *http.R
 			Content:        content,
 			Enabled:        enabled,
 			RefreshSeconds: refreshSeconds,
+			Protocols:      stringSliceValue(input.Protocols),
 		})
 		return nil
 	})
@@ -138,6 +140,9 @@ func (a *Server) handleEgressSubscriptionUpdate(w http.ResponseWriter, r *http.R
 			}
 			if input.RefreshSeconds != nil {
 				sub.RefreshSeconds = *input.RefreshSeconds
+			}
+			if input.Protocols != nil {
+				sub.Protocols = append([]string(nil), (*input.Protocols)...)
 			}
 			if strings.TrimSpace(sub.URL) == "" && strings.TrimSpace(sub.Content) == "" {
 				return fmt.Errorf("订阅 %q 需要 url 或 content", id)
@@ -206,6 +211,13 @@ func ensureEgressConfig(cfg *config.Config) *config.EgressConfig {
 		cfg.Egress.Enabled = true
 	}
 	return cfg.Egress
+}
+
+func stringSliceValue(value *[]string) []string {
+	if value == nil {
+		return nil
+	}
+	return append([]string(nil), (*value)...)
 }
 
 func stringValue(value *string) string {

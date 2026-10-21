@@ -51,6 +51,9 @@ type EgressSubscription struct {
 	Content        string `json:"content,omitempty"`
 	Enabled        bool   `json:"enabled"`
 	RefreshSeconds int    `json:"refresh_seconds,omitempty"`
+	// Protocols optionally restricts this source to the listed schemes. Empty
+	// means the global egress.protocols setting decides.
+	Protocols []string `json:"protocols,omitempty"`
 }
 
 // EgressSchedule holds the scoring weights. All-zero means "use defaults".
@@ -203,6 +206,12 @@ func (e *EgressConfig) normalize(configPath string) error {
 		if sub.Content != "" && sub.RefreshSeconds > 0 {
 			return fmt.Errorf("egress.subscriptions[%q] uses inline content and must not set refresh_seconds", sub.ID)
 		}
+		sub.Protocols = normalizeProtocolNames(sub.Protocols)
+		for _, protocol := range sub.Protocols {
+			if !validEgressProtocol(protocol) {
+				return fmt.Errorf("egress.subscriptions[%q] protocols contains unsupported scheme %q", sub.ID, protocol)
+			}
+		}
 	}
 	seen := make(map[string]struct{}, len(e.Subscriptions))
 	for _, sub := range e.Subscriptions {
@@ -275,7 +284,11 @@ func cloneEgress(in *EgressConfig) *EgressConfig {
 		return nil
 	}
 	out := *in
-	out.Subscriptions = append([]EgressSubscription(nil), in.Subscriptions...)
+	out.Subscriptions = make([]EgressSubscription, len(in.Subscriptions))
+	copy(out.Subscriptions, in.Subscriptions)
+	for i := range out.Subscriptions {
+		out.Subscriptions[i].Protocols = append([]string(nil), in.Subscriptions[i].Protocols...)
+	}
 	out.Probe.Targets = append([]string(nil), in.Probe.Targets...)
 	if in.GeoIP != nil {
 		geo := *in.GeoIP
@@ -316,4 +329,29 @@ func (e *EgressConfig) ProtocolAllowed(scheme string) bool {
 	default:
 		return false
 	}
+}
+
+func normalizeProtocolNames(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		name := strings.ToLower(strings.TrimSpace(value))
+		if name == "" {
+			continue
+		}
+		if _, duplicate := seen[name]; duplicate {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	return out
+}
+
+func validEgressProtocol(name string) bool {
+	switch name {
+	case "http", "https", "socks5", "socks5h":
+		return true
+	}
+	return false
 }

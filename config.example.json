@@ -3,9 +3,7 @@
   "server_keys": [
     "sk-local-change-me-please-123456"
   ],
-  "zen_keys": [
-    "sk-zen-change-me"
-  ],
+  "zen_keys": [],
   "go_keys": [],
   "anonymous": true,
   "proxies": [
