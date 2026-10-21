@@ -18,6 +18,12 @@ import { formatApiErrorMessage } from "../lib/error-message";
 
 type Tab = "requests" | "live" | "events";
 
+const tabs: Tab[] = ["requests", "live", "events"];
+
+function readTab(value: string | null): Tab {
+  return tabs.includes(value as Tab) ? (value as Tab) : "requests";
+}
+
 const pageSizes = [20, 50, 100, 200, 500];
 
 type LogFilters = {
@@ -91,7 +97,7 @@ export function RequestsPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
-  const [tab, setTab] = useState<Tab>("requests");
+  const [tab, setTabState] = useState<Tab>(() => readTab(params.get("tab")));
   const filters = useMemo(() => readFilters(params), [params]);
   const [keyword, setKeyword] = useState(filters.keyword);
   const [detailId, setDetailIdState] = useState<string | null>(params.get("request"));
@@ -104,6 +110,19 @@ export function RequestsPage() {
       const search = new URLSearchParams(window.location.search);
       if (id) search.set("request", id);
       else search.delete("request");
+      setParams(search, { replace: true });
+    },
+    [setParams],
+  );
+
+  // The active tab belongs to the URL too, so a link can open straight into
+  // 实时尝试 or 出口事件.
+  const setTab = useCallback(
+    (next: Tab) => {
+      setTabState(next);
+      const search = new URLSearchParams(window.location.search);
+      if (next === "requests") search.delete("tab");
+      else search.set("tab", next);
       setParams(search, { replace: true });
     },
     [setParams],
@@ -124,8 +143,11 @@ export function RequestsPage() {
       if (merged.until) search.set("until", merged.until);
       if (merged.limit !== defaultFilters.limit) search.set("limit", String(merged.limit));
       if (merged.before > 0) search.set("before", String(merged.before));
-      const request = new URLSearchParams(window.location.search).get("request");
+      const carried = new URLSearchParams(window.location.search);
+      const request = carried.get("request");
       if (request) search.set("request", request);
+      const activeTab = carried.get("tab");
+      if (activeTab) search.set("tab", activeTab);
       setParams(search, { replace: true });
     },
     [filters, setParams],
@@ -248,13 +270,16 @@ export function RequestsPage() {
 
       <div className="tab-row">
         <button className={tab === "requests" ? "tab-active" : ""} onClick={() => setTab("requests")}>
-          持久请求 <span className="badge badge-neutral">{stats?.requests ?? 0}</span>
+          持久请求{" "}
+          {page ? <span className="badge badge-neutral">{stats?.requests ?? 0}</span> : null}
         </button>
         <button className={tab === "live" ? "tab-active" : ""} onClick={() => setTab("live")}>
-          实时尝试 <span className="badge badge-neutral">{monitor.data?.upstream.recent.length ?? 0}</span>
+          实时尝试{" "}
+          {monitor.data ? <span className="badge badge-neutral">{monitor.data.upstream.recent.length}</span> : null}
         </button>
         <button className={tab === "events" ? "tab-active" : ""} onClick={() => setTab("events")}>
-          出口事件 <span className="badge badge-neutral">{events.data?.events.length ?? 0}</span>
+          出口事件{" "}
+          {events.data ? <span className="badge badge-neutral">{events.data.events.length}</span> : null}
         </button>
       </div>
 
