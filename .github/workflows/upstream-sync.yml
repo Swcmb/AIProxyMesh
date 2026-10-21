@@ -37,7 +37,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       UPSTREAM_FILTER: ${{ inputs.upstream || 'all' }}
       DRY_RUN: ${{ inputs.dry_run || 'false' }}
-      ARTIFACT_DIR: ${{ github.workspace }}/.upstream-sync-reports
+      ARTIFACT_DIR: ${{ github.workspace }}/upstream-sync-reports
     steps:
       - name: Checkout main
         uses: actions/checkout@v4
@@ -53,5 +53,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: upstream-sync-report
-          path: ${{ github.workspace }}/.upstream-sync-reports
+          path: ${{ github.workspace }}/upstream-sync-reports
           if-no-files-found: warn

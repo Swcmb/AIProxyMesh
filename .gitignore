@@ -26,3 +26,4 @@ mesh/webui/dist/
 .idea/
 .vscode/
 .DS_Store
+/upstream-sync-reports/
