@@ -126,37 +126,19 @@ is_binary_diff() { # sha path
 # pipeline, the licensing files or the sync state.
 protected_path() { # path
   case "$1" in
-    .github/* | project-context/* | AGENTS.md | CLAUDE.md | LICENSE* | COPYING* | NOTICE |     mesh/go.mod | mesh/go.sum | mesh/Dockerfile | mesh/compose.yaml | .gitignore | .gitattributes)
+    .github/* | project-context/* | AGENTS.md | CLAUDE.md | LICENSE* | COPYING* | NOTICE |     go.mod | go.sum | Dockerfile | compose.yaml | .gitignore | .gitattributes)
       return 0
       ;;
   esac
   return 1
 }
 
-# map_path rewrites an upstream path to the path this repository tracks. The Go
-# module and the WebUI live under mesh/, so upstream's internal/, cmd/, webui/,
-# docs/ and scripts/ all gain that prefix.
-map_path() { # upstream path
-  case "$1" in
-    internal/* | cmd/* | webui/* | docs/* | scripts/*) printf 'mesh/%s' "$1" ;;
-    *) printf '%s' "$1" ;;
-  esac
-}
-
-# apply_one applies the diff for one upstream file, honouring the mesh/ prefix
-# for mapped roots.
+# apply_one applies the diff for one upstream file in place. The module root is
+# the repository root, so upstream paths need no rewriting.
 apply_one() { # worktree sha path
   local worktree="$1" sha="$2" path="$3"
-  case "$path" in
-    internal/* | cmd/* | webui/* | docs/* | scripts/*)
-      (cd "$worktree" && git diff --no-renames "$sha^" "$sha" -- "$path" |
-        git apply --directory=mesh --3way --whitespace=nowarn --index 2>/dev/null)
-      ;;
-    *)
-      (cd "$worktree" && git diff --no-renames "$sha^" "$sha" -- "$path" |
-        git apply --3way --whitespace=nowarn --index 2>/dev/null)
-      ;;
-  esac
+  (cd "$worktree" && git diff --no-renames "$sha^" "$sha" -- "$path" |
+    git apply --3way --whitespace=nowarn --index 2>/dev/null)
 }
 
 has_feature_commit() { # range
@@ -310,8 +292,7 @@ sync_upstream() { # name
     [ -z "$sha" ] && continue
     while IFS=$'\t' read -r status path; do
       [ -z "${path:-}" ] && continue
-      local mapped
-      mapped=$(map_path "$path")
+      local mapped="$path"
       if protected_path "$mapped"; then
         case " ${conflicted[*]} " in
           *" $mapped "*) ;;
@@ -363,7 +344,7 @@ sync_upstream() { # name
     printf '%s\n' "${conflicted[@]:-无}"
     printf '\n## 缺基线（%s）\n\n' "${#missing[@]}"
     printf '%s\n\n' "${missing[@]:-无}"
-    printf '## 检查清单\n\n- [ ] 冲突文件已按本仓库架构重写\n- [ ] 新增第三方文件保留原许可证头并登记到 `mesh/NOTICE`\n- [ ] `go build ./...`、`go test ./...`、`npm run build` 通过\n'
+    printf '## 检查清单\n\n- [ ] 冲突文件已按本仓库架构重写\n- [ ] 新增第三方文件保留原许可证头并登记到 `NOTICE`\n- [ ] `go build ./...`、`go test ./...`、`npm run build` 通过\n'
   } >"$report"
 
   local blocked=0
@@ -376,7 +357,7 @@ sync_upstream() { # name
     if [ "$DRY_RUN" != true ]; then
       # The sync PR is opened with GITHUB_TOKEN, so its pull_request event does
       # not start Checks. Compile here to keep the "broken patch" signal.
-      if (cd "$worktree/mesh" && go build ./... >"$worktree/build.log" 2>&1); then
+      if (cd "$worktree" && go build ./... >"$worktree/build.log" 2>&1); then
         build_status="通过"
       else
         build_status="失败"

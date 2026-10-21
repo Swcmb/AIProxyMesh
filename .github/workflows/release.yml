@@ -57,9 +57,9 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: mesh/go.mod
+          go-version-file: go.mod
           cache: true
-          cache-dependency-path: mesh/go.sum
+          cache-dependency-path: go.sum
 
       - name: Vet
         working-directory: mesh
@@ -115,9 +115,9 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: mesh/go.mod
+          go-version-file: go.mod
           cache: true
-          cache-dependency-path: mesh/go.sum
+          cache-dependency-path: go.sum
 
       - name: Prepare package name
         id: metadata
@@ -140,12 +140,9 @@ jobs:
           ARCHIVE_FORMAT: ${{ matrix.archive }}
         run: |
           mkdir -p "dist/$PACKAGE_NAME"
-          (
-            cd mesh
-            go build -trimpath -ldflags="-s -w -X main.version=$RELEASE_TAG" -o "../dist/$PACKAGE_NAME/mesh$EXTENSION" ./cmd/mesh
-          )
-          cp mesh/README.md mesh/LICENSE mesh/NOTICE mesh/config.example.json "dist/$PACKAGE_NAME/"
-          cp -r mesh/docs "dist/$PACKAGE_NAME/"
+          go build -trimpath -ldflags="-s -w -X main.version=$RELEASE_TAG" -o "dist/$PACKAGE_NAME/mesh$EXTENSION" ./cmd/mesh
+          cp README.md LICENSE NOTICE config.example.json "dist/$PACKAGE_NAME/"
+          cp -r docs "dist/$PACKAGE_NAME/"
           if [[ "$ARCHIVE_FORMAT" == "zip" ]]; then
             (cd dist && zip -q -r "$PACKAGE_NAME.zip" "$PACKAGE_NAME")
             archive="$PACKAGE_NAME.zip"
@@ -208,8 +205,8 @@ jobs:
       - name: Build and push image
         uses: docker/build-push-action@v6
         with:
-          context: mesh
-          file: mesh/Dockerfile
+          context: .
+          file: Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.image_metadata.outputs.tags }}

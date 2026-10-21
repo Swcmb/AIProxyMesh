@@ -1,26 +1,26 @@
 # 本地配置与密钥
 .env
 .env.*
-mesh/config.json
-mesh/config.json.*
-mesh/data/
+/config.json
+/config.json.*
+/data/
 
 # 运行时状态（节点/订阅/健康/事件）
-mesh/*.db
-mesh/*.db-*
-mesh/*.sqlite
-mesh/*.sqlite-*
-mesh/*.log
+/*.db
+/*.db-*
+/*.sqlite
+/*.sqlite-*
+/*.log
 
 # 构建与临时产物
-mesh/mesh
-mesh/mesh.exe
-mesh/bin/
-mesh/coverage.out
+/mesh
+/mesh.exe
+/bin/
+/coverage.out
 
-# 前端依赖与本地构建输出（内嵌产物 mesh/internal/webui/dist 必须入库，供 go build 使用）
-mesh/webui/node_modules/
-mesh/webui/dist/
+# 前端依赖与本地构建输出（内嵌产物 internal/webui/dist 必须入库，供 go build 使用）
+webui/node_modules/
+webui/dist/
 
 # 编辑器
 .idea/

@@ -1,13 +1,12 @@
 # AGENTS.md
 
-本仓库是一个自包含的单一产品仓库：`mesh/` 包含完整源码、前端、测试与发布配置，没有任何子模块。
+本仓库是一个自包含的单一产品仓库：仓库根目录即 Go 模块根，包含完整源码、前端、测试与发布配置，没有任何子模块。
 
-- `mesh/`：Go 模块（`github.com/Swcmb/AIProxyMesh/mesh`，Go 1.25.5），提供 OpenCode API 网关、统一代理出口池、模型排名与轮转。单二进制、单 Docker 镜像、内嵌 React WebUI。
+- 根目录：Go 模块（`github.com/Swcmb/AIProxyMesh/mesh`，Go 1.25.5），提供 OpenCode API 网关、统一代理出口池、模型排名与轮转。单二进制、单 Docker 镜像、内嵌 React WebUI。
 
-## 构建与测试（均在 `mesh/` 内执行）
+## 构建与测试（在仓库根目录执行）
 
 ```bash
-cd mesh
 go build ./...
 go test ./...
 go test -race ./...
@@ -15,13 +14,13 @@ go vet ./...
 
 # 前端（仅修改 webui/ 或需要刷新内嵌产物时）
 cd webui && npm ci && npm run build
-# 产物写入 mesh/internal/webui/dist 并嵌入 Go 二进制
+# 产物写入 internal/webui/dist 并嵌入 Go 二进制
 
 # 单镜像
 docker build -t mesh:local .
 ```
 
-仓库根目录没有 Makefile / 脚本；在根目录运行 `go` 命令无效。
+仓库根目录没有 Makefile；自动化脚本只存在于 `.github/scripts/`。
 
 ## 架构边界
 
@@ -34,21 +33,21 @@ docker build -t mesh:local .
 - **轮转顺序**：`sota` / `sweet` 的模型顺序由排名引擎按 `ranking.sota_task` / `ranking.sweet_task` 自动生成；配置与 API 不再接受手写顺序。
 - **认证**：管理端统一使用 session + CSRF；`/api/egress/*` 与 `/api/rankings` 沿用同一认证。
 - **配置与状态分离**：业务配置在 `config.json`；节点/订阅/健康/延迟/事件在 `egress.state_path` 的 SQLite 中独立更新；请求与尝试日志在 `logging.requests.state_path` 的独立 SQLite，写入走缓冲，不阻塞请求。
-- **许可证**：整体 GPL-3.0-or-later；第三方声明见 `mesh/NOTICE`。
+- **许可证**：整体 GPL-3.0-or-later；第三方声明见 `NOTICE`。
 
 ## CI 与自动化
 
 - `.github/workflows/checks.yml`、`release.yml`：Go 矩阵、test/race、WebUI 构建；`v*` 标签发布六平台二进制与 GHCR 镜像。
 - `.github/workflows/update-dependencies.yml`：每天更新 Go 补丁依赖与前端依赖；有变化时推送 `main` 并显式触发 checks。
-- `.github/workflows/upstream-sync.yml` + `.github/scripts/upstream-sync.sh`：每天拉取 opencode2api / Resin，逐文件尝试 `git apply --3way`（按 `mesh/` 前缀映射），干净的改动开草稿 PR，冲突写带 `upstream-sync` 标签的 Issue；状态在 `project-context/upstream-state.json`。
+- `.github/workflows/upstream-sync.yml` + `.github/scripts/upstream-sync.sh`：每天拉取 opencode2api / Resin，逐文件尝试 `git apply --3way`，干净的改动开草稿 PR，冲突写带 `upstream-sync` 标签的 Issue；状态在 `project-context/upstream-state.json`。
 - `.github/workflows/version-bump.yml`：带 `upstream-sync` 标签的 PR 合入后按保守规则升版、打 `v*` 标签，并显式分发 release 与 checks（`GITHUB_TOKEN` 推送不会触发工作流）。
 - 失败邮件由 `notify-failure.yml` 处理，依赖仓库 Secrets：`SMTP_SERVER`、`SMTP_USERNAME`、`SMTP_PASSWORD`、`NOTIFY_EMAIL`（可选 `SMTP_PORT`、`SMTP_SECURE`、`SMTP_FROM`）。
 
 ## 文档
 
-- 产品说明与构建/部署：`mesh/README.md`
-- 配置参考：`mesh/docs/configuration.md`
-- API 参考：`mesh/docs/api.md`
+- 产品说明与构建/部署：`README.md`
+- 配置参考：`docs/configuration.md`
+- API 参考：`docs/api.md`
 - 模型排名规格：`project-context/specs/model-ranking.md`
 - 重构记录：`project-context/refactor-report.md`
 
