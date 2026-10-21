@@ -410,7 +410,11 @@ func (g *Gateway) doAnonymousUpstream(ctx context.Context, route models.Route, b
 			return resp, nil, attempts
 		}
 		lastResponse = resp
+<<<<<<< ours
 		lastErr = asProxyUnavailable(proxy, err)
+=======
+		lastErr = asProxyUnavailable(node.proxy, err)
+>>>>>>> theirs
 		if err != nil {
 			g.logger.Debug("anonymous transport attempt failed", "component", "upstream", "event", "anonymous_attempt_transport_failed", "request_id", ids.Request, "attempt", attempts, "tier", config.TierZen, "key_id", "anonymous", "channel", "anonymous", "anonymous", true, "proxy", config.RedactURL(proxy.name), "duration_ms", duration.Milliseconds(), "error", err)
 		} else {
@@ -422,7 +426,11 @@ func (g *Gateway) doAnonymousUpstream(ctx context.Context, route models.Route, b
 	}
 	if lastErr == nil {
 		lastErr = errors.New("no healthy anonymous proxies available")
+<<<<<<< ours
 		if !g.egressEnabled() && !g.transports.hasHealthy() {
+=======
+		if !g.transports.hasHealthy() {
+>>>>>>> theirs
 			lastErr = fmt.Errorf("no healthy anonymous proxies available: %w", errProxyUnavailable)
 		}
 	}
@@ -771,6 +779,7 @@ func (g *Gateway) doSelectedKeyUpstream(ctx context.Context, route models.Route,
 		g.recordUpstreamAttempt(ctx, route, ids, attemptOffset+1, keyID, "key", false, proxyTrace(proxy), resp, err, duration)
 	}
 	if err != nil {
+<<<<<<< ours
 		if egressAttempt != nil && egressAttempt.ProxyURL != nil {
 			return nil, &proxyUnavailableError{proxy: egressAttempt.NodeName, err: err}, 1
 		}
@@ -778,6 +787,9 @@ func (g *Gateway) doSelectedKeyUpstream(ctx context.Context, route models.Route,
 			return nil, asProxyUnavailable(proxy, err), 1
 		}
 		return nil, err, 1
+=======
+		return nil, asProxyUnavailable(proxy, err), 1
+>>>>>>> theirs
 	}
 	return resp, nil, 1
 }

@@ -23,6 +23,7 @@ import (
 )
 
 func (g *Gateway) syncRotation() {
+<<<<<<< ours
 	orders, available := g.rotationPlan()
 	g.rotation.Apply(orders, available)
 }
@@ -34,6 +35,13 @@ func (m *RuntimeManager) Rankings(task string) (ranking.Preset, []ranking.Result
 	r := m.current.Load()
 	if r == nil {
 		return ranking.Preset{}, nil, errors.New("runtime not ready")
+=======
+	available := map[string]bool{}
+	for _, model := range g.catalog.List() {
+		if route, err := g.catalog.Route(model, len(g.cfg.ZenKeys) > 0, len(g.cfg.GoKeys) > 0, g.cfg.Anonymous); err == nil && route.Protocol != wire.SystemOne {
+			available[model] = true
+		}
+>>>>>>> theirs
 	}
 	return r.gateway.Rankings(task)
 }
@@ -91,7 +99,7 @@ func (g *Gateway) handleRotation(w http.ResponseWriter, r *http.Request, externa
 			break
 		}
 		visited[token.Model] = true
-		route, err := g.catalog.RouteForTier(token.Model, config.TierGo, false, g.goNodes.Len() > 0)
+		route, err := g.catalog.Route(token.Model, len(g.cfg.ZenKeys) > 0, len(g.cfg.GoKeys) > 0, g.cfg.Anonymous)
 		if err != nil {
 			continue
 		}
@@ -101,7 +109,7 @@ func (g *Gateway) handleRotation(w http.ResponseWriter, r *http.Request, externa
 			total++
 			if meta != nil {
 				meta.Model = token.Model
-				meta.Tier = "go"
+				meta.Tier = string(route.Tier)
 				meta.Protocol = route.Protocol
 				meta.Attempts = total
 				meta.Usage = wire.Usage{}
@@ -200,6 +208,7 @@ func (g *Gateway) rotationAttempt(parent context.Context, w http.ResponseWriter,
 		result.reason = "request_conversion_error"
 		return result
 	}
+<<<<<<< ours
 	body, shaped := g.shapeKeyBody(bodies[config.TierGo], route, config.TierGo)
 	cursor := g.goNodes.CursorFor(ids.Session)
 	var node *upstreamNode
@@ -234,10 +243,34 @@ func (g *Gateway) rotationAttempt(parent context.Context, w http.ResponseWriter,
 		setRequestCredentialEgress(parent, config.TierGo, keyID, "key", false, egressAttempt)
 	} else {
 		proxy = g.goNodes.Proxy(node)
+=======
+	var resp *http.Response
+	var shaped bool
+	if route.Anonymous {
+		resp, err, _ = g.doAnonymousUpstream(ctx, route, bodies, ids, attempt-1)
+	} else {
+		body, keyShaped := g.shapeKeyBody(bodies[route.Tier], route, route.Tier)
+		shaped = keyShaped
+		pool, upstreamURL := g.zenNodes, g.cfg.Upstream.Zen
+		if route.Tier == config.TierGo {
+			pool, upstreamURL = g.goNodes, g.cfg.Upstream.Go
+		}
+		cursor := pool.CursorFor(ids.Session)
+		var node *upstreamNode
+		for n := 0; n < attempt; n++ {
+			node = cursor.Next()
+		}
+		if node == nil {
+			result.err = fmt.Errorf("no %s key", route.Tier)
+			return result
+		}
+		proxy := pool.Proxy(node)
+>>>>>>> theirs
 		if proxy == nil {
 			result.err = errors.New("no proxy")
 			return result
 		}
+<<<<<<< ours
 		client = proxy.client
 		setRequestCredential(parent, config.TierGo, keyID, "key", false, proxy)
 	}
@@ -270,6 +303,21 @@ func (g *Gateway) rotationAttempt(parent context.Context, w http.ResponseWriter,
 	} else {
 		g.recordUpstreamAttempt(parent, route, ids, attempt, keyID, "key", false, proxyTrace(proxy), resp, err, duration)
 	}
+=======
+		req, requestErr := newUpstreamRequest(ctx, upstreamURL, route.Protocol, body, ids, node.key)
+		if requestErr != nil {
+			result.err = requestErr
+			return result
+		}
+		req.GetBody = nil
+		client := *proxy.client
+		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		setRequestCredential(parent, route.Tier, config.KeyDisplayID(node.key), "key", false, proxy)
+		started := time.Now()
+		resp, err = client.Do(req)
+		g.recordUpstreamAttempt(parent, route, ids, attempt, config.KeyDisplayID(node.key), "key", false, proxy, resp, err, time.Since(started))
+	}
+>>>>>>> theirs
 	if resp != nil {
 		defer resp.Body.Close()
 	}
@@ -353,7 +401,7 @@ func (g *Gateway) rotationAttempt(parent context.Context, w http.ResponseWriter,
 		result.reason = "first_output_timeout"
 		return result
 	}
-	if shaped {
+	if route.Anonymous || shaped {
 		b, err = wire.CollapseStream(bytes.NewReader(b), route.Protocol, route.ID)
 	}
 	var document map[string]any

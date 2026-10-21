@@ -51,7 +51,6 @@ type Manager struct {
 	mu    sync.Mutex
 	path  string
 	state Snapshot
-	cfg   config.RotationConfig
 }
 
 func New(path string, cfg config.RotationConfig) (*Manager, error) {
@@ -85,15 +84,29 @@ func (m *Manager) Configure(cfg config.RotationConfig) {
 			m.state.Groups = append(m.state.Groups, &Group{ID: id})
 		}
 		g := m.state.Groups[i]
+<<<<<<< ours
 		if g.Alias != c.Alias {
+=======
+		order := slices.Clone(c.Order)
+		if !slices.Equal(order, g.Order) || g.Alias != c.Alias {
+>>>>>>> theirs
 			g.Generation++
 		}
 		g.Alias = c.Alias
 		if g.Paused == nil {
 			g.Paused = map[string]time.Time{}
 		}
+<<<<<<< ours
+=======
+		if !slices.Contains(g.Order, g.Current) {
+			g.Current = ""
+			if len(g.Order) > 0 {
+				g.Current = g.Order[0]
+			}
+			g.Generation++
+		}
+>>>>>>> theirs
 	}
-	m.cfg = cfg
 	m.state.FirstOutputSeconds = cfg.FirstOutputSeconds
 	m.saveLocked()
 }
@@ -108,6 +121,7 @@ func (m *Manager) Apply(orders map[string][]string, available map[string]bool) {
 	for _, g := range m.state.Groups {
 		order := dedupe(orders[g.ID])
 		g.Available = map[string]bool{}
+<<<<<<< ours
 		for _, model := range order {
 			if available[model] {
 				g.Available[model] = true
@@ -133,6 +147,15 @@ func (m *Manager) Apply(orders map[string][]string, available map[string]bool) {
 		}
 		if next == "" {
 			g.Current = ""
+=======
+		for model := range available {
+			if config.IsSOTA(model) == (g.ID == "sota") && slices.Contains(g.Order, model) {
+				g.Available[model] = true
+			}
+		}
+		if g.Current == "" && len(g.Order) > 0 {
+			g.Current = g.Order[0]
+>>>>>>> theirs
 			g.Generation++
 		} else {
 			m.switchLocked(g, next, "综合排名更新")

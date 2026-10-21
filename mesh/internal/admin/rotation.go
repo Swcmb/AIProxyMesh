@@ -7,10 +7,17 @@ import (
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/httpx"
 )
 
+// handleRotation reports the rotation state: both groups with their alias,
+// order, current model, pause map and recent switches, plus the recent
+// attempts and the first-output timeout.
 func (a *Server) handleRotation(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	httpx.WriteJSON(w, 200, a.manager.RotationSnapshot())
 }
+
+// handleSaveRotation stores new aliases and orders. Each order must be a
+// permutation of the group's current order, so a list the WebUI rendered
+// before a catalog refresh is rejected instead of dropping models.
 func (a *Server) handleSaveRotation(w http.ResponseWriter, r *http.Request) {
 	var input config.RotationConfig
 	if err := decodeAdminJSON(w, r, &input); err != nil {
@@ -30,6 +37,9 @@ func (a *Server) handleSaveRotation(w http.ResponseWriter, r *http.Request) {
 	}
 	a.handleRotation(w, r)
 }
+
+// handleSelectRotation switches a group to another of its models manually,
+// clearing that model's pause.
 func (a *Server) handleSelectRotation(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Group string `json:"group"`
