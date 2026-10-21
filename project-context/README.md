@@ -6,4 +6,7 @@
 | :--- | :--- |
 | `specs/model-ranking.md` | 模型综合排名的完整定义：公式、四个维度、任务预设与准入条件 |
 | `specs/webui-redesign.md` | Web UI 全面升级提示词：设计参考、各页面要求、实施阶段与验收标准 |
+| `specs/webui-redesign-spec.md` | Web UI 改造实施规格（任务分解、验收门槛、回滚与验证通路） |
+| `specs/webui-redesign-report.md` | Web UI 改造交付报告：页面清单、测试结果、文件变更与剩余问题 |
+| `artifacts/redesign-backup/` | Web UI 改造 T1–T10 任务前文件快照，用于整文件回退；验收后处置由用户裁决 |
 | `refactor-report.md` | 自包含重构与排名驱动轮转的变更记录、验证结果与破坏性影响 |
