@@ -136,6 +136,12 @@ git diff <sha>^ <sha> -- <path> | git apply --3way --whitespace=nowarn --index
 | `conflict` | 命令失败且本仓库存在该路径 | 记入报告，留待 agent 重写 |
 | `missing-base` | 命令失败且本仓库不存在该路径，且上游该提交不是新增文件 | 记入报告 |
 
+路径映射与保护：
+
+- 上游 `internal/`、`cmd/`、`webui/`、`docs/`、`scripts/` 映射到本仓库的 `mesh/` 同名目录（`git apply --directory=mesh`）；其余路径原样。
+- 只对本仓库已跟踪的文件做就地补丁。上游新增文件一律记为 `missing-base`，避免把另一套前端/脚本当死代码塞进来。
+- `.github/**`、`project-context/**`、`AGENTS.md`、`CLAUDE.md`、许可证与 NOTICE、`mesh/go.mod`、`mesh/go.sum`、Dockerfile、compose、`.gitignore`、`.gitattributes` 受保护，永不自动改写。
+
 约束：
 
 - 不修改上游文件中的版权头与 `SPDX-License-Identifier`；新增第三方文件需同步登记到 `mesh/NOTICE`（在报告的检查清单中提示）。

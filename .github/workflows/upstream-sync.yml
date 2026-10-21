@@ -1,0 +1,57 @@
+name: Upstream sync
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+    inputs:
+      upstream:
+        description: "要检查的上游"
+        type: choice
+        options: [all, opencode2api, resin]
+        default: all
+      dry_run:
+        description: "只产出报告，不建分支 / 不开 PR / 不写状态"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Port upstream commits
+    runs-on: ubuntu-latest
+    env:
+      GIT_AUTHOR_NAME: github-actions[bot]
+      GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+      GIT_COMMITTER_NAME: github-actions[bot]
+      GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+      GH_TOKEN: ${{ github.token }}
+      UPSTREAM_FILTER: ${{ inputs.upstream || 'all' }}
+      DRY_RUN: ${{ inputs.dry_run || 'false' }}
+      ARTIFACT_DIR: ${{ runner.temp }}/upstream-sync
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Sync upstreams
+        run: bash .github/scripts/upstream-sync.sh
+
+      - name: Upload dry-run report
+        if: always() && inputs.dry_run
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-sync-report
+          path: ${{ runner.temp }}/upstream-sync
+          if-no-files-found: warn

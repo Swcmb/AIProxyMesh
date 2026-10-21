@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Eye, Pencil, Plus, RefreshCw, Save, Trash2, Wand2, X } from "lucide-react";
 import { api } from "../lib/api";
-import type { ConfigView, EgressSnapshot, EgressSubscription } from "../lib/types";
+import type { ConfigView, EgressSnapshot, EgressSubscription, SubscriptionPreset } from "../lib/types";
 import { EmptyState, ErrorNotice, Loading, PageHeader, StatCard } from "../components/Common";
 import { Button } from "../components/ui/Button";
 import { Input } from "../components/ui/Input";
@@ -51,6 +51,11 @@ export function SubscriptionsPage() {
     queryKey: ["egress", "summary"],
     queryFn: () => api.get<EgressSnapshot>("/api/egress"),
     refetchInterval: 15_000,
+  });
+  const presets = useQuery({
+    queryKey: ["egress", "subscription-presets"],
+    queryFn: () => api.get<{ presets: SubscriptionPreset[] }>("/api/egress/subscription-presets"),
+    staleTime: 300_000,
   });
 
   const invalidate = () => {
@@ -158,6 +163,44 @@ export function SubscriptionsPage() {
       </div>
 
       {!egress.data?.enabled ? <ErrorNotice message="出口池未启用：添加订阅保存后会自动启用 egress。" /> : null}
+
+      {(presets.data?.presets.length ?? 0) > 0 ? (
+        <div className="card panel">
+          <div className="panel-head">
+            <h3>预设</h3>
+            <span className="badge badge-neutral">默认不启用，点击添加后才会拉取</span>
+          </div>
+          <div className="timeline">
+            {(presets.data?.presets ?? []).map((preset) => {
+              const added = subscriptions.some((sub) => sub.id === preset.id);
+              return (
+                <div className="timeline-item" key={preset.id}>
+                  <div>
+                    <strong>{preset.name}</strong>
+                    <div className="muted mono">{preset.id} · {preset.format}</div>
+                  </div>
+                  <div>
+                    <div>{preset.description}</div>
+                    <div className="muted">{preset.risk}</div>
+                  </div>
+                  <div className="table-actions">
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={added || busy}
+                      onClick={() =>
+                        create.mutate({ id: preset.id, name: preset.name, url: preset.url, enabled: true, refresh_seconds: 3600 })
+                      }
+                    >
+                      <Wand2 size={13} /> {added ? "已添加" : "添加"}
+                    </Button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
 
       <div className="card panel">
         <div className="panel-head">
