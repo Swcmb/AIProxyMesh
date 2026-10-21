@@ -667,6 +667,7 @@ export interface ConfigView {
       upstream_success_weight?: number;
     };
     protocols: { http?: boolean; https?: boolean; socks5?: boolean; socks5h?: boolean };
+    geoip?: { enabled?: boolean; url?: string; sha256?: string; path?: string; refresh_days?: number };
     cooldown: { base_seconds?: number; max_seconds?: number; recovery_probe?: boolean };
     failover: {
       status_policy?: Record<string, string>;

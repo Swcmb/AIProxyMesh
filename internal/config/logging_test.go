@@ -16,17 +16,24 @@ func loadLoggingConfig(t *testing.T, logging string) Config {
 	return cfg
 }
 
-func TestRequestsLogDefaults(t *testing.T) {
+func TestRequestsLogDefaultsToOff(t *testing.T) {
 	cfg := loadLoggingConfig(t, `{"level": "info", "ring_size": 2000}`)
 	requests := cfg.Logging.Requests
-	if !requests.IsEnabled() {
-		t.Fatal("an absent requests section keeps persistence on")
+	if requests.IsEnabled() {
+		t.Fatal("an absent requests section must not record by default")
 	}
-	if filepath.Base(requests.StatePath) != "config.json.requests.db" {
-		t.Fatalf("expected a path derived from the config file, got %q", requests.StatePath)
+	if requests.StatePath != "" {
+		t.Fatalf("a disabled log must not derive a path: %q", requests.StatePath)
 	}
-	if requests.RetentionDays != 7 || requests.MaxRows != 200000 {
-		t.Fatalf("unexpected defaults: %+v", requests)
+	enabled := loadLoggingConfig(t, `{"level": "info", "ring_size": 2000, "requests": {"enabled": true}}`)
+	if !enabled.Logging.Requests.IsEnabled() {
+		t.Fatal("explicit enabled true must turn persistence on")
+	}
+	if filepath.Base(enabled.Logging.Requests.StatePath) != "config.json.requests.db" {
+		t.Fatalf("expected a path derived from the config file, got %q", enabled.Logging.Requests.StatePath)
+	}
+	if enabled.Logging.Requests.RetentionDays != 7 || enabled.Logging.Requests.MaxRows != 200000 {
+		t.Fatalf("unexpected defaults: %+v", enabled.Logging.Requests)
 	}
 }
 
@@ -42,16 +49,16 @@ func TestRequestsLogDisabledClearsDerivedFields(t *testing.T) {
 
 func TestRequestsLogValidation(t *testing.T) {
 	for name, body := range map[string]string{
-		"retention too large": `{"requests": {"retention_days": 4000}}`,
-		"rows too large":      `{"requests": {"max_rows": 9000000}}`,
-		"buffer too large":    `{"requests": {"buffer_size": 900000}}`,
+		"retention too large": `{"enabled": true, "requests": {"retention_days": 4000}}`,
+		"rows too large":      `{"enabled": true, "requests": {"max_rows": 9000000}}`,
+		"buffer too large":    `{"enabled": true, "requests": {"buffer_size": 900000}}`,
 	} {
 		path := writeConfig(t, `{"server_keys": ["local-key"], "zen_keys": ["zen-key"], "logging": `+body+`}`)
 		if _, err := Load(path); err == nil {
 			t.Fatalf("%s must be rejected", name)
 		}
 	}
-	cfg := loadLoggingConfig(t, `{"level": "info", "ring_size": 2000, "requests": {"retention_days": 3, "max_rows": 5000}}`)
+	cfg := loadLoggingConfig(t, `{"level": "info", "ring_size": 2000, "requests": {"enabled": true, "retention_days": 3, "max_rows": 5000}}`)
 	if cfg.Logging.Requests.RetentionDays != 3 || cfg.Logging.Requests.MaxRows != 5000 {
 		t.Fatalf("explicit values must survive: %+v", cfg.Logging.Requests)
 	}
@@ -72,7 +79,7 @@ func TestRequestsLogSameSource(t *testing.T) {
 }
 
 func TestRequestsLogRoundTrip(t *testing.T) {
-	cfg := loadLoggingConfig(t, `{"level": "info", "ring_size": 2000, "requests": {"retention_days": 14}}`)
+	cfg := loadLoggingConfig(t, `{"level": "info", "ring_size": 2000, "requests": {"enabled": true, "retention_days": 14}}`)
 	encoded, err := json.Marshal(cfg.Logging)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)

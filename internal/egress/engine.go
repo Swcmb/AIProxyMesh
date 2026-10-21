@@ -410,10 +410,11 @@ func (e *Engine) sources() []subscription.Source {
 	}
 	if cfg.LegacyProxiesImported() && current.legacy != "" {
 		out = append(out, subscription.Source{
-			ID:      "legacy",
-			Name:    "legacy proxies/proxyfile",
-			Content: current.legacy,
-			Enabled: true,
+			ID:       "legacy",
+			Name:     "legacy proxies/proxyfile",
+			Content:  current.legacy,
+			Enabled:  true,
+			Internal: true,
 		})
 	}
 	return out

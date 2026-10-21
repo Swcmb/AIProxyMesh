@@ -24,19 +24,19 @@ import { fetchSession, logout } from "../lib/api";
 
 const navItems = [
   { label: "总览", path: "/overview", icon: LayoutDashboard },
-  { label: "模型管理", path: "/models", icon: Boxes },
-  { label: "接入手册", path: "/access", icon: BookOpen },
-  { label: "上游管理", path: "/upstreams", icon: KeyRound },
-  { label: "模型轮转", path: "/rotation", icon: RefreshCw },
-  { label: "API Key", path: "/api-keys", icon: KeyRound },
+  { label: "实时监控", path: "/monitor", icon: Activity },
   { label: "额度看板", path: "/quotas", icon: Gauge },
+  { label: "请求与切换日志", path: "/requests", icon: Logs },
+  { label: "路由诊断", path: "/diagnostics", icon: Stethoscope },
+  { label: "模型管理", path: "/models", icon: Boxes },
+  { label: "模型轮转", path: "/rotation", icon: RefreshCw },
+  { label: "上游管理", path: "/upstreams", icon: KeyRound },
   { label: "代理订阅", path: "/subscriptions", icon: Rss },
   { label: "代理节点池", path: "/nodes", icon: Network },
-  { label: "请求与切换日志", path: "/requests", icon: Logs },
+  { label: "API Key", path: "/api-keys", icon: KeyRound },
   { label: "Playground", path: "/playground", icon: FlaskConical },
-  { label: "路由诊断", path: "/diagnostics", icon: Stethoscope },
+  { label: "接入手册", path: "/access", icon: BookOpen },
   { label: "配置管理", path: "/config", icon: Settings },
-  { label: "实时监控", path: "/monitor", icon: Activity },
 ];
 
 export function AppShell() {

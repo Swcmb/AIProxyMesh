@@ -172,7 +172,7 @@ SQLite（modernc，纯 Go）通过内嵌迁移自动建表：
 
 | 字段 | 说明 |
 | --- | --- |
-| `enabled` | 缺省即启用；`false` 关闭持久化，只保留内存环形缓冲 |
+| `enabled` | 缺省关闭；显式 `true` 才记录，关闭时只保留内存环形缓冲 |
 | `state_path` | 请求库路径；默认 `<config>.requests.db` |
 | `retention_days` | 按时间裁剪（1–3650），默认 7 天 |
 | `max_rows` | 按条数裁剪，保留最新的 N 条请求，默认 200000 |
