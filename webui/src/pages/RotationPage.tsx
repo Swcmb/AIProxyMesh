@@ -24,7 +24,11 @@ export function RotationPage() {
   if (snapshot.isError) {
     return <ErrorNotice message={formatApiErrorMessage(snapshot.error)} />;
   }
-  const groups = snapshot.data?.groups ?? [];
+  const groups = (snapshot.data?.groups ?? []).map((group) => ({
+    ...group,
+    order: group.order ?? [],
+    switches: group.switches ?? [],
+  }));
   if (!groups.length) {
     return <EmptyState title="暂无轮转分组" />;
   }
