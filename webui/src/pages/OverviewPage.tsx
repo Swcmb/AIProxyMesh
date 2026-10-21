@@ -216,7 +216,7 @@ export function OverviewPage() {
             </div>
             <div className="timeline-item">
               <span className="muted">上游 Key</span>
-              <strong>{data.resources.keys.length}</strong>
+              <strong>{(data.resources.keys ?? []).length}</strong>
               <span className="badge badge-info">zen + go</span>
             </div>
             <div className="timeline-item">

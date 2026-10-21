@@ -421,7 +421,14 @@ func (m *RuntimeManager) Resources() ResourceSnapshot {
 	}
 	gateway := runtime.gateway
 	_, models := gateway.availableModels()
-	result := ResourceSnapshot{Models: models, Anonymous: gateway.cfg.AnonymousEnabled()}
+	// Both lists serialize as [] when empty: the console reads .length on them,
+	// and null would break the page when no upstream key is configured.
+	result := ResourceSnapshot{
+		Models:    models,
+		Anonymous: gateway.cfg.AnonymousEnabled(),
+		Keys:      make([]KeyStatus, 0, gateway.zenNodes.Len()+gateway.goNodes.Len()),
+		Proxies:   make([]ProxyStatus, 0, len(gateway.transports.items)),
+	}
 	result.Metadata = gateway.catalog.MetadataSnapshot()
 	result.Keys = append(result.Keys, keyStatuses("zen", gateway.zenNodes)...)
 	result.Keys = append(result.Keys, keyStatuses("go", gateway.goNodes)...)
