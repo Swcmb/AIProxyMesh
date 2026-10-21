@@ -21,17 +21,16 @@ type subscriptionPreset struct {
 const presetRisk = "公共代理，可用性与隐私风险高于自建出口；启用前请确认可接受，不建议作为唯一出口。"
 
 // subscriptionPresets mirror the two public sources api-proxy-pool aggregates.
-// Both are restricted to HTTP/HTTPS: SOCKS exits in public lists are rarely
-// stable and this gateway already prefers plain HTTP tunnels for them.
+// Both import HTTP, HTTPS and the SOCKS5 family; SOCKS4 entries are dropped.
 var subscriptionPresets = []subscriptionPreset{
 	{
 		ID:        "api-proxy-pool-hproxy",
 		Name:      "api-proxy-pool · hproxy",
 		URL:       "https://raw.githubusercontent.com/hproxy-com/free-proxy-list/main/live.csv",
 		Format:    "csv",
-		Protocols: []string{"http", "https"},
-		Description: "hproxy 免费代理清单（CSV），只导入存活且协议为 HTTP/HTTPS 的条目，" +
-			"按 ip、端口与协议去重。",
+		Protocols: []string{"http", "https", "socks5", "socks5h"},
+		Description: "hproxy 免费代理清单（CSV），只导入存活且协议为 HTTP/HTTPS/SOCKS5 的条目，" +
+			"按 ip、端口与协议去重，SOCKS4 会被过滤。",
 		Risk: presetRisk,
 	},
 	{
@@ -39,9 +38,9 @@ var subscriptionPresets = []subscriptionPreset{
 		Name:      "api-proxy-pool · proxifly",
 		URL:       "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/all/data.txt",
 		Format:    "uri",
-		Protocols: []string{"http", "https"},
-		Description: "proxifly 免费代理清单（每行一条 URI），只保留 HTTP/HTTPS，" +
-			"SOCKS 与其他协议会被过滤。",
+		Protocols: []string{"http", "https", "socks5", "socks5h"},
+		Description: "proxifly 免费代理清单（每行一条 URI），保留 HTTP/HTTPS 与 SOCKS5，" +
+			"SOCKS4 及其他协议会被过滤。",
 		Risk: presetRisk,
 	},
 }
