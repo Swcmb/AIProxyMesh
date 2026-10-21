@@ -65,26 +65,30 @@ export function RotationPage() {
             {group.order.length === 0 ? (
               <EmptyState title="暂无候选模型" hint="等待模型目录探测到可路由的 Go 模型" />
             ) : (
-              <div className="timeline">
+              <div className="rotation-list">
                 {group.order.map((model, index) => {
                   const paused = group.paused?.[model];
                   const available = group.available?.[model] !== false;
+                  const current = model === group.current;
                   return (
-                    <div className="timeline-item" key={model}>
-                      <span className="muted">{index + 1}.</span> <span className="mono">{model}</span>
-                      <div className="tag-list">
-                        {model === group.current ? <span className="badge badge-success">当前</span> : null}
+                    <div className={`rotation-row${current ? " is-current" : ""}`} key={model}>
+                      <span className="rotation-rank">{index + 1}</span>
+                      <span className="rotation-name mono" title={model}>
+                        {model}
+                      </span>
+                      <div className="rotation-badges">
+                        {current ? <span className="badge badge-success">当前</span> : null}
                         {paused ? <span className="badge badge-warning">暂停至 {formatDateTime(paused)}</span> : null}
                         {!available ? <span className="badge badge-danger">不可用</span> : null}
                       </div>
-                      <div className="table-actions">
+                      <div className="rotation-actions">
                         <Button
                           size="sm"
-                          variant={model === group.current ? "secondary" : "primary"}
-                          disabled={!available || model === group.current || select.isPending}
+                          variant={current ? "secondary" : "primary"}
+                          disabled={!available || current || select.isPending}
                           onClick={() => select.mutate({ group: group.id, model })}
                         >
-                          {model === group.current ? "使用中" : "切换"}
+                          {current ? "使用中" : "切换"}
                         </Button>
                       </div>
                     </div>

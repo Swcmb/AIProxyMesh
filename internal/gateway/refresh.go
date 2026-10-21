@@ -205,7 +205,7 @@ func (g *Gateway) refreshZen(ctx context.Context) []string {
 	if models := g.refreshTier(ctx, g.cfg.Upstream.Zen, g.zenNodes); models != nil {
 		return models
 	}
-	if !g.cfg.Anonymous {
+	if !g.cfg.AnonymousEnabled() {
 		return nil
 	}
 	return g.refreshAnonymousTier(ctx, g.cfg.Upstream.Anonymous)

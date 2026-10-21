@@ -239,7 +239,7 @@ func (a *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	candidate := config.Config{
 		ServerKeyMetadata: current.ServerKeyMetadata,
 		Rotation:          current.Rotation,
-		Listen:            update.Listen, ServerKeys: serverKeys, ZenKeys: zenKeys, GoKeys: goKeys, Anonymous: update.Anonymous, Proxies: proxies, ProxyFile: update.ProxyFile,
+		Listen:            update.Listen, ServerKeys: serverKeys, ZenKeys: zenKeys, GoKeys: goKeys, Anonymous: boolPointer(update.Anonymous), Proxies: proxies, ProxyFile: update.ProxyFile,
 		Upstream: update.Upstream, Retry: update.Retry, Models: update.Models, Performance: update.Performance, Logging: update.Logging, Prefer: update.Prefer,
 		Reasoning: reasoning,
 		Egress:    egress,
@@ -366,7 +366,7 @@ func (a *Server) configView() ConfigView {
 	cfg := a.manager.Config()
 	effective, restart := a.manager.RestartStatus()
 	return ConfigView{
-		Listen: cfg.Listen, ServerKeys: maskSecrets(cfg.ServerKeys, false), ZenKeys: maskSecrets(cfg.ZenKeys, false), GoKeys: maskSecrets(cfg.GoKeys, false), Anonymous: cfg.Anonymous,
+		Listen: cfg.Listen, ServerKeys: maskSecrets(cfg.ServerKeys, false), ZenKeys: maskSecrets(cfg.ZenKeys, false), GoKeys: maskSecrets(cfg.GoKeys, false), Anonymous: cfg.AnonymousEnabled(),
 		Proxies: maskSecrets(cfg.Proxies, true), ProxyFile: cfg.ProxyFile, Upstream: cfg.Upstream, Retry: cfg.Retry, Models: cfg.Models,
 		Performance: cfg.Performance, Logging: cfg.Logging, Prefer: cfg.Prefer, Reasoning: cfg.Reasoning,
 		Egress:    egressView(cfg.Egress),
@@ -426,6 +426,8 @@ func decodeAdminJSON(w http.ResponseWriter, r *http.Request, target any) error {
 	}
 	return nil
 }
+
+func boolPointer(value bool) *bool { return &value }
 
 func writeAdminError(w http.ResponseWriter, status int, code, message string) {
 	httpx.WriteJSON(w, status, map[string]any{"error": map[string]string{"code": code, "message": message}})

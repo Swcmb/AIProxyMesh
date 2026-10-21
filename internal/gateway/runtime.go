@@ -421,7 +421,7 @@ func (m *RuntimeManager) Resources() ResourceSnapshot {
 	}
 	gateway := runtime.gateway
 	_, models := gateway.availableModels()
-	result := ResourceSnapshot{Models: models, Anonymous: gateway.cfg.Anonymous}
+	result := ResourceSnapshot{Models: models, Anonymous: gateway.cfg.AnonymousEnabled()}
 	result.Metadata = gateway.catalog.MetadataSnapshot()
 	result.Keys = append(result.Keys, keyStatuses("zen", gateway.zenNodes)...)
 	result.Keys = append(result.Keys, keyStatuses("go", gateway.goNodes)...)
@@ -432,7 +432,7 @@ func (m *RuntimeManager) Resources() ResourceSnapshot {
 	goBindings := append([]int(nil), gateway.goNodes.bindingCount...)
 	gateway.goNodes.bindingsMu.Unlock()
 	for _, proxy := range gateway.transports.items {
-		status := ProxyStatus{Index: proxy.index, Address: config.RedactURL(proxy.name), Healthy: proxy.healthy.Load(), Checking: proxy.checking.Load(), Anonymous: gateway.cfg.Anonymous}
+		status := ProxyStatus{Index: proxy.index, Address: config.RedactURL(proxy.name), Healthy: proxy.healthy.Load(), Checking: proxy.checking.Load(), Anonymous: gateway.cfg.AnonymousEnabled()}
 		if proxy.index < len(zenBindings) {
 			status.ZenKeys = zenBindings[proxy.index]
 		}
@@ -453,7 +453,7 @@ func (m *RuntimeManager) DebugModels() ([]modelcatalog.RouteDiagnostic, modelcat
 	models := gateway.catalog.List()
 	result := make([]modelcatalog.RouteDiagnostic, 0, len(models))
 	for _, model := range models {
-		result = append(result, gateway.catalog.Diagnostic(model, "", len(gateway.cfg.ZenKeys) > 0, len(gateway.cfg.GoKeys) > 0, gateway.cfg.Anonymous))
+		result = append(result, gateway.catalog.Diagnostic(model, "", len(gateway.cfg.ZenKeys) > 0, len(gateway.cfg.GoKeys) > 0, gateway.cfg.AnonymousEnabled()))
 	}
 	metadata := gateway.catalog.MetadataSnapshot()
 	return result, metadata
@@ -465,7 +465,7 @@ func (m *RuntimeManager) DebugRoute(model string, requested protocol.Protocol) m
 		return modelcatalog.RouteDiagnostic{Model: model, RequestedProtocol: requested, RouteError: "gateway runtime is unavailable"}
 	}
 	gateway := runtime.gateway
-	return gateway.catalog.Diagnostic(model, requested, len(gateway.cfg.ZenKeys) > 0, len(gateway.cfg.GoKeys) > 0, gateway.cfg.Anonymous)
+	return gateway.catalog.Diagnostic(model, requested, len(gateway.cfg.ZenKeys) > 0, len(gateway.cfg.GoKeys) > 0, gateway.cfg.AnonymousEnabled())
 }
 
 // DebugKeyView is the operator-facing view of one configured upstream key. It

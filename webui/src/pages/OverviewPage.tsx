@@ -212,7 +212,7 @@ export function OverviewPage() {
             <div className="timeline-item">
               <span className="muted">模型目录</span>
               <strong>{data.resources.models.exposed} / {data.resources.models.total}</strong>
-              <StatusBadge ok={!data.resources.models.stale} label="新鲜" pendingLabel="未就绪" />
+              <StatusBadge ok={!data.resources.models.stale} label="已更新" pendingLabel="待刷新" />
             </div>
             <div className="timeline-item">
               <span className="muted">上游 Key</span>

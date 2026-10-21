@@ -73,7 +73,6 @@ func TestNormalizeCarriesRanking(t *testing.T) {
 		Listen:     "127.0.0.1:0",
 		ServerKeys: []string{"k"},
 		GoKeys:     []string{"go"},
-		Anonymous:  false,
 		Prefer:     TierGo,
 		Upstream:   UpstreamConfig{Zen: "https://opencode.ai/zen", Go: "https://opencode.ai/zen/go", Anonymous: "https://opencode.ai/inference"},
 		Retry:      RetryConfig{MaxAttempts: 3, TimeoutSeconds: 60},

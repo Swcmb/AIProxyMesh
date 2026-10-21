@@ -106,6 +106,8 @@ func e2eConfig(upstream string, keys []string) config.Config {
 	return cfg
 }
 
+func ptrBool(value bool) *bool { return &value }
+
 func postInference(t *testing.T, handler http.Handler, path string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 	encoded, err := json.Marshal(body)
@@ -328,7 +330,7 @@ func TestGatewayKeyRotation(t *testing.T) {
 func TestAnonymousLaneUsesPublicCredential(t *testing.T) {
 	fake := newFakeUpstream(t)
 	cfg := testConfig(fake.server.URL, nil)
-	cfg.Anonymous = true
+	cfg.Anonymous = ptrBool(true)
 	g, err := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), telemetry.NewMonitor())
 	if err != nil {
 		t.Fatal(err)
@@ -475,6 +477,9 @@ func TestFreeModelAvailabilityProbeUsesEgress(t *testing.T) {
 	engine := testEgressEngine(t, testConfig(fake.server.URL, nil), proxy.URL+"#probe")
 
 	cfg := e2eConfig(fake.server.URL, []string{"zen-key-probe"})
+	// The probe must use the keyed lane here; the anonymous lane has its own
+	// default-on behaviour and is covered separately.
+	cfg.Anonymous = ptrBool(false)
 	cfg.Models.Protocols = map[string]string{"test-free": "chat"}
 	cfg.Reasoning.Effort = ""
 	g, err := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), telemetry.NewMonitor())
