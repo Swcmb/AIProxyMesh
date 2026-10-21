@@ -22,6 +22,15 @@
 webui/node_modules/
 webui/dist/
 
+# Playwright
+webui/playwright-report/
+webui/test-results/
+webui/e2e/.auth/
+
+# Web UI 改造本地验证产物（快照与截图）
+project-context/artifacts/redesign-backup/
+project-context/artifacts/redesign-test/
+
 # 编辑器
 .idea/
 .vscode/

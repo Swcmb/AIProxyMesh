@@ -78,9 +78,49 @@ jobs:
           npm ci
           npm run build
 
+  webui-e2e:
+    name: WebUI E2E (Chromium + Firefox)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+      - name: Install WebUI dependencies and browsers
+        working-directory: webui
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium firefox
+      - name: Build WebUI and server
+        run: |
+          cd webui && npm run build
+          cd .. && go build -trimpath -o mesh ./cmd/mesh
+      - name: Run Playwright
+        working-directory: webui
+        env:
+          E2E_PASSWORD: e2e-only-Password-2026
+        run: npx playwright test
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            webui/playwright-report
+            webui/test-results
+          retention-days: 7
+          if-no-files-found: ignore
+
   notify:
     name: Notify on failure
-    needs: [build, test, format]
+    needs: [build, test, format, webui-e2e]
     if: failure()
     uses: ./.github/workflows/notify-failure.yml
     with:
