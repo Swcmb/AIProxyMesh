@@ -13,9 +13,9 @@ import { Textarea } from "../components/ui/Textarea";
 import { configUpdateFromView } from "../lib/config-update";
 import { formatApiErrorMessage } from "../lib/error-message";
 
-type SecretInputs = { server: string; zen: string; go: string; proxy: string };
+type SecretInputs = { server: string; zen: string; go: string };
 
-const emptySecrets: SecretInputs = { server: "", zen: "", go: "", proxy: "" };
+const emptySecrets: SecretInputs = { server: "", zen: "", go: "" };
 
 export function ConfigPage() {
   const queryClient = useQueryClient();
@@ -47,10 +47,9 @@ export function ConfigPage() {
         ...draft.go_keys.map((item) => ({ id: item.id })),
         ...(secrets.go.trim() ? [{ value: secrets.go.trim() }] : []),
       ];
-      payload.proxies = [
-        ...draft.proxies.map((item) => ({ id: item.id })),
-        ...(secrets.proxy.trim() ? [{ value: secrets.proxy.trim() }] : []),
-      ];
+      // Legacy proxies are no longer edited here; keep whatever the loaded
+      // configuration already holds so saving does not drop a migrated value.
+      payload.proxies = draft.proxies.map((item) => ({ id: item.id }));
       return api.put("/api/config", payload);
     },
     onSuccess: () => {
@@ -103,7 +102,7 @@ export function ConfigPage() {
     setDraft(next);
   };
 
-  const removeSecret = (kind: "server_keys" | "zen_keys" | "go_keys" | "proxies", id: string) => {
+  const removeSecret = (kind: "server_keys" | "zen_keys" | "go_keys", id: string) => {
     patch((next) => {
       next[kind] = next[kind].filter((item) => item.id !== id);
     });
@@ -184,7 +183,7 @@ export function ConfigPage() {
 
       <div className="card panel">
         <div className="panel-head">
-          <h3>密钥与代理</h3>
+          <h3>密钥</h3>
           <Button variant="secondary" size="sm" onClick={() => reveal.mutate(window.prompt("输入 WebUI 密码以显示完整密钥") ?? "")} disabled={reveal.isPending}>
             <Eye size={14} /> 显示完整密钥
           </Button>
@@ -192,7 +191,6 @@ export function ConfigPage() {
         <SecretList title="本地 API Keys（server_keys）" items={draft.server_keys} onRemove={(id) => removeSecret("server_keys", id)} />
         <SecretList title="Zen Keys" items={draft.zen_keys} onRemove={(id) => removeSecret("zen_keys", id)} />
         <SecretList title="Go Keys" items={draft.go_keys} onRemove={(id) => removeSecret("go_keys", id)} />
-        <SecretList title="旧代理 proxies" items={draft.proxies} onRemove={(id) => removeSecret("proxies", id)} />
         <div className="form-grid-tight">
           <label className="field-group">
             <span className="field-label">新增本地 Key</span>
@@ -205,14 +203,6 @@ export function ConfigPage() {
           <label className="field-group">
             <span className="field-label">新增 Go Key</span>
             <Input value={secrets.go} onChange={(event) => setSecrets({ ...secrets, go: event.target.value })} placeholder="留空不新增" />
-          </label>
-          <label className="field-group">
-            <span className="field-label">新增代理</span>
-            <Input value={secrets.proxy} onChange={(event) => setSecrets({ ...secrets, proxy: event.target.value })} placeholder="http://user:pass@host:port" />
-          </label>
-          <label className="field-group">
-            <span className="field-label">proxyfile</span>
-            <Input value={draft.proxyfile} onChange={(event) => patch((next) => { next.proxyfile = event.target.value; })} />
           </label>
         </div>
         {revealed ? <JsonBlock value={revealed} /> : null}
