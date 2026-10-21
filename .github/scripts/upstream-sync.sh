@@ -197,7 +197,9 @@ open_sync_pr() { # name from to bump blocked report
     rm -f "$body"
     return 0
   fi
-  git push -q -u origin "$branch"
+  # The sync branch is owned by this workflow: a rerun after a failed run must
+  # be able to replace it.
+  git push -q --force -u origin "$branch"
   gh pr create --draft --base main --head "$branch" \
     --title "chore(sync): $name ${from:0:8}..${to:0:8}" \
     --body-file "$body" --label "$LABEL" --label "sync:$bump" >/dev/null
@@ -420,6 +422,8 @@ main() {
     mkdir -p "$ARTIFACT_DIR"
   else
     gh label create "$LABEL" --color FBCA04 --description "上游同步与兼容性通知" --force >/dev/null 2>&1 || true
+    gh label create "sync:patch" --color 0E8A16 --description "同步合入后升 PATCH" --force >/dev/null 2>&1 || true
+    gh label create "sync:minor" --color 1D76DB --description "同步合入后升 MINOR" --force >/dev/null 2>&1 || true
   fi
 
   local name
