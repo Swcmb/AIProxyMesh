@@ -4,6 +4,7 @@ import { LoginPage } from "../components/LoginPage";
 import { RequireAuth } from "../components/RequireAuth";
 import { OverviewPage } from "../pages/OverviewPage";
 import { ModelsPage } from "../pages/ModelsPage";
+import { AccessPage } from "../pages/AccessPage";
 import { UpstreamsPage } from "../pages/UpstreamsPage";
 import { RotationPage } from "../pages/RotationPage";
 import { APIKeysPage } from "../pages/APIKeysPage";
@@ -30,6 +31,7 @@ export function AppRoutes() {
         <Route path="/" element={<Navigate to="/overview" replace />} />
         <Route path="/overview" element={<OverviewPage />} />
         <Route path="/models" element={<ModelsPage />} />
+        <Route path="/access" element={<AccessPage />} />
         <Route path="/upstreams" element={<UpstreamsPage />} />
         <Route path="/rotation" element={<RotationPage />} />
         <Route path="/api-keys" element={<APIKeysPage />} />
