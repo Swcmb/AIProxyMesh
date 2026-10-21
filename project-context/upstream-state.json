@@ -5,8 +5,8 @@
       "repo": "jasonxu114514/opencode2api",
       "branch": "main",
       "synced_sha": "25afadd30345faaa9c6f18c45c0c14b176862b89",
-      "blocked_sha": "",
-      "blocked_issue": 0,
+      "blocked_sha": "0bb23c7a7f0b7cbe08c475e7148c56bc477abcf9",
+      "blocked_issue": 20,
       "last_release": "v1.4.3",
       "last_checked": ""
     },
