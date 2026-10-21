@@ -8,9 +8,15 @@ import "@fontsource/manrope/600.css";
 import "@fontsource/manrope/700.css";
 import "@fontsource/sora/600.css";
 import "@fontsource/sora/700.css";
+import "./styles/tokens.css";
 import "./styles/base.css";
 import "./styles/mesh.css";
+import "./styles/app.css";
 import { AppRoutes } from "./app/routes";
+import { ToastProvider } from "./components/ui/Toast";
+import { initTheme } from "./lib/theme";
+
+initTheme();
 
 class AppErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state = { error: null as Error | null };
@@ -53,7 +59,9 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     <QueryClientProvider client={queryClient}>
       <AppErrorBoundary>
         <BrowserRouter>
-          <AppRoutes />
+          <ToastProvider>
+            <AppRoutes />
+          </ToastProvider>
         </BrowserRouter>
       </AppErrorBoundary>
     </QueryClientProvider>

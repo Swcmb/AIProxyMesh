@@ -121,15 +121,21 @@ G ∈ {0,1}                          # 硬性准入
 ## 测试
 
 ```bash
-cd mesh
+# 仓库根目录
 go build ./...
 go test ./...
 go test -race ./...
 go vet ./...
-cd webui && npm run build
+
+cd webui && npm ci && npm run build
+
+# WebUI E2E（Chromium + Firefox）
+cd .. && go build -o mesh ./cmd/mesh   # Windows 使用 -o mesh.exe
+cd webui && npx playwright install chromium firefox   # 首次运行
+npx playwright test
 ```
 
-端到端与故障注入用例位于 `internal/gateway/e2e_test.go`。
+端到端与故障注入用例位于 `internal/gateway/e2e_test.go`；WebUI 浏览器用例位于 `webui/e2e/`，CI 的 `webui-e2e` 任务会同时运行 Chromium 与 Firefox。
 
 ## 许可证
 

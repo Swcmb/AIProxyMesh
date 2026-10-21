@@ -1,14 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, RefreshCw, X, Zap } from "lucide-react";
+import { RefreshCw, X, Zap } from "lucide-react";
 import { api } from "../lib/api";
 import type { EgressNode, EgressNodePage, GeoIPLookupResponse, GeoIPStatusResponse } from "../lib/types";
 import { EmptyState, ErrorNotice, Loading, PageHeader, StatCard } from "../components/Common";
 import { Button } from "../components/ui/Button";
+import { DataTable, type DataColumn } from "../components/ui/DataTable";
+import { Drawer } from "../components/ui/Drawer";
+import { FilterBar, SearchField } from "../components/ui/FilterBar";
 import { Input } from "../components/ui/Input";
+import { Pagination } from "../components/ui/Pagination";
 import { Select } from "../components/ui/Select";
 import { Switch } from "../components/ui/Switch";
+import { useToast } from "../components/ui/Toast";
 import { formatDateTime, formatPercent, formatRelativeTime } from "../lib/time";
 import { formatApiErrorMessage } from "../lib/error-message";
 import { configUpdateFromView } from "../lib/config-update";
@@ -86,6 +91,7 @@ function flagEmoji(code: string): string {
 export function NodesPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const toast = useToast();
   const [params, setParams] = useSearchParams();
   const filters = useMemo(() => readFilters(params), [params]);
   const [keyword, setKeyword] = useState(filters.keyword);
@@ -144,24 +150,19 @@ export function NodesPage() {
   const toggle = useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
       api.post(`/api/egress/nodes/${id}/enabled`, { enabled }),
-    onSuccess: () => invalidate(queryClient),
+    onSuccess: (_data, variables) => {
+      invalidate(queryClient);
+      toast.success(`节点 ${variables.id.slice(0, 12)} 已${variables.enabled ? "启用" : "停用"}`);
+    },
   });
   const probe = useMutation({
     mutationFn: (id: string) => api.post(`/api/egress/nodes/${id}/probe`),
     onSuccess: (_result, id) => {
       invalidate(queryClient);
       queryClient.invalidateQueries({ queryKey: ["egress", "node", id] });
+      toast.success("探测请求已完成");
     },
   });
-
-  useEffect(() => {
-    if (!detailId) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setDetailId(null);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [detailId]);
 
   if (query.isLoading && !query.data) {
     return <Loading label="读取节点池…" />;
@@ -175,7 +176,7 @@ export function NodesPage() {
     return (
       <>
         <PageHeader eyebrow="Egress" title="代理节点池" description="统一出口调度。当前未启用。" />
-        <EmptyState title="出口池未启用" hint="在代理订阅或配置管理中启用 egress" />
+        <EmptyState title="出口池未启用" hint="在代理订阅或系统设置中启用 egress" />
       </>
     );
   }
@@ -184,8 +185,6 @@ export function NodesPage() {
   const nodes = page.nodes ?? [];
   const totalPages = Math.max(1, Math.ceil(page.total / filters.limit));
   const currentPage = Math.floor(filters.offset / filters.limit) + 1;
-  const from = page.total === 0 ? 0 : filters.offset + 1;
-  const to = Math.min(filters.offset + filters.limit, page.total);
   const dirty =
     filters.keyword !== "" ||
     filters.status !== "all" ||
@@ -200,6 +199,151 @@ export function NodesPage() {
       sort_order: filters.sort_by === column && filters.sort_order === "desc" ? "asc" : "desc",
       offset: 0,
     });
+
+  const columns: DataColumn<EgressNode>[] = [
+    {
+      key: "name",
+      header: "节点",
+      sortKey: "name",
+      cell: (node) => (
+        <div>
+          <button className="link-button" onClick={() => setDetailId(node.id)}>
+            {node.name}
+          </button>
+          <div className="muted mono">{node.id.slice(0, 12)}…</div>
+        </div>
+      ),
+    },
+    {
+      key: "protocol",
+      header: "协议",
+      cell: (node) => (
+        <div>
+          <span className="tag">{node.protocol}</span>
+          {node.raw_type && node.raw_type !== node.protocol ? <div className="muted">{node.raw_type}</div> : null}
+        </div>
+      ),
+    },
+    {
+      key: "region",
+      header: "地区",
+      cell: (node) =>
+        node.region ? (
+          <div>
+            <span title={node.region}>{flagEmoji(node.region)}</span> {node.region}
+            {node.region_name ? <div className="muted">{node.region_name}</div> : null}
+          </div>
+        ) : (
+          <span className="muted">-</span>
+        ),
+    },
+    {
+      key: "subscriptions",
+      header: "订阅与别名",
+      cell: (node) => (
+        <div>
+          {(node.subscriptions ?? []).length === 0
+            ? "-"
+            : (node.subscriptions ?? []).map((id) => (
+                <div key={id} className="muted">
+                  {names[id] ?? id}
+                  {aliasFor(node, id) ? <span className="mono"> · {aliasFor(node, id)}</span> : null}
+                </div>
+              ))}
+        </div>
+      ),
+    },
+    {
+      key: "status",
+      header: "状态",
+      cell: (node) => (
+        <div>
+          <span className={`badge ${statusTone[node.status] ?? "badge-neutral"}`}>
+            {statusLabels[node.status] ?? node.status}
+          </span>
+          {node.eligible ? <div className="muted">可调度</div> : null}
+        </div>
+      ),
+    },
+    {
+      key: "health",
+      header: "健康",
+      sortKey: "health",
+      cell: (node) => formatPercent(node.health_score, 1),
+    },
+    {
+      key: "latency",
+      header: "延迟",
+      sortKey: "latency",
+      cell: (node) => (
+        <span className={latencyClass(node)}>{node.has_latency ? `${Math.round(node.latency_ms ?? 0)} ms` : "-"}</span>
+      ),
+    },
+    {
+      key: "score",
+      header: "综合分",
+      sortKey: "score",
+      cell: (node) => (
+        <div>
+          <strong>{(node.score?.total ?? 0).toFixed(2)}</strong>
+          <div className="muted">
+            H {(node.score?.health ?? 0).toFixed(2)} · L {(node.score?.latency ?? 0).toFixed(2)} · U{" "}
+            {(node.score?.upstream ?? 0).toFixed(2)}
+          </div>
+        </div>
+      ),
+    },
+    {
+      key: "failures",
+      header: "连续失败",
+      sortKey: "failures",
+      align: "right",
+      cell: (node) => node.failures || "-",
+    },
+    {
+      key: "last_probe",
+      header: "上次探测",
+      sortKey: "last_probe_at",
+      cell: (node) => (node.last_probe_at ? formatRelativeTime(node.last_probe_at) : "未探测"),
+    },
+    {
+      key: "cooldown",
+      header: "冷却至",
+      cell: (node) => (node.cooldown_until ? formatDateTime(node.cooldown_until) : "-"),
+    },
+    {
+      key: "created",
+      header: "创建时间",
+      sortKey: "created_at",
+      cell: (node) => formatDateTime(node.created_at),
+    },
+    {
+      key: "enabled",
+      header: "启用",
+      cell: (node) => (
+        <Switch
+          checked={node.enabled}
+          disabled={toggle.isPending}
+          onChange={(event) => toggle.mutate({ id: node.id, enabled: event.target.checked })}
+          aria-label={`切换 ${node.name}`}
+        />
+      ),
+    },
+    {
+      key: "actions",
+      header: "操作",
+      cell: (node) => (
+        <div className="table-actions">
+          <Button size="sm" variant="secondary" onClick={() => setDetailId(node.id)}>
+            详情
+          </Button>
+          <Button size="sm" variant="secondary" disabled={probe.isPending} onClick={() => probe.mutate(node.id)}>
+            <Zap size={13} /> 探测
+          </Button>
+        </div>
+      ),
+    },
+  ];
 
   return (
     <>
@@ -230,12 +374,12 @@ export function NodesPage() {
       <div className="stats-grid">
         <StatCard label="节点总数" value={page.pool} hint={`当前筛选 ${page.total} 个`} />
         <StatCard
-          label="可调度"
+          label="可调度节点"
           value={page.counts.eligible}
           tone={page.counts.eligible > 0 ? "success" : "danger"}
           hint="进入候选池且未被排除"
         />
-        <StatCard label="冷却中" value={page.counts.cooling} tone={page.counts.cooling ? "warning" : undefined} />
+        <StatCard label="冷却中" value={page.counts.cooling} tone={page.counts.cooling ? "warning" : undefined} hint="等待冷却结束" />
         <StatCard label="停用 / 不支持" value={`${page.counts.disabled} / ${page.counts.unsupported}`} hint="保留展示，不参与调度" />
       </div>
 
@@ -244,220 +388,134 @@ export function NodesPage() {
           <h3>筛选与排序</h3>
           <span className="badge badge-neutral">筛选条件写入地址栏，可直接分享</span>
         </div>
-        <div className="form-grid-tight">
-          <label className="field-group">
-            <span className="field-label">关键字</span>
-            <Input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="名称 / 别名 / ID / 地址 / 订阅" />
-          </label>
-          <label className="field-group">
-            <span className="field-label">状态</span>
-            <Select value={filters.status} onChange={(event) => patch({ status: event.target.value, offset: 0 })}>
-              <option value="all">全部状态</option>
-              {(page.facets?.statuses ?? []).map((item) => (
-                <option key={item} value={item}>
-                  {statusLabels[item] ?? item}
-                </option>
-              ))}
-            </Select>
-          </label>
-          <label className="field-group">
-            <span className="field-label">订阅</span>
-            <Select value={filters.subscription} onChange={(event) => patch({ subscription: event.target.value, offset: 0 })}>
-              <option value="all">全部订阅</option>
-              {(page.facets?.subscriptions ?? []).map((item) => (
-                <option key={item} value={item}>
-                  {names[item] ? `${names[item]}（${item}）` : item}
-                </option>
-              ))}
-            </Select>
-          </label>
-          <label className="field-group">
-            <span className="field-label">协议</span>
-            <Select value={filters.protocol} onChange={(event) => patch({ protocol: event.target.value, offset: 0 })}>
-              <option value="all">全部协议</option>
-              {(page.facets?.protocols ?? []).map((item) => (
-                <option key={item} value={item}>
-                  {item}
-                </option>
-              ))}
-            </Select>
-          </label>
-          <label className="field-group">
-            <span className="field-label">地区</span>
-            <Select value={filters.region} onChange={(event) => patch({ region: event.target.value, offset: 0 })} disabled={(page.facets?.regions ?? []).length === 0}>
-              <option value="all">
-                {(page.facets?.regions ?? []).length === 0
-                  ? page.facets?.geoip_enabled
-                    ? "全部地区（暂无归属）"
-                    : "未启用 GeoIP"
-                  : "全部地区"}
+        <FilterBar>
+          <SearchField
+            value={keyword}
+            onChange={setKeyword}
+            placeholder="名称 / 别名 / ID / 地址 / 订阅"
+            ariaLabel="搜索节点"
+          />
+          <Select
+            value={filters.status}
+            onChange={(event) => patch({ status: event.target.value, offset: 0 })}
+            aria-label="按状态筛选"
+            style={{ width: 140 }}
+          >
+            <option value="all">全部状态</option>
+            {(page.facets?.statuses ?? []).map((item) => (
+              <option key={item} value={item}>
+                {statusLabels[item] ?? item}
               </option>
-              {(page.facets?.regions ?? []).map((item) => (
-                <option key={item} value={item}>
-                  {flagEmoji(item)} {item}
-                </option>
-              ))}
-            </Select>
-          </label>
-          <label className="field-group">
-            <span className="field-label">每页条数</span>
-            <Select value={String(filters.limit)} onChange={(event) => patch({ limit: Number(event.target.value), offset: 0 })}>
-              {pageSizes.map((size) => (
-                <option key={size} value={size}>
-                  {size}
-                </option>
-              ))}
-            </Select>
-          </label>
-        </div>
+            ))}
+          </Select>
+          <Select
+            value={filters.subscription}
+            onChange={(event) => patch({ subscription: event.target.value, offset: 0 })}
+            aria-label="按订阅筛选"
+            style={{ width: 160 }}
+          >
+            <option value="all">全部订阅</option>
+            {(page.facets?.subscriptions ?? []).map((item) => (
+              <option key={item} value={item}>
+                {names[item] ? `${names[item]}（${item}）` : item}
+              </option>
+            ))}
+          </Select>
+          <Select
+            value={filters.protocol}
+            onChange={(event) => patch({ protocol: event.target.value, offset: 0 })}
+            aria-label="按协议筛选"
+            style={{ width: 120 }}
+          >
+            <option value="all">全部协议</option>
+            {(page.facets?.protocols ?? []).map((item) => (
+              <option key={item} value={item}>
+                {item}
+              </option>
+            ))}
+          </Select>
+          <Select
+            value={filters.region}
+            onChange={(event) => patch({ region: event.target.value, offset: 0 })}
+            aria-label="按地区筛选"
+            disabled={(page.facets?.regions ?? []).length === 0}
+            style={{ width: 150 }}
+          >
+            <option value="all">
+              {(page.facets?.regions ?? []).length === 0
+                ? page.facets?.geoip_enabled
+                  ? "全部地区（暂无归属）"
+                  : "未启用 GeoIP"
+                : "全部地区"}
+            </option>
+            {(page.facets?.regions ?? []).map((item) => (
+              <option key={item} value={item}>
+                {flagEmoji(item)} {item}
+              </option>
+            ))}
+          </Select>
+          <Select
+            value={String(filters.limit)}
+            onChange={(event) => patch({ limit: Number(event.target.value), offset: 0 })}
+            aria-label="每页条数"
+            style={{ width: 110 }}
+          >
+            {pageSizes.map((size) => (
+              <option key={size} value={size}>
+                每页 {size}
+              </option>
+            ))}
+          </Select>
+        </FilterBar>
       </div>
 
       <div className="card panel">
         <div className="panel-head">
           <h3>节点列表</h3>
           <span className="badge badge-neutral">
-            第 {currentPage}/{totalPages} 页 · 显示 {from}-{to} / {page.total}
+            第 {currentPage}/{totalPages} 页 · 共 {page.total} 个
           </span>
         </div>
-        {nodes.length === 0 ? (
-          <EmptyState title="没有匹配的节点" hint="调整筛选条件，或先在订阅页添加订阅" />
-        ) : (
-          <div className="data-table-wrap scroll-x">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>
-                    <SortHeader column="name" filters={filters} onSort={sortBy} label="节点" />
-                  </th>
-                  <th>协议</th>
-                  <th>地区</th>
-                  <th>订阅与别名</th>
-                  <th>状态</th>
-                  <th>
-                    <SortHeader column="health" filters={filters} onSort={sortBy} label="健康" />
-                  </th>
-                  <th>
-                    <SortHeader column="latency" filters={filters} onSort={sortBy} label="延迟" />
-                  </th>
-                  <th>
-                    <SortHeader column="score" filters={filters} onSort={sortBy} label="综合分" />
-                  </th>
-                  <th>
-                    <SortHeader column="failures" filters={filters} onSort={sortBy} label="连续失败" />
-                  </th>
-                  <th>
-                    <SortHeader column="last_probe_at" filters={filters} onSort={sortBy} label="上次探测" />
-                  </th>
-                  <th>冷却至</th>
-                  <th>
-                    <SortHeader column="created_at" filters={filters} onSort={sortBy} label="创建时间" />
-                  </th>
-                  <th>启用</th>
-                  <th>操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {nodes.map((node) => (
-                  <tr key={node.id}>
-                    <td>
-                      <button className="link-button" onClick={() => setDetailId(node.id)}>
-                        {node.name}
-                      </button>
-                      <div className="muted mono">{node.id.slice(0, 12)}…</div>
-                    </td>
-                    <td>
-                      <span className="tag">{node.protocol}</span>
-                      {node.raw_type && node.raw_type !== node.protocol ? <div className="muted">{node.raw_type}</div> : null}
-                    </td>
-                    <td>
-                      {node.region ? (
-                        <>
-                          <span title={node.region}>{flagEmoji(node.region)}</span> {node.region}
-                          {node.region_name ? <div className="muted">{node.region_name}</div> : null}
-                        </>
-                      ) : (
-                        <span className="muted">-</span>
-                      )}
-                    </td>
-                    <td>
-                      {(node.subscriptions ?? []).length === 0 ? (
-                        "-"
-                      ) : (
-                        (node.subscriptions ?? []).map((id) => (
-                          <div key={id} className="muted">
-                            {names[id] ?? id}
-                            {aliasFor(node, id) ? <span className="mono"> · {aliasFor(node, id)}</span> : null}
-                          </div>
-                        ))
-                      )}
-                    </td>
-                    <td>
-                      <span className={`badge ${statusTone[node.status] ?? "badge-neutral"}`}>{statusLabels[node.status] ?? node.status}</span>
-                      {node.eligible ? <div className="muted">可调度</div> : null}
-                    </td>
-                    <td>{formatPercent(node.health_score, 1)}</td>
-                    <td>
-                      <span className={latencyClass(node)}>{node.has_latency ? `${Math.round(node.latency_ms ?? 0)} ms` : "-"}</span>
-                    </td>
-                    <td>
-                      <strong>{(node.score?.total ?? 0).toFixed(2)}</strong>
-                      <div className="muted">
-                        H {(node.score?.health ?? 0).toFixed(2)} · L {(node.score?.latency ?? 0).toFixed(2)} · U{" "}
-                        {(node.score?.upstream ?? 0).toFixed(2)}
-                      </div>
-                    </td>
-                    <td>{node.failures || "-"}</td>
-                    <td>{node.last_probe_at ? formatRelativeTime(node.last_probe_at) : "未探测"}</td>
-                    <td>{node.cooldown_until ? formatDateTime(node.cooldown_until) : "-"}</td>
-                    <td>{formatDateTime(node.created_at)}</td>
-                    <td>
-                      <Switch
-                        checked={node.enabled}
-                        disabled={toggle.isPending}
-                        onChange={(event) => toggle.mutate({ id: node.id, enabled: event.target.checked })}
-                        aria-label={`切换 ${node.name}`}
-                      />
-                    </td>
-                    <td>
-                      <div className="table-actions">
-                        <Button size="sm" variant="secondary" onClick={() => setDetailId(node.id)}>
-                          详情
-                        </Button>
-                        <Button size="sm" variant="secondary" disabled={probe.isPending} onClick={() => probe.mutate(node.id)}>
-                          <Zap size={13} /> 探测
-                        </Button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        <DataTable
+          columns={columns}
+          rows={nodes}
+          rowKey={(node) => node.id}
+          loading={query.isLoading}
+          sort={{ key: filters.sort_by, order: filters.sort_order }}
+          onSort={sortBy}
+          emptyTitle="没有匹配的节点"
+          emptyHint="调整筛选条件，或先在订阅页添加订阅"
+          caption="代理节点列表"
+          minWidth={1280}
+        />
         <div className="pager-row">
-          <Button variant="secondary" disabled={filters.offset <= 0} onClick={() => patch({ offset: Math.max(0, filters.offset - filters.limit) })}>
-            <ChevronLeft size={14} /> 上一页
-          </Button>
-          <Button variant="secondary" disabled={to >= page.total} onClick={() => patch({ offset: filters.offset + filters.limit })}>
-            下一页 <ChevronRight size={14} />
-          </Button>
-          <span className="muted">跳转到第</span>
-          <Input
-            type="number"
-            min={1}
-            max={totalPages}
-            defaultValue={currentPage}
-            key={currentPage}
-            style={{ width: 76 }}
-            onKeyDown={(event) => {
-              if (event.key !== "Enter") return;
-              const target = Number((event.target as HTMLInputElement).value);
-              if (!Number.isFinite(target)) return;
-              const next = Math.min(Math.max(1, Math.trunc(target)), totalPages);
-              patch({ offset: (next - 1) * filters.limit });
-            }}
+          <Pagination
+            page={currentPage}
+            pageSize={filters.limit}
+            total={page.total}
+            onPrev={() => patch({ offset: Math.max(0, filters.offset - filters.limit) })}
+            onNext={() => patch({ offset: filters.offset + filters.limit })}
+            label={`显示 ${page.total === 0 ? 0 : filters.offset + 1}-${Math.min(filters.offset + filters.limit, page.total)} / ${page.total}`}
           />
-          <span className="muted">/ {totalPages} 页</span>
+          <div className="field-inline">
+            <span className="muted">跳转到第</span>
+            <Input
+              type="number"
+              min={1}
+              max={totalPages}
+              defaultValue={currentPage}
+              key={currentPage}
+              style={{ width: 76 }}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter") return;
+                const target = Number((event.target as HTMLInputElement).value);
+                if (!Number.isFinite(target)) return;
+                const next = Math.min(Math.max(1, Math.trunc(target)), totalPages);
+                patch({ offset: (next - 1) * filters.limit });
+              }}
+            />
+            <span className="muted">/ {totalPages} 页</span>
+          </div>
         </div>
         {toggle.isError || probe.isError || detail.isError ? (
           <ErrorNotice message={formatApiErrorMessage(toggle.error ?? probe.error ?? detail.error)} />
@@ -466,34 +524,29 @@ export function NodesPage() {
 
       <GeoIPPanel enabled={Boolean(page.facets?.geoip_enabled)} />
 
-      {detailId ? (
-        <div className="drawer-overlay" onClick={() => setDetailId(null)} role="presentation">
-          <div className="card drawer-panel" onClick={(event) => event.stopPropagation()}>
-            <div className="drawer-header">
-              <div>
-                <h3>{detail.data?.node.name ?? "节点详情"}</h3>
-                <p className="mono">{detailId}</p>
-              </div>
-              <div className="drawer-header-actions">
-                <Button size="sm" variant="secondary" onClick={() => navigate(`/requests?exit=${encodeURIComponent(detailId)}`)}>
-                  查看该节点请求
-                </Button>
-                <Button size="sm" variant="secondary" disabled={probe.isPending} onClick={() => probe.mutate(detailId)}>
-                  <Zap size={13} /> 立即探测
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => setDetailId(null)} aria-label="关闭详情">
-                  <X size={14} />
-                </Button>
-              </div>
-            </div>
-            {detail.data?.node ? (
-              <NodeDetail node={detail.data.node} names={names} />
-            ) : (
-              <Loading label="读取节点详情…" />
-            )}
-          </div>
-        </div>
-      ) : null}
+      <Drawer
+        open={Boolean(detailId)}
+        onClose={() => setDetailId(null)}
+        title={detail.data?.node.name ?? "节点详情"}
+        subtitle={detailId ?? undefined}
+        size="lg"
+        actions={
+          <>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => navigate(`/requests?exit=${encodeURIComponent(detailId ?? "")}`)}
+            >
+              查看该节点请求
+            </Button>
+            <Button size="sm" variant="secondary" disabled={probe.isPending} onClick={() => probe.mutate(detailId ?? "")}>
+              <Zap size={13} /> 立即探测
+            </Button>
+          </>
+        }
+      >
+        {detail.data?.node ? <NodeDetail node={detail.data.node} names={names} /> : <Loading label="读取节点详情…" />}
+      </Drawer>
     </>
   );
 }
@@ -572,7 +625,9 @@ function GeoIPPanel({ enabled }: { enabled: boolean }) {
           <h3>地区解析（GeoIP）</h3>
           <span className="badge badge-muted">未启用</span>
         </div>
-        <p className="muted">在配置的 <span className="mono">egress.geoip</span> 中启用后，节点会显示所属国家并可按地区筛选。</p>
+        <p className="muted">
+          在配置的 <span className="mono">egress.geoip</span> 中启用后，节点会显示所属国家并可按地区筛选。
+        </p>
       </div>
     );
   }
@@ -584,7 +639,9 @@ function GeoIPPanel({ enabled }: { enabled: boolean }) {
     <div className="card panel">
       <div className="panel-head">
         <h3>地区解析（GeoIP）</h3>
-        <span className={`badge ${info?.loaded ? "badge-success" : "badge-warning"}`}>{info?.loaded ? "已加载" : "未加载"}</span>
+        <span className={`badge ${info?.loaded ? "badge-success" : "badge-warning"}`}>
+          {info?.loaded ? "已加载" : "未加载"}
+        </span>
       </div>
       <dl className="node-detail-list">
         <div>
@@ -622,7 +679,12 @@ function GeoIPPanel({ enabled }: { enabled: boolean }) {
       </dl>
       <div className="field-inline" style={{ marginTop: 12 }}>
         <span className="muted">下载源</span>
-        <Select value={selectedSource} onChange={(event) => setSource(event.target.value)} aria-label="GeoIP 下载源" style={{ minWidth: 180 }}>
+        <Select
+          value={selectedSource}
+          onChange={(event) => setSource(event.target.value)}
+          aria-label="GeoIP 下载源"
+          style={{ minWidth: 180 }}
+        >
           <option value="custom">自定义（当前配置）</option>
           {geoipMirrors.map((mirror) => (
             <option key={mirror.id} value={mirror.id}>
@@ -645,7 +707,12 @@ function GeoIPPanel({ enabled }: { enabled: boolean }) {
         <Button variant="secondary" disabled={update.isPending} onClick={() => update.mutate()}>
           <RefreshCw size={14} /> 立即更新库
         </Button>
-        <Input value={probe} onChange={(event) => setProbe(event.target.value)} placeholder="查询 IP 归属，如 1.1.1.1" style={{ width: 240 }} />
+        <Input
+          value={probe}
+          onChange={(event) => setProbe(event.target.value)}
+          placeholder="查询 IP 归属，如 1.1.1.1"
+          style={{ width: 240 }}
+        />
         <Button variant="secondary" disabled={!probe.trim() || lookup.isPending} onClick={() => lookup.mutate(probe.trim())}>
           查询
         </Button>
@@ -669,37 +736,19 @@ function GeoIPPanel({ enabled }: { enabled: boolean }) {
   );
 }
 
-function SortHeader({
-  column,
-  label,
-  filters,
-  onSort,
-}: {
-  column: string;
-  label: string;
-  filters: Filters;
-  onSort: (column: string) => void;
-}) {
-  const active = filters.sort_by === column;
-  return (
-    <button className="sort-header" type="button" onClick={() => onSort(column)}>
-      {label}
-      {active ? filters.sort_order === "desc" ? <ArrowDown size={12} /> : <ArrowUp size={12} /> : null}
-    </button>
-  );
-}
-
 function NodeDetail({ node, names }: { node: EgressNode; names: Record<string, string> }) {
   const aliases = node.aliases?.length
     ? node.aliases
     : (node.subscriptions ?? []).map((id) => ({ subscription: id, tag: "" }));
   return (
-    <div className="platform-drawer-layout">
-      <section className="platform-drawer-section">
-        <div className="platform-drawer-section-head">
+    <div className="detail-stack">
+      <section className="detail-section">
+        <div className="detail-section-head">
           <h4>节点状态</h4>
           <p>
-            <span className={`badge ${statusTone[node.status] ?? "badge-neutral"}`}>{statusLabels[node.status] ?? node.status}</span>{" "}
+            <span className={`badge ${statusTone[node.status] ?? "badge-neutral"}`}>
+              {statusLabels[node.status] ?? node.status}
+            </span>{" "}
             {node.eligible ? "当前参与调度" : "当前不参与调度"}
           </p>
         </div>
@@ -738,7 +787,9 @@ function NodeDetail({ node, names }: { node: EgressNode; names: Record<string, s
           </div>
           <div>
             <dt>上次探测</dt>
-            <dd>{node.last_probe_at ? `${formatRelativeTime(node.last_probe_at)}（${formatDateTime(node.last_probe_at)}）` : "未探测"}</dd>
+            <dd>
+              {node.last_probe_at ? `${formatRelativeTime(node.last_probe_at)}（${formatDateTime(node.last_probe_at)}）` : "未探测"}
+            </dd>
           </div>
           <div>
             <dt>冷却至</dt>
@@ -763,8 +814,8 @@ function NodeDetail({ node, names }: { node: EgressNode; names: Record<string, s
         </dl>
       </section>
 
-      <section className="platform-drawer-section">
-        <div className="platform-drawer-section-head">
+      <section className="detail-section">
+        <div className="detail-section-head">
           <h4>调度评分</h4>
           <p>针对主上游目标实时计算的 H / L / R / U 分项</p>
         </div>
@@ -792,8 +843,8 @@ function NodeDetail({ node, names }: { node: EgressNode; names: Record<string, s
         </dl>
       </section>
 
-      <section className="platform-drawer-section">
-        <div className="platform-drawer-section-head">
+      <section className="detail-section">
+        <div className="detail-section-head">
           <h4>订阅别名</h4>
           <p>同一出口在多个订阅里的名字全部列出</p>
         </div>

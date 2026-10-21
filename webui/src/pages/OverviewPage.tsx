@@ -5,8 +5,12 @@ import { Link } from "react-router-dom";
 import { api } from "../lib/api";
 import type { EgressSnapshot, MonitorResponse, RotationSnapshot } from "../lib/types";
 import { EmptyState, ErrorNotice, Loading, PageHeader, StatCard, StatusBadge } from "../components/Common";
+import { Button } from "../components/ui/Button";
+import { DataTable, type DataColumn } from "../components/ui/DataTable";
 import { formatNumber, formatPercent } from "../lib/time";
 import { formatApiErrorMessage } from "../lib/error-message";
+
+type TierRow = { tier: string; total: number };
 
 export function OverviewPage() {
   const monitor = useQuery({
@@ -43,33 +47,56 @@ export function OverviewPage() {
     ...item,
     label: new Date(item.minute).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }),
   }));
+  const tierRows: TierRow[] = Object.entries(metrics.tiers)
+    .map(([tier, total]) => ({ tier, total }))
+    .sort((a, b) => b.total - a.total);
+  const tierColumns: DataColumn<TierRow>[] = [
+    { key: "tier", header: "渠道", cell: (row) => row.tier },
+    { key: "total", header: "请求数（近 1 小时）", align: "right", cell: (row) => formatNumber(row.total) },
+  ];
 
   return (
     <>
       <PageHeader
         eyebrow="Overview"
         title="统一网关总览"
-        description={`版本 ${data.version} · 运行 ${metrics.uptime_seconds >= 3600 ? `${(metrics.uptime_seconds / 3600).toFixed(1)} 小时` : `${Math.floor(metrics.uptime_seconds / 60)} 分钟`}`}
+        description={`版本 ${data.version} · 已运行 ${metrics.uptime_seconds >= 3600 ? `${(metrics.uptime_seconds / 3600).toFixed(1)} 小时` : `${Math.floor(metrics.uptime_seconds / 60)} 分钟`}`}
         actions={
-          <button className="btn btn-secondary btn-md" onClick={() => monitor.refetch()}>
+          <Button variant="secondary" onClick={() => monitor.refetch()}>
             <RefreshCw size={15} /> 刷新
-          </button>
+          </Button>
         }
       />
 
       <div className="stats-grid">
-        <StatCard label="近 1 小时请求" value={formatNumber(window.total)} hint={`成功 ${formatNumber(window.success)}`} />
         <StatCard
-          label="成功率"
-          value={formatPercent(window.success_rate)}
-          tone={window.success_rate >= 0.99 ? "success" : window.success_rate >= 0.9 ? "warning" : "danger"}
-          hint={`错误 ${formatNumber(window.errors)}`}
+          label="请求数（近 1 小时）"
+          value={formatNumber(window.total)}
+          hint={`成功 ${formatNumber(window.success)} 次`}
         />
-        <StatCard label="P95 延迟" value={window.p95_ms ? `${window.p95_ms} ms` : "-"} hint={`平均 ${Math.round(window.average_ms ?? 0)} ms`} />
-        <StatCard label="Token（近 1 小时）" value={formatNumber(usage.total_tokens)} hint={`输入 ${formatNumber(usage.input_tokens)} · 输出 ${formatNumber(usage.output_tokens)}`} />
-        <StatCard label="活跃请求" value={formatNumber(metrics.active_requests)} hint={`流式 ${formatNumber(metrics.active_streams)}`} />
         <StatCard
-          label="出口节点"
+          label="成功率（近 1 小时）"
+          value={window.total === 0 ? "-" : formatPercent(window.success_rate)}
+          tone={window.total === 0 ? undefined : window.success_rate >= 0.99 ? "success" : window.success_rate >= 0.9 ? "warning" : "danger"}
+          hint={window.total === 0 ? "近 1 小时暂无请求" : `错误 ${formatNumber(window.errors)} 次`}
+        />
+        <StatCard
+          label="P95 延迟（近 1 小时）"
+          value={window.p95_ms ? `${window.p95_ms} ms` : "-"}
+          hint={`平均 ${Math.round(window.average_ms ?? 0)} ms`}
+        />
+        <StatCard
+          label="Token（近 1 小时）"
+          value={formatNumber(usage.total_tokens)}
+          hint={`输入 ${formatNumber(usage.input_tokens)} · 输出 ${formatNumber(usage.output_tokens)}`}
+        />
+        <StatCard
+          label="活跃请求（当前）"
+          value={formatNumber(metrics.active_requests)}
+          hint={`流式 ${formatNumber(metrics.active_streams)} 个`}
+        />
+        <StatCard
+          label="出口节点（当前）"
           value={counts ? `${counts.eligible}/${counts.total}` : "-"}
           tone={counts && counts.eligible === 0 ? "danger" : undefined}
           hint={counts ? `冷却 ${counts.cooling} · 停用 ${counts.disabled} · 不支持 ${counts.unsupported}` : "出口池未启用"}
@@ -80,9 +107,9 @@ export function OverviewPage() {
         <div className="panel-head">
           <div>
             <h3>请求趋势</h3>
-            <p className="panel-sub">最近 60 分钟，按分钟聚合</p>
+            <p className="panel-sub">最近 60 分钟，按分钟聚合（单位：次）</p>
           </div>
-          <span className="badge badge-info">实时</span>
+          <span className="badge badge-info">5s 刷新</span>
         </div>
         <div className="chart-wrap">
           {series.length === 0 ? (
@@ -91,24 +118,38 @@ export function OverviewPage() {
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={series}>
                 <defs>
-                  <linearGradient id="totalGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#1470ff" stopOpacity={0.35} />
-                    <stop offset="100%" stopColor="#1470ff" stopOpacity={0.02} />
+                  <linearGradient id="overview-total" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" className="chart-stop-primary" stopColor="var(--primary)" stopOpacity={0.3} />
+                    <stop offset="100%" className="chart-stop-primary" stopColor="var(--primary)" stopOpacity={0.02} />
                   </linearGradient>
-                  <linearGradient id="errorGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#c33a2f" stopOpacity={0.35} />
-                    <stop offset="100%" stopColor="#c33a2f" stopOpacity={0.02} />
+                  <linearGradient id="overview-errors" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" className="chart-stop-danger" stopColor="var(--danger)" stopOpacity={0.3} />
+                    <stop offset="100%" className="chart-stop-danger" stopColor="var(--danger)" stopOpacity={0.02} />
                   </linearGradient>
                 </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(37,72,120,0.12)" />
-                <XAxis dataKey="label" tick={{ fontSize: 11 }} interval="preserveStartEnd" />
-                <YAxis tick={{ fontSize: 11 }} allowDecimals={false} width={36} />
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                <XAxis dataKey="label" tickLine={false} axisLine={false} interval="preserveStartEnd" />
+                <YAxis tickLine={false} axisLine={false} allowDecimals={false} width={40} />
                 <Tooltip
                   formatter={(value, name) => [formatNumber(Number(value ?? 0)), String(name) === "total" ? "请求" : "错误"]}
                   labelFormatter={(label) => `时间 ${label}`}
                 />
-                <Area type="monotone" dataKey="total" stroke="#1470ff" fill="url(#totalGradient)" strokeWidth={2} />
-                <Area type="monotone" dataKey="errors" stroke="#c33a2f" fill="url(#errorGradient)" strokeWidth={1.5} />
+                <Area
+                  type="monotone"
+                  dataKey="total"
+                  className="chart-series-primary"
+                  stroke="var(--primary)"
+                  fill="url(#overview-total)"
+                  strokeWidth={2}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="errors"
+                  className="chart-series-danger"
+                  stroke="var(--danger)"
+                  fill="url(#overview-errors)"
+                  strokeWidth={1.5}
+                />
               </AreaChart>
             </ResponsiveContainer>
           )}
@@ -119,46 +160,36 @@ export function OverviewPage() {
         <div className="card panel">
           <div className="panel-head">
             <h3>渠道与分层</h3>
-            <Link className="muted" to="/monitor">
+            <Link className="link-inline" to="/monitor">
               查看监控 <ArrowUpRight size={13} />
             </Link>
           </div>
-          {Object.keys(metrics.tiers).length === 0 ? (
-            <EmptyState title="暂无渠道数据" />
-          ) : (
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>渠道</th>
-                  <th>请求</th>
-                </tr>
-              </thead>
-              <tbody>
-                {Object.entries(metrics.tiers).map(([tier, total]) => (
-                  <tr key={tier}>
-                    <td>{tier}</td>
-                    <td>{formatNumber(total)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+          <DataTable
+            columns={tierColumns}
+            rows={tierRows}
+            rowKey={(row) => row.tier}
+            loading={monitor.isLoading}
+            emptyTitle="暂无渠道数据"
+            caption="渠道请求量"
+          />
         </div>
 
         <div className="card panel">
           <div className="panel-head">
             <h3>出口池健康</h3>
-            <Link className="muted" to="/nodes">
+            <Link className="link-inline" to="/nodes">
               节点池 <Network size={13} />
             </Link>
           </div>
           {!egress.data?.enabled ? (
-            <EmptyState title="出口池未启用" hint="在配置管理的 egress 节启用统一出口调度" />
+            <EmptyState title="出口池未启用" hint="在系统设置的 egress 节启用统一出口调度" />
           ) : (
             <div className="timeline">
               <div className="timeline-item">
                 <span className="muted">可用节点</span>
-                <strong>{egress.data.counts?.eligible ?? 0} / {egress.data.counts?.total ?? 0}</strong>
+                <strong>
+                  {egress.data.counts?.eligible ?? 0} / {egress.data.counts?.total ?? 0}
+                </strong>
                 <StatusBadge ok={(egress.data.counts?.eligible ?? 0) > 0} label="可用" pendingLabel="为空" />
               </div>
               <div className="timeline-item">
@@ -172,7 +203,7 @@ export function OverviewPage() {
                 <span className="badge badge-info">subscriptions</span>
               </div>
               <div className="timeline-item">
-                <span className="muted">最近 1 小时上游成功</span>
+                <span className="muted">上游成功率（近 1 小时）</span>
                 <strong>{formatPercent(metrics.upstream.last_hour.success_rate)}</strong>
                 <span className="badge badge-neutral">attempts</span>
               </div>
@@ -185,7 +216,7 @@ export function OverviewPage() {
         <div className="card panel">
           <div className="panel-head">
             <h3>当前模型轮转</h3>
-            <Link className="muted" to="/rotation">
+            <Link className="link-inline" to="/rotation">
               管理 <ArrowUpRight size={13} />
             </Link>
           </div>
@@ -211,7 +242,9 @@ export function OverviewPage() {
           <div className="timeline">
             <div className="timeline-item">
               <span className="muted">模型目录</span>
-              <strong>{data.resources.models.exposed} / {data.resources.models.total}</strong>
+              <strong>
+                {data.resources.models.exposed} / {data.resources.models.total}
+              </strong>
               <StatusBadge ok={!data.resources.models.stale} label="已更新" pendingLabel="待刷新" />
             </div>
             <div className="timeline-item">

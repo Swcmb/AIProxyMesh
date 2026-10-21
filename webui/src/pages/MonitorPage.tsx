@@ -6,6 +6,7 @@ import { api } from "../lib/api";
 import type { LogEvent, MonitorResponse } from "../lib/types";
 import { EmptyState, ErrorNotice, Loading, PageHeader, StatCard } from "../components/Common";
 import { Button } from "../components/ui/Button";
+import { DataTable, type DataColumn } from "../components/ui/DataTable";
 import { formatDateTime, formatNumber, formatPercent } from "../lib/time";
 import { formatApiErrorMessage } from "../lib/error-message";
 
@@ -44,6 +45,37 @@ export function MonitorPage() {
     [monitor.data],
   );
 
+  const logColumns: DataColumn<LogEvent>[] = [
+    { key: "time", header: "时间", cell: (event) => <span className="nowrap">{formatDateTime(event.time)}</span> },
+    {
+      key: "level",
+      header: "级别",
+      cell: (event) => (
+        <span
+          className={`badge ${
+            event.level === "error" ? "badge-danger" : event.level === "warn" ? "badge-warning" : "badge-neutral"
+          }`}
+        >
+          {event.level}
+        </span>
+      ),
+    },
+    {
+      key: "message",
+      header: "消息",
+      cell: (event) => (
+        <span>
+          {event.component ? <span className="tag">{event.component}</span> : null} {event.message}
+        </span>
+      ),
+    },
+    {
+      key: "fields",
+      header: "属性",
+      cell: (event) => <span className="mono pre-wrap">{event.fields ? JSON.stringify(event.fields) : "-"}</span>,
+    },
+  ];
+
   if (monitor.isLoading && !monitor.data) {
     return <Loading label="读取实时监控…" />;
   }
@@ -69,15 +101,34 @@ export function MonitorPage() {
       />
 
       <div className="stats-grid">
-        <StatCard label="活跃请求" value={formatNumber(metrics.active_requests)} hint={`流式 ${metrics.active_streams}`} />
-        <StatCard label="累计请求" value={formatNumber(metrics.lifetime.total)} hint={`成功率 ${formatPercent(metrics.lifetime.success_rate)}`} />
-        <StatCard label="近 1 小时" value={formatNumber(metrics.last_hour.total)} hint={`P95 ${metrics.last_hour.p95_ms || 0} ms`} />
-        <StatCard label="累计 Token" value={formatNumber(metrics.usage.lifetime.tokens.total_tokens)} hint={`已上报 ${metrics.usage.lifetime.reported}`} />
+        <StatCard
+          label="活跃请求（当前）"
+          value={formatNumber(metrics.active_requests)}
+          hint={`流式 ${metrics.active_streams} 个`}
+        />
+        <StatCard
+          label="累计请求"
+          value={formatNumber(metrics.lifetime.total)}
+          hint={`成功率 ${formatPercent(metrics.lifetime.success_rate)}`}
+        />
+        <StatCard
+          label="请求数（近 1 小时）"
+          value={formatNumber(metrics.last_hour.total)}
+          hint={`P95 ${metrics.last_hour.p95_ms || 0} ms`}
+        />
+        <StatCard
+          label="累计 Token"
+          value={formatNumber(metrics.usage.lifetime.tokens.total_tokens)}
+          hint={`已上报 ${metrics.usage.lifetime.reported} 次`}
+        />
       </div>
 
       <div className="card panel">
         <div className="panel-head">
-          <h3>分钟级请求与 Token</h3>
+          <div>
+            <h3>分钟级请求与 Token</h3>
+            <p className="panel-sub">最近 60 分钟 · 请求单位：次 · Token 单位：个</p>
+          </div>
           <span className="badge badge-info">3s 刷新</span>
         </div>
         <div className="chart-wrap">
@@ -86,12 +137,17 @@ export function MonitorPage() {
           ) : (
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={series}>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(37,72,120,0.12)" />
-                <XAxis dataKey="label" tick={{ fontSize: 11 }} interval="preserveStartEnd" />
-                <YAxis tick={{ fontSize: 11 }} width={42} />
-                <Tooltip formatter={(value, name) => [formatNumber(Number(value ?? 0)), String(name) === "total" ? "请求" : "Token"]} />
-                <Bar dataKey="total" fill="#1470ff" radius={[4, 4, 0, 0]} />
-                <Bar dataKey="total_tokens" fill="#f0a63a" radius={[4, 4, 0, 0]} />
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                <XAxis dataKey="label" tickLine={false} axisLine={false} interval="preserveStartEnd" />
+                <YAxis tickLine={false} axisLine={false} width={42} />
+                <Tooltip
+                  formatter={(value, name) => [
+                    formatNumber(Number(value ?? 0)),
+                    String(name) === "total" ? "请求" : "Token",
+                  ]}
+                />
+                <Bar dataKey="total" className="chart-series-primary" fill="var(--primary)" radius={[3, 3, 0, 0]} />
+                <Bar dataKey="total_tokens" className="chart-series-warning" fill="var(--warning)" radius={[3, 3, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           )}
@@ -101,7 +157,8 @@ export function MonitorPage() {
       <div className="grid-3">
         <div className="card panel">
           <div className="panel-head">
-            <h3>状态码</h3>
+            <h3>状态码分布</h3>
+            <span className="badge badge-neutral">累计</span>
           </div>
           {Object.entries(metrics.statuses).length === 0 ? (
             <EmptyState />
@@ -124,6 +181,7 @@ export function MonitorPage() {
         <div className="card panel">
           <div className="panel-head">
             <h3>模型分布</h3>
+            <span className="badge badge-neutral">Top 8</span>
           </div>
           {Object.entries(metrics.models).length === 0 ? (
             <EmptyState />
@@ -145,6 +203,7 @@ export function MonitorPage() {
         <div className="card panel">
           <div className="panel-head">
             <h3>端点分布</h3>
+            <span className="badge badge-neutral">累计</span>
           </div>
           {Object.entries(metrics.endpoints).length === 0 ? (
             <EmptyState />
@@ -167,42 +226,19 @@ export function MonitorPage() {
       <div className="card panel">
         <div className="panel-head">
           <h3>实时日志</h3>
-          <span className="badge badge-neutral">{logs.length} 条{paused ? " · 已暂停" : ""}</span>
+          <span className="badge badge-neutral">
+            {logs.length} 条{paused ? " · 已暂停" : ""}
+          </span>
         </div>
-        {logs.length === 0 ? (
-          <EmptyState title="暂无日志" hint="新日志会实时追加到此处" />
-        ) : (
-          <div className="data-table-wrap scroll-x" style={{ maxHeight: 420, overflowY: "auto" }}>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>时间</th>
-                  <th>级别</th>
-                  <th>消息</th>
-                  <th>属性</th>
-                </tr>
-              </thead>
-              <tbody>
-                {logs.slice().reverse().map((event) => (
-                  <tr key={event.sequence}>
-                    <td className="nowrap">{formatDateTime(event.time)}</td>
-                    <td>
-                      <span className={`badge ${event.level === "error" ? "badge-danger" : event.level === "warn" ? "badge-warning" : "badge-neutral"}`}>
-                        {event.level}
-                      </span>
-                    </td>
-                    <td>
-                      {event.component ? <span className="tag">{event.component}</span> : null} {event.message}
-                    </td>
-                    <td className="mono pre-wrap">
-                      {event.fields ? JSON.stringify(event.fields) : "-"}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        <DataTable
+          columns={logColumns}
+          rows={logs.slice().reverse()}
+          rowKey={(event) => String(event.sequence)}
+          emptyTitle="暂无日志"
+          emptyHint="新日志会实时追加到此处"
+          caption="实时结构化日志"
+          maxHeight={420}
+        />
       </div>
     </>
   );

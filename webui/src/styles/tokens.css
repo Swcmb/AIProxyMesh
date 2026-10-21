@@ -1,0 +1,140 @@
+/*
+ * 设计 Token —— 唯一颜色/间距/字体/圆角/层级来源。
+ * 深色为默认主题；浅色通过 [data-theme="light"] 覆盖。
+ * 页面与组件禁止私有颜色字面量。
+ */
+
+:root {
+  /* 字体 */
+  --font-sans: "Manrope", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-display: "Sora", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --text-2xs: 10px;
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+  --text-2xl: 26px;
+  --leading-tight: 1.25;
+  --leading-normal: 1.5;
+  --weight-normal: 450;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  /* 间距（4px 基线） */
+  --space-px: 1px;
+  --space-0: 0;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  /* 圆角 */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-full: 999px;
+
+  /* 层级 */
+  --z-dropdown: 40;
+  --z-sticky: 50;
+  --z-drawer: 60;
+  --z-modal: 70;
+  --z-toast: 80;
+
+  /* 动效 */
+  --duration-fast: 120ms;
+  --duration-base: 180ms;
+  --ease-out: cubic-bezier(0.2, 0, 0, 1);
+
+  /* 布局 */
+  --sidebar-width: 232px;
+  --content-max: 1440px;
+  --control-height: 32px;
+  --control-height-sm: 28px;
+}
+
+/* ---------- 深色（默认） ---------- */
+:root {
+  color-scheme: dark;
+  --bg: #0a0b0d;
+  --bg-soft: #0e0f12;
+  --surface: #121316;
+  --surface-strong: #17181c;
+  --surface-hover: #1b1d22;
+  --surface-active: #212329;
+  --surface-sunken: #0c0d10;
+  --overlay: rgba(0, 0, 0, 0.62);
+  --text: #f2f3f5;
+  --text-muted: #9ba1ab;
+  --text-subtle: #6c727c;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-subtle: rgba(255, 255, 255, 0.05);
+  --border-strong: rgba(255, 255, 255, 0.15);
+  --primary: #5b8cff;
+  --primary-strong: #85a7ff;
+  --primary-soft: rgba(91, 140, 255, 0.14);
+  --primary-contrast: #ffffff;
+  --success: #3ecf8e;
+  --success-soft: rgba(62, 207, 142, 0.12);
+  --danger: #f2555a;
+  --danger-strong: #ff7b80;
+  --danger-soft: rgba(242, 85, 90, 0.13);
+  --warning: #e5b454;
+  --warning-soft: rgba(229, 180, 84, 0.12);
+  --info: #5b8cff;
+  --info-soft: rgba(91, 140, 255, 0.12);
+  --neutral-soft: rgba(155, 161, 171, 0.12);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 18px 48px rgba(0, 0, 0, 0.5);
+  --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px rgba(91, 140, 255, 0.6);
+  --scrollbar-thumb: #2b2e35;
+  --radius: var(--radius-md);
+}
+
+/* ---------- 浅色 ---------- */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #fafafa;
+  --bg-soft: #f4f4f5;
+  --surface: #ffffff;
+  --surface-strong: #ffffff;
+  --surface-hover: #f4f4f5;
+  --surface-active: #ebebed;
+  --surface-sunken: #f4f4f5;
+  --overlay: rgba(24, 24, 27, 0.4);
+  --text: #18181b;
+  --text-muted: #5f6368;
+  --text-subtle: #8b8f96;
+  --border: rgba(24, 24, 27, 0.1);
+  --border-subtle: rgba(24, 24, 27, 0.06);
+  --border-strong: rgba(24, 24, 27, 0.18);
+  --primary: #1470ff;
+  --primary-strong: #0752ce;
+  --primary-soft: rgba(20, 112, 255, 0.1);
+  --primary-contrast: #ffffff;
+  --success: #067a5c;
+  --success-soft: rgba(6, 122, 92, 0.1);
+  --danger: #c92a2a;
+  --danger-strong: #a51f1f;
+  --danger-soft: rgba(201, 42, 42, 0.09);
+  --warning: #9a6b00;
+  --warning-soft: rgba(154, 107, 0, 0.1);
+  --info: #1470ff;
+  --info-soft: rgba(20, 112, 255, 0.09);
+  --neutral-soft: rgba(24, 24, 27, 0.06);
+  --shadow: 0 1px 2px rgba(24, 24, 27, 0.08);
+  --shadow-lg: 0 18px 48px rgba(24, 24, 27, 0.14);
+  --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px rgba(20, 112, 255, 0.45);
+  --scrollbar-thumb: #c9ccd1;
+}

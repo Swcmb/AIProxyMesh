@@ -57,7 +57,7 @@ export function PlaygroundPage() {
             <h3>请求</h3>
             <span className="badge badge-neutral">非流式</span>
           </div>
-          <div className="form-grid-tight">
+          <div className="form-grid">
             <label className="field-group">
               <span className="field-label">协议</span>
               <Select value={protocol} onChange={(event) => setProtocol(event.target.value as Protocol)}>

@@ -30,7 +30,7 @@ export function LoginPage() {
       <div className="login-card">
         <div className="login-header">
           <div className="brand-logo" aria-hidden="true">
-            <Waypoints size={20} color="#1470ff" />
+            <Waypoints size={18} />
           </div>
           <div className="login-heading-copy">
             <p className="eyebrow">Mesh Console</p>

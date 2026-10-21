@@ -1,14 +1,18 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Eye, Pencil, Plus, RefreshCw, Save, Trash2, Wand2, X } from "lucide-react";
+import { Eye, Pencil, Plus, RefreshCw, Save, Trash2, Wand2 } from "lucide-react";
 import { api } from "../lib/api";
 import type { ConfigView, EgressSnapshot, EgressSubscription, SubscriptionPreset } from "../lib/types";
-import { EmptyState, ErrorNotice, Loading, PageHeader, StatCard } from "../components/Common";
+import { ErrorNotice, Loading, PageHeader, StatCard } from "../components/Common";
 import { Button } from "../components/ui/Button";
+import { ConfirmDialog } from "../components/ui/ConfirmDialog";
+import { DataTable, type DataColumn } from "../components/ui/DataTable";
+import { Drawer } from "../components/ui/Drawer";
 import { Input } from "../components/ui/Input";
 import { Select } from "../components/ui/Select";
 import { Switch } from "../components/ui/Switch";
 import { Textarea } from "../components/ui/Textarea";
+import { useToast } from "../components/ui/Toast";
 import { formatDateTime } from "../lib/time";
 import { formatApiErrorMessage } from "../lib/error-message";
 
@@ -42,9 +46,11 @@ function draftPayload(draft: Draft): Record<string, unknown> {
 
 export function SubscriptionsPage() {
   const queryClient = useQueryClient();
+  const toast = useToast();
   const [draft, setDraft] = useState<Draft>(emptyDraft);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [revealed, setRevealed] = useState<{ id: string; url: string; content: string } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
 
   const config = useQuery({ queryKey: ["config"], queryFn: () => api.get<ConfigView>("/api/config") });
   const egress = useQuery({
@@ -65,35 +71,51 @@ export function SubscriptionsPage() {
 
   const create = useMutation({
     mutationFn: (body: Record<string, unknown>) => api.post("/api/egress/subscriptions", body),
-    onSuccess: invalidate,
+    onSuccess: (_data, body) => {
+      invalidate();
+      setDraft(emptyDraft);
+      toast.success(`订阅 ${String(body.id ?? "")} 已添加`);
+    },
   });
   const update = useMutation({
-    mutationFn: ({ id, body }: { id: string; body: Record<string, unknown> }) => api.patch(`/api/egress/subscriptions/${id}`, body),
-    onSuccess: invalidate,
+    mutationFn: ({ id, body }: { id: string; body: Record<string, unknown> }) =>
+      api.patch(`/api/egress/subscriptions/${id}`, body),
+    onSuccess: (_data, variables) => {
+      invalidate();
+      setEditingId(null);
+      setDraft(emptyDraft);
+      toast.success(`订阅 ${variables.id} 已保存`);
+    },
   });
   const remove = useMutation({
     mutationFn: (id: string) => api.delete(`/api/egress/subscriptions/${id}`),
-    onSuccess: invalidate,
+    onSuccess: (_data, id) => {
+      invalidate();
+      setDeleteTarget(null);
+      if (revealed?.id === id) setRevealed(null);
+      toast.success(`订阅 ${id} 已删除`);
+    },
   });
   const refresh = useMutation({
     mutationFn: (id: string) => api.post(`/api/egress/subscriptions/${id}/refresh`),
-    onSuccess: invalidate,
+    onSuccess: (_data, id) => {
+      invalidate();
+      toast.success(`订阅 ${id} 已刷新`);
+    },
   });
   const cleanup = useMutation({
     mutationFn: (id: string) => api.post(`/api/egress/subscriptions/${id}/cleanup`),
-    onSuccess: invalidate,
+    onSuccess: (_data, id) => {
+      invalidate();
+      toast.success(`订阅 ${id} 的冷却状态已清理`);
+    },
   });
   const reveal = useMutation({
-    mutationFn: async (id: string) => api.get<{ subscription: { url?: string; content?: string } }>(`/api/egress/subscriptions/${id}`),
-    onSuccess: (data, id) => setRevealed({ id, url: data.subscription?.url ?? "", content: data.subscription?.content ?? "" }),
+    mutationFn: async (id: string) =>
+      api.get<{ subscription: { url?: string; content?: string } }>(`/api/egress/subscriptions/${id}`),
+    onSuccess: (data, id) =>
+      setRevealed({ id, url: data.subscription?.url ?? "", content: data.subscription?.content ?? "" }),
   });
-
-  useEffect(() => {
-    if (editingId && update.isSuccess) {
-      setEditingId(null);
-      setDraft(emptyDraft);
-    }
-  }, [editingId, update.isSuccess]);
 
   const busy = create.isPending || update.isPending || remove.isPending || cleanup.isPending;
   const subscriptions = egress.data?.subscriptions ?? [];
@@ -135,6 +157,106 @@ export function SubscriptionsPage() {
     }
   };
 
+  const columns: DataColumn<EgressSubscription>[] = [
+    {
+      key: "subscription",
+      header: "订阅",
+      cell: (sub) => (
+        <div>
+          <strong>{sub.name || sub.id}</strong>
+          <div className="muted mono">{sub.id}</div>
+        </div>
+      ),
+    },
+    {
+      key: "source",
+      header: "来源",
+      cell: (sub) => {
+        const entry = configSubscriptions.find((item) => item.id === sub.id);
+        return sub.inline ? (
+          <span className="badge badge-neutral">粘贴 {entry?.content_lines ?? 0} 行</span>
+        ) : (
+          <span className="mono">{sub.url ?? "-"}</span>
+        );
+      },
+    },
+    { key: "format", header: "格式", cell: (sub) => sub.format || "-" },
+    {
+      key: "nodes",
+      header: "节点数",
+      cell: (sub) => (
+        <div>
+          {sub.nodes}
+          <div className="muted">
+            支持 {sub.supported} · 不支持 {sub.unsupported}
+          </div>
+        </div>
+      ),
+    },
+    {
+      key: "changes",
+      header: "新增 / 移除",
+      cell: (sub) => `${sub.added} / ${sub.removed}`,
+    },
+    { key: "last", header: "最近拉取", cell: (sub) => (sub.last_fetch_at ? formatDateTime(sub.last_fetch_at) : "-") },
+    { key: "next", header: "下次拉取", cell: (sub) => (sub.next_fetch_at ? formatDateTime(sub.next_fetch_at) : "手动") },
+    {
+      key: "error",
+      header: "错误",
+      cell: (sub) => <span className="pre-wrap">{sub.last_error || "-"}</span>,
+    },
+    {
+      key: "enabled",
+      header: "启用",
+      cell: (sub) => {
+        const entry = configSubscriptions.find((item) => item.id === sub.id);
+        return (
+          <Switch
+            checked={sub.enabled}
+            disabled={!entry || update.isPending}
+            onChange={(event) => update.mutate({ id: sub.id, body: { enabled: event.target.checked } })}
+            aria-label={`切换 ${sub.name || sub.id}`}
+          />
+        );
+      },
+    },
+    {
+      key: "actions",
+      header: "操作",
+      cell: (sub) => {
+        const entry = configSubscriptions.find((item) => item.id === sub.id);
+        return (
+          <div className="table-actions">
+            {entry ? (
+              <Button size="sm" variant="secondary" onClick={() => startEdit(sub.id)}>
+                <Pencil size={13} /> 编辑
+              </Button>
+            ) : null}
+            <Button size="sm" variant="secondary" disabled={reveal.isPending} onClick={() => reveal.mutate(sub.id)}>
+              <Eye size={13} /> 原文
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={refresh.isPending}
+              onClick={() => refresh.mutate(sub.id)}
+            >
+              <RefreshCw size={13} /> 刷新
+            </Button>
+            <Button size="sm" variant="secondary" disabled={busy} onClick={() => cleanup.mutate(sub.id)}>
+              <Wand2 size={13} /> 清理冷却
+            </Button>
+            {entry ? (
+              <Button size="sm" variant="danger" disabled={busy} onClick={() => setDeleteTarget(sub.id)}>
+                <Trash2 size={13} /> 删除
+              </Button>
+            ) : null}
+          </div>
+        );
+      },
+    },
+  ];
+
   if ((config.isLoading && !config.data) || (egress.isLoading && !egress.data)) {
     return <Loading label="读取订阅…" />;
   }
@@ -156,10 +278,14 @@ export function SubscriptionsPage() {
       />
 
       <div className="stats-grid">
-        <StatCard label="订阅源" value={stats.total} hint={`${stats.enabled} 个启用`} />
-        <StatCard label="导入节点" value={stats.nodes} hint="按订阅重复计数" />
-        <StatCard label="不支持协议" value={stats.unsupported} hint="可见但不入候选池" />
-        <StatCard label="旧代理导入" value={config.data?.egress?.import_legacy_proxies ? "开" : "关"} hint="proxies / proxyfile" />
+        <StatCard label="订阅源" value={stats.total} hint={`${stats.enabled} 个已启用`} />
+        <StatCard label="导入节点数" value={stats.nodes} hint="按订阅重复计数" />
+        <StatCard label="不支持协议数" value={stats.unsupported} hint="可见但不入候选池" />
+        <StatCard
+          label="旧代理导入"
+          value={config.data?.egress?.import_legacy_proxies ? "开" : "关"}
+          hint="proxies / proxyfile"
+        />
       </div>
 
       {!egress.data?.enabled ? <ErrorNotice message="出口池未启用：添加订阅保存后会自动启用 egress。" /> : null}
@@ -177,7 +303,9 @@ export function SubscriptionsPage() {
                 <div className="timeline-item" key={preset.id}>
                   <div>
                     <strong>{preset.name}</strong>
-                    <div className="muted mono">{preset.id} · {preset.format} · {preset.protocols.join("/")}</div>
+                    <div className="muted mono">
+                      {preset.id} · {preset.format} · {preset.protocols.join("/")}
+                    </div>
                   </div>
                   <div>
                     <div>{preset.description}</div>
@@ -189,7 +317,14 @@ export function SubscriptionsPage() {
                       variant="secondary"
                       disabled={added || busy}
                       onClick={() =>
-                        create.mutate({ id: preset.id, name: preset.name, url: preset.url, enabled: true, refresh_seconds: 3600, protocols: preset.protocols })
+                        create.mutate({
+                          id: preset.id,
+                          name: preset.name,
+                          url: preset.url,
+                          enabled: true,
+                          refresh_seconds: 3600,
+                          protocols: preset.protocols,
+                        })
                       }
                     >
                       <Wand2 size={13} /> {added ? "已添加" : "添加"}
@@ -207,7 +342,7 @@ export function SubscriptionsPage() {
           <h3>{editingId ? `编辑订阅：${editingId}` : "新增订阅"}</h3>
           <span className="badge badge-neutral">{editingId ? "只改这一条" : "保存后立即拉取"}</span>
         </div>
-        <div className="form-grid-tight">
+        <div className="form-grid">
           <label className="field-group">
             <span className="field-label">ID</span>
             <Input
@@ -219,7 +354,11 @@ export function SubscriptionsPage() {
           </label>
           <label className="field-group">
             <span className="field-label">名称</span>
-            <Input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="主订阅" />
+            <Input
+              value={draft.name}
+              onChange={(event) => setDraft({ ...draft, name: event.target.value })}
+              placeholder="主订阅"
+            />
           </label>
           <label className="field-group">
             <span className="field-label">来源</span>
@@ -231,10 +370,14 @@ export function SubscriptionsPage() {
           {draft.kind === "url" ? (
             <label className="field-group">
               <span className="field-label">订阅 URL</span>
-              <Input value={draft.url} onChange={(event) => setDraft({ ...draft, url: event.target.value })} placeholder="https://example.com/sub" />
+              <Input
+                value={draft.url}
+                onChange={(event) => setDraft({ ...draft, url: event.target.value })}
+                placeholder="https://example.com/sub"
+              />
             </label>
           ) : (
-            <label className="field-group">
+            <label className="field-group field-span-2">
               <span className="field-label">节点清单</span>
               <Textarea
                 value={draft.content}
@@ -257,7 +400,11 @@ export function SubscriptionsPage() {
           ) : null}
           <label className="field-group">
             <span className="field-label">启用</span>
-            <Switch checked={draft.enabled} onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })} aria-label="启用该订阅" />
+            <Switch
+              checked={draft.enabled}
+              onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })}
+              aria-label="启用该订阅"
+            />
           </label>
           <div className="field-inline" style={{ alignItems: "flex-end" }}>
             <Button onClick={submit} disabled={busy}>
@@ -283,112 +430,60 @@ export function SubscriptionsPage() {
         {error ? <ErrorNotice message={formatApiErrorMessage(error)} /> : null}
       </div>
 
-      {revealed ? (
-        <div className="card panel">
-          <div className="panel-head">
-            <h3>订阅原文：{revealed.id}</h3>
-            <Button size="sm" variant="ghost" onClick={() => setRevealed(null)} aria-label="收起原文">
-              <X size={14} />
-            </Button>
-          </div>
-          {revealed.url ? <p className="mono pre-wrap">{revealed.url}</p> : null}
-          {revealed.content ? <pre className="json-block">{revealed.content}</pre> : null}
-          {!revealed.url && !revealed.content ? <p className="muted">该订阅没有已登记的来源。</p> : null}
-        </div>
-      ) : null}
-
       <div className="card panel">
         <div className="panel-head">
           <h3>订阅状态</h3>
           <span className="badge badge-neutral">{subscriptions.length}</span>
         </div>
-        {subscriptions.length === 0 ? (
-          <EmptyState title="暂无订阅" hint="legacy 源会在启用 egress 后自动出现" />
-        ) : (
-          <div className="data-table-wrap scroll-x">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>订阅</th>
-                  <th>来源</th>
-                  <th>格式</th>
-                  <th>节点</th>
-                  <th>新增 / 移除</th>
-                  <th>最近拉取</th>
-                  <th>下次拉取</th>
-                  <th>错误</th>
-                  <th>启用</th>
-                  <th>操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {subscriptions.map((sub: EgressSubscription) => {
-                  const entry = configSubscriptions.find((item) => item.id === sub.id);
-                  return (
-                    <tr key={sub.id}>
-                      <td>
-                        <strong>{sub.name || sub.id}</strong>
-                        <div className="muted mono">{sub.id}</div>
-                      </td>
-                      <td>
-                        {sub.inline ? (
-                          <span className="badge badge-neutral">粘贴 {entry?.content_lines ?? 0} 行</span>
-                        ) : (
-                          <span className="mono">{sub.url ?? "-"}</span>
-                        )}
-                      </td>
-                      <td>{sub.format || "-"}</td>
-                      <td>
-                        {sub.nodes}
-                        <div className="muted">
-                          支持 {sub.supported} · 不支持 {sub.unsupported}
-                        </div>
-                      </td>
-                      <td>
-                        {sub.added} / {sub.removed}
-                      </td>
-                      <td>{sub.last_fetch_at ? formatDateTime(sub.last_fetch_at) : "-"}</td>
-                      <td>{sub.next_fetch_at ? formatDateTime(sub.next_fetch_at) : "手动"}</td>
-                      <td className="pre-wrap">{sub.last_error || "-"}</td>
-                      <td>
-                        <Switch
-                          checked={sub.enabled}
-                          disabled={!entry || update.isPending}
-                          onChange={(event) => update.mutate({ id: sub.id, body: { enabled: event.target.checked } })}
-                          aria-label={`切换 ${sub.name || sub.id}`}
-                        />
-                      </td>
-                      <td>
-                        <div className="table-actions">
-                          {entry ? (
-                            <Button size="sm" variant="secondary" onClick={() => startEdit(sub.id)}>
-                              <Pencil size={13} /> 编辑
-                            </Button>
-                          ) : null}
-                          <Button size="sm" variant="secondary" disabled={reveal.isPending} onClick={() => reveal.mutate(sub.id)}>
-                            <Eye size={13} /> 原文
-                          </Button>
-                          <Button size="sm" variant="secondary" disabled={refresh.isPending} onClick={() => refresh.mutate(sub.id)}>
-                            <RefreshCw size={13} /> 刷新
-                          </Button>
-                          <Button size="sm" variant="secondary" disabled={busy} onClick={() => cleanup.mutate(sub.id)}>
-                            <Wand2 size={13} /> 清理冷却
-                          </Button>
-                          {entry ? (
-                            <Button size="sm" variant="danger" disabled={busy} onClick={() => remove.mutate(sub.id)}>
-                              <Trash2 size={13} /> 删除
-                            </Button>
-                          ) : null}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
+        <DataTable
+          columns={columns}
+          rows={subscriptions}
+          rowKey={(sub) => sub.id}
+          loading={egress.isLoading}
+          emptyTitle="暂无订阅"
+          emptyHint="legacy 源会在启用 egress 后自动出现"
+          caption="订阅状态"
+          minWidth={1180}
+        />
       </div>
+
+      <Drawer
+        open={Boolean(revealed)}
+        onClose={() => setRevealed(null)}
+        title={revealed ? `订阅原文：${revealed.id}` : "订阅原文"}
+        subtitle="敏感内容：仅在必要时查看，请勿截图或分享。"
+      >
+        {revealed ? (
+          <>
+            {revealed.url ? (
+              <div className="detail-section">
+                <h4>来源 URL</h4>
+                <p className="mono pre-wrap">{revealed.url}</p>
+              </div>
+            ) : null}
+            {revealed.content ? (
+              <div className="detail-section">
+                <h4>粘贴原文</h4>
+                <pre className="json-block">{revealed.content}</pre>
+              </div>
+            ) : null}
+            {!revealed.url && !revealed.content ? <p className="muted">该订阅没有已登记的来源。</p> : null}
+          </>
+        ) : null}
+      </Drawer>
+
+      <ConfirmDialog
+        open={Boolean(deleteTarget)}
+        title="删除订阅"
+        description={deleteTarget ? `将删除订阅 ${deleteTarget}，其导入的节点会在下次刷新后移除。` : undefined}
+        confirmLabel="删除"
+        danger
+        pending={remove.isPending}
+        onConfirm={() => {
+          if (deleteTarget) remove.mutate(deleteTarget);
+        }}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </>
   );
 }
