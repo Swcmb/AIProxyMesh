@@ -7,6 +7,7 @@ import (
 
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/config"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/models"
+	"github.com/Swcmb/AIProxyMesh/mesh/internal/ranking"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/rotation"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/telemetry"
 )
@@ -57,40 +58,47 @@ func rankingTestGateway(t *testing.T) *Gateway {
 
 func f64ptr(value float64) *float64 { return &value }
 
-func TestRankingsCompareProvidersSeparately(t *testing.T) {
+func TestRankingsMergeProvidersPerModel(t *testing.T) {
 	g := rankingTestGateway(t)
 	_, results, err := g.Rankings("agent-coding")
 	if err != nil {
 		t.Fatal(err)
 	}
-	seen := map[string]string{}
+	seen := map[string]bool{}
 	for _, result := range results {
-		seen[result.Provider+"/"+result.ModelID] = result.ModelID
+		if seen[result.ModelID] {
+			t.Fatalf("model %s ranked twice", result.ModelID)
+		}
+		seen[result.ModelID] = true
+		if result.Provider != "" {
+			t.Fatalf("merged ranking must not name a provider, got %q", result.Provider)
+		}
 		if result.TaskType != "agent-coding" {
 			t.Fatalf("task = %s", result.TaskType)
 		}
 	}
-	for _, key := range []string{"go/strong", "zen/strong", "go/weak", "zen/weak", "zen/zen-only"} {
-		if _, ok := seen[key]; !ok {
-			t.Fatalf("missing route %s in %+v", key, seen)
+	for _, model := range []string{"strong", "weak", "zen-only", "no-tools"} {
+		if !seen[model] {
+			t.Fatalf("missing model %s in %+v", model, seen)
 		}
 	}
-	if results[0].Provider != "go" || results[0].ModelID != "strong" {
-		t.Fatalf("top route = %s/%s", results[0].Provider, results[0].ModelID)
+	if results[0].ModelID != "strong" {
+		t.Fatalf("top model = %s", results[0].ModelID)
 	}
-	// The Go metadata publishes zero prices, so the route scores as free.
+	// Go publishes zero prices, so the merged cost takes the cheapest route.
 	if results[0].CostPerTask == nil || *results[0].CostPerTask != 0 {
-		t.Fatalf("go cost = %v", results[0].CostPerTask)
+		t.Fatalf("merged cost = %v", results[0].CostPerTask)
 	}
 	for _, result := range results {
-		if result.Provider == "zen" && result.ModelID == "weak" {
-			if result.CostPerTask == nil || *result.CostPerTask <= 0 {
-				t.Fatalf("zen paid route cost = %v", result.CostPerTask)
-			}
-			return
+		if result.ModelID != "zen-only" {
+			continue
 		}
+		if result.CostPerTask == nil || *result.CostPerTask <= 0 {
+			t.Fatalf("zen-only cost = %v", result.CostPerTask)
+		}
+		return
 	}
-	t.Fatal("zen/weak missing from results")
+	t.Fatal("zen-only missing from results")
 }
 
 func TestRankingRejectsRouteWithoutRequiredCapability(t *testing.T) {
@@ -101,19 +109,19 @@ func TestRankingRejectsRouteWithoutRequiredCapability(t *testing.T) {
 	}
 	var found bool
 	for _, result := range results {
-		if result.Provider != "go" || result.ModelID != "no-tools" {
+		if result.ModelID != "no-tools" {
 			continue
 		}
 		found = true
 		if result.Gate {
-			t.Fatal("route without tool calling must be gated")
+			t.Fatal("model without tool calling must be gated")
 		}
 		if result.FinalScore != 0 {
 			t.Fatalf("gated score = %v", result.FinalScore)
 		}
 	}
 	if !found {
-		t.Fatal("no-tools route missing")
+		t.Fatal("no-tools model missing")
 	}
 	// The vision preset gates every text-only route instead.
 	_, vision, err := g.Rankings("vision")
@@ -127,6 +135,38 @@ func TestRankingRejectsRouteWithoutRequiredCapability(t *testing.T) {
 	}
 	if _, _, err := g.Rankings("unknown"); err == nil {
 		t.Fatal("unknown task must fail")
+	}
+}
+
+func TestMergeInputKeepsBestRouteFacts(t *testing.T) {
+	merged := ranking.Input{ModelID: "m"}
+	mergeInput(&merged, ranking.Input{
+		Provider: "zen", Available: true, Capability: ranking.Capability{L: f64ptr(70)},
+		CostPerTask: f64ptr(0.5), QuotaCostPerTask: f64ptr(0.5), QuotaHeadroom: f64ptr(40),
+		ContextWindow: 128000, MaxOutput: 8000, ToolCall: true, InputModalities: []string{"text"},
+	})
+	mergeInput(&merged, ranking.Input{
+		Provider: "go", Available: false, Capability: ranking.Capability{L: f64ptr(90), B: f64ptr(80)},
+		CostPerTask: f64ptr(0.2), QuotaCostPerTask: f64ptr(0.9), QuotaHeadroom: f64ptr(80),
+		ContextWindow: 256000, MaxOutput: 16000, StructuredOutput: true, InputModalities: []string{"text", "image"},
+	})
+	if !merged.Available {
+		t.Fatal("a model available on either route must be available")
+	}
+	if merged.Capability.L == nil || *merged.Capability.L != 90 || merged.Capability.B == nil || *merged.Capability.B != 80 {
+		t.Fatalf("capability must keep the best route values: %+v", merged.Capability)
+	}
+	if merged.CostPerTask == nil || *merged.CostPerTask != 0.2 {
+		t.Fatalf("cost must take the cheapest route: %v", merged.CostPerTask)
+	}
+	if merged.QuotaCostPerTask == nil || *merged.QuotaCostPerTask != 0.5 {
+		t.Fatalf("quota cost must take the cheapest route: %v", merged.QuotaCostPerTask)
+	}
+	if merged.QuotaHeadroom == nil || *merged.QuotaHeadroom != 80 || merged.ContextWindow != 256000 || merged.MaxOutput != 16000 {
+		t.Fatalf("headroom and limits must take the best route: %+v", merged)
+	}
+	if !merged.ToolCall || !merged.StructuredOutput || len(merged.InputModalities) != 2 {
+		t.Fatalf("capabilities must union across routes: %+v", merged)
 	}
 }
 

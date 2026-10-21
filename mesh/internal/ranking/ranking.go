@@ -143,7 +143,7 @@ type FitParts struct {
 // available; the final score then treats the dimension as neutral (50) and
 // lowers confidence.
 type Result struct {
-	Provider          string             `json:"provider"`
+	Provider          string             `json:"provider,omitempty"`
 	ModelID           string             `json:"model_id"`
 	TaskType          Task               `json:"task_type"`
 	Gate              bool               `json:"gate"`

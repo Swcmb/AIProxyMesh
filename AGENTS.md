@@ -30,7 +30,7 @@ docker build -t mesh:local .
 - **冷却分层**：节点层 `egress.cooldown`（30–900s，`Retry-After` 可延长至 24h）与通道层 `performance.failure_cooldown_seconds`（Key）独立；同一失败只触一层。
 - **归因纪律**：401/403 与上游全网共识只走通道层；连接失败/单出口 429/可归因 5xx 只走节点层；direct 连接失败视为上游不可达。
 - **单一出口池**：`proxies` / `proxyfile` 经兼容层进入同一节点池；不保留平台管理、请求头规则、粘性租约、反向代理、多接入点模块。
-- **模型排名**：排名对象是「提供商 + 模型 + 任务类型」；综合分 `G × (Q/E/A/F)`，硬性准入先行，按任务类型分别排名。
+- **模型排名**：排名对象是「模型 + 任务类型」，Zen/Go 作为接入路线合并（费用取最省、可用性与能力取最好、遥测汇总）；综合分 `G × (Q/E/A/F)`，硬性准入先行，模型管理页的列表按此顺序排列。
 - **轮转顺序**：`sota` / `sweet` 的模型顺序由排名引擎按 `ranking.sota_task` / `ranking.sweet_task` 自动生成；配置与 API 不再接受手写顺序。
 - **认证**：管理端统一使用 session + CSRF；`/api/egress/*` 与 `/api/rankings` 沿用同一认证。
 - **配置与状态分离**：业务配置在 `config.json`；节点/订阅/健康/延迟/事件在 `egress.state_path` 的 SQLite 中独立更新；请求与尝试日志在 `logging.requests.state_path` 的独立 SQLite，写入走缓冲，不阻塞请求。

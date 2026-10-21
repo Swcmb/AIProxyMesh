@@ -1,6 +1,6 @@
 ## 一、综合排名公式
 
-针对每个「提供商 + 模型」组合，计算 0–100 分的综合得分。
+针对每个模型计算 0–100 分的综合得分。Zen 与 Go 是同一模型的接入路线，排名阶段合并：费用取最便宜路线，可用性与能力取最好值，成功率与 P95 延迟按渠道汇总。
 
 $ \boxed{ S(r,t)=G(r,t)\times \left[ 0.40Q(r,t)+0.20E(r,t)+0.25A(r,t)+0.15F(r,t) \right] } $
 
@@ -147,15 +147,15 @@ $ G(r,t)=0 $
 
 接入路线层
 
-Zen 和 Go 分开记录价格、额度、延迟、请求成功率、接口兼容性和实际执行效果。
+Zen 和 Go 分开记录价格、额度、延迟、请求成功率、接口兼容性和实际执行效果；这一层只服务采集与 Go 轮转，不对外暴露为排名单位。
 
 统一排名层
 
-按照任务类型筛选合格路线，计算综合得分，输出总榜和各场景专榜。
+按照任务类型筛选合格模型，合并两个接入路线的观测后计算综合得分，输出总榜和各场景专榜。模型管理页的模型列表直接按此顺序排列。
 
 实际部署时，每条记录至少保留：
 
-`provider`、`model_id`、`task_type`、`capability_score`、`cost_per_task`、`success_rate`、`p95_latency`、`quota_headroom`、`fit_score`、`final_score`、`sample_count`、`updated_at`。
+`model_id`、`task_type`、`capability_score`、`cost_per_task`、`success_rate`、`p95_latency`、`quota_headroom`、`fit_score`、`final_score`、`sample_count`、`updated_at`。
 
 其中，`sample_count` 用来防止新上线、只有少量请求的模型凭借偶然的高成功率冲到榜首。实测数据不足时，应降低排名置信度，并结合基准分和初始评估值排序。
 
@@ -165,7 +165,7 @@ Zen 和 Go 分开记录价格、额度、延迟、请求成功率、接口兼容
 
 默认以 Agent 编程的 `40% 能力 + 20% 费用 + 25% 可用性 + 15% 适配度` 作为总榜；同时输出能力榜、经济性榜和稳定性榜。对于代码修复、视觉分析和普通文本问答，再分别计算专榜。
 
-最重要的一点：最终排名的对象必须是 模型与接入渠道的组合，而不仅是模型名称。这样才能真正公平地比较 OpenCode Zen 和 OpenCode Go，并支持后续的自动路由、故障切换和成本控制。
+最重要的一点：排名单位是模型，Zen 与 Go 作为同一模型的接入路线在排名阶段合并，不再各自占一行；需要比较渠道差异时看接入路线层的原始指标，需要切换 Go 模型时看轮转顺序。
 
 ## 六、实现对应关系
 
@@ -173,7 +173,7 @@ Zen 和 Go 分开记录价格、额度、延迟、请求成功率、接口兼容
 | :--- | :--- |
 | 评分公式与四个维度 | `mesh/internal/ranking/ranking.go` |
 | 任务预设与权重 | 同文件的 `presets`（`agent-coding` / `general-text` / `vision`） |
-| 路线输入构造（目录、价格、订阅分摊、运行采样） | `mesh/internal/gateway/ranking.go` |
+| 路线输入构造（目录、价格、订阅分摊、运行采样） | `mesh/internal/gateway/ranking.go`；`rankingInputs` 按模型合并 Zen/Go，`rotationPlan` 仍按 Go 单路线计算 |
 | 排名结果驱动轮转顺序 | `mesh/internal/gateway/rotation.go` 的 `syncRotation` + `rotation.Manager.Apply` |
 | 查询接口 | `GET /api/rankings?task=`、`GET /api/rankings/tasks` |
 | 可调参数 | 配置 `ranking.*`，见 `mesh/docs/configuration.md` |
