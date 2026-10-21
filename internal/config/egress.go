@@ -54,6 +54,11 @@ type EgressSubscription struct {
 	// Protocols optionally restricts this source to the listed schemes. Empty
 	// means the global egress.protocols setting decides.
 	Protocols []string `json:"protocols,omitempty"`
+	// Ephemeral marks a transient source whose dead nodes are evicted instead
+	// of being retried forever. EvictDelaySeconds is how long a node must stay
+	// continuously cooling before it is dropped from this subscription.
+	Ephemeral         bool `json:"ephemeral,omitempty"`
+	EvictDelaySeconds int  `json:"evict_delay_seconds,omitempty"`
 }
 
 // EgressSchedule holds the scoring weights. All-zero means "use defaults".
@@ -93,6 +98,10 @@ type EgressProbe struct {
 	IntervalSeconds int      `json:"interval_seconds,omitempty"`
 	TimeoutSeconds  int      `json:"timeout_seconds,omitempty"`
 	Concurrency     int      `json:"concurrency,omitempty"`
+	// EgressIPEnabled turns on the low-frequency public exit-address probe.
+	EgressIPEnabled         *bool  `json:"egress_ip_enabled,omitempty"`
+	EgressIPIntervalSeconds int    `json:"egress_ip_interval_seconds,omitempty"`
+	EgressIPTarget          string `json:"egress_ip_target,omitempty"`
 }
 
 // EgressEnabled reports whether the unified pool is active.
@@ -157,6 +166,13 @@ func (e *EgressConfig) applyDefaults(configPath string) {
 	if e.Probe.Concurrency == 0 {
 		e.Probe.Concurrency = 8
 	}
+	setBoolDefault(&e.Probe.EgressIPEnabled, true)
+	if e.Probe.EgressIPIntervalSeconds == 0 {
+		e.Probe.EgressIPIntervalSeconds = 21600
+	}
+	if e.Probe.EgressIPTarget == "" {
+		e.Probe.EgressIPTarget = "https://cloudflare.com/cdn-cgi/trace"
+	}
 	if e.StatePath == "" {
 		e.StatePath = configPath + ".egress.db"
 	}
@@ -212,6 +228,18 @@ func (e *EgressConfig) normalize(configPath string) error {
 				return fmt.Errorf("egress.subscriptions[%q] protocols contains unsupported scheme %q", sub.ID, protocol)
 			}
 		}
+		if sub.Ephemeral && sub.EvictDelaySeconds == 0 {
+			sub.EvictDelaySeconds = 600
+		}
+		if sub.EvictDelaySeconds < 0 {
+			return fmt.Errorf("egress.subscriptions[%q] evict_delay_seconds must not be negative", sub.ID)
+		}
+		if sub.EvictDelaySeconds > 0 && sub.EvictDelaySeconds < 60 {
+			return fmt.Errorf("egress.subscriptions[%q] evict_delay_seconds must be at least 60", sub.ID)
+		}
+		if sub.EvictDelaySeconds > 86400 {
+			return fmt.Errorf("egress.subscriptions[%q] evict_delay_seconds must be at most 86400", sub.ID)
+		}
 	}
 	seen := make(map[string]struct{}, len(e.Subscriptions))
 	for _, sub := range e.Subscriptions {
@@ -241,6 +269,15 @@ func (e *EgressConfig) normalize(configPath string) error {
 	}
 	if e.Probe.Concurrency < 1 || e.Probe.Concurrency > 64 {
 		return errors.New("egress.probe.concurrency must be between 1 and 64")
+	}
+	if e.Probe.EgressIPIntervalSeconds < 60 || e.Probe.EgressIPIntervalSeconds > 604800 {
+		return errors.New("egress.probe.egress_ip_interval_seconds must be between 60 and 604800")
+	}
+	if target := strings.TrimSpace(e.Probe.EgressIPTarget); target != "" {
+		u, err := url.Parse(target)
+		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			return errors.New("egress.probe.egress_ip_target must be an http(s) URL")
+		}
 	}
 	for _, target := range e.Probe.Targets {
 		u, err := url.Parse(strings.TrimSpace(target))

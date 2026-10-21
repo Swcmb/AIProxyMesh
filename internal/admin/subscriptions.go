@@ -22,6 +22,8 @@ type subscriptionPayload struct {
 	Enabled        *bool     `json:"enabled,omitempty"`
 	RefreshSeconds *int      `json:"refresh_seconds,omitempty"`
 	Protocols      *[]string `json:"protocols,omitempty"`
+	Ephemeral      *bool     `json:"ephemeral,omitempty"`
+	EvictDelaySecs *int      `json:"evict_delay_seconds,omitempty"`
 }
 
 func (a *Server) egressSubscriptions() []config.EgressSubscription {
@@ -86,13 +88,15 @@ func (a *Server) handleEgressSubscriptionCreate(w http.ResponseWriter, r *http.R
 			refreshSeconds = 0
 		}
 		egress.Subscriptions = append(egress.Subscriptions, config.EgressSubscription{
-			ID:             id,
-			Name:           stringValue(input.Name),
-			URL:            stringValue(input.URL),
-			Content:        content,
-			Enabled:        enabled,
-			RefreshSeconds: refreshSeconds,
-			Protocols:      stringSliceValue(input.Protocols),
+			ID:                id,
+			Name:              stringValue(input.Name),
+			URL:               stringValue(input.URL),
+			Content:           content,
+			Enabled:           enabled,
+			RefreshSeconds:    refreshSeconds,
+			Protocols:         stringSliceValue(input.Protocols),
+			Ephemeral:         boolValue(input.Ephemeral, false),
+			EvictDelaySeconds: intValue(input.EvictDelaySecs, 0),
 		})
 		return nil
 	})
@@ -143,6 +147,12 @@ func (a *Server) handleEgressSubscriptionUpdate(w http.ResponseWriter, r *http.R
 			}
 			if input.Protocols != nil {
 				sub.Protocols = append([]string(nil), (*input.Protocols)...)
+			}
+			if input.Ephemeral != nil {
+				sub.Ephemeral = *input.Ephemeral
+			}
+			if input.EvictDelaySecs != nil {
+				sub.EvictDelaySeconds = *input.EvictDelaySecs
 			}
 			if strings.TrimSpace(sub.URL) == "" && strings.TrimSpace(sub.Content) == "" {
 				return fmt.Errorf("订阅 %q 需要 url 或 content", id)

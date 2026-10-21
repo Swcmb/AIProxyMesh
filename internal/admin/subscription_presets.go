@@ -29,8 +29,7 @@ var subscriptionPresets = []subscriptionPreset{
 		URL:       "https://raw.githubusercontent.com/hproxy-com/free-proxy-list/main/live.csv",
 		Format:    "csv",
 		Protocols: []string{"http", "https", "socks5", "socks5h"},
-		Description: "hproxy 免费代理清单（CSV），只导入存活且协议为 HTTP/HTTPS/SOCKS5 的条目，" +
-			"按 ip、端口与协议去重，SOCKS4 会被过滤。",
+		Description: "hproxy 免费代理清单",
 		Risk: presetRisk,
 	},
 	{
@@ -39,8 +38,7 @@ var subscriptionPresets = []subscriptionPreset{
 		URL:       "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/all/data.txt",
 		Format:    "uri",
 		Protocols: []string{"http", "https", "socks5", "socks5h"},
-		Description: "proxifly 免费代理清单（每行一条 URI），保留 HTTP/HTTPS 与 SOCKS5，" +
-			"SOCKS4 及其他协议会被过滤。",
+		Description: "proxifly 免费代理清单",
 		Risk: presetRisk,
 	},
 }

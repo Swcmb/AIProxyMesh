@@ -83,3 +83,20 @@ func TestResolveEgressUpdateReplacesSubscriptions(t *testing.T) {
 		t.Fatalf("subscriptions = %+v", resolved.Subscriptions)
 	}
 }
+
+func TestEgressGeoIPRoundTrip(t *testing.T) {
+	enabled := true
+	geo := &config.EgressGeoIP{Enabled: &enabled, URL: "https://mirror.test/country.mmdb", RefreshDays: 7}
+	cfg := &config.EgressConfig{Enabled: true, GeoIP: geo}
+	view := egressView(cfg)
+	if view.GeoIP == nil || view.GeoIP.URL != geo.URL || view.GeoIP.RefreshDays != 7 {
+		t.Fatalf("view must expose geoip, got %+v", view.GeoIP)
+	}
+	resolved, err := resolveEgressUpdate(&EgressUpdate{Enabled: true, GeoIP: geo}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.GeoIP == nil || resolved.GeoIP.URL != geo.URL {
+		t.Fatalf("update must carry geoip, got %+v", resolved.GeoIP)
+	}
+}

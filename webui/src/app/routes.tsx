@@ -15,7 +15,6 @@ import { RequestsPage } from "../pages/RequestsPage";
 import { PlaygroundPage } from "../pages/PlaygroundPage";
 import { DiagnosticsPage } from "../pages/DiagnosticsPage";
 import { ConfigPage } from "../pages/ConfigPage";
-import { MonitorPage } from "../pages/MonitorPage";
 
 export function AppRoutes() {
   return (
@@ -42,7 +41,7 @@ export function AppRoutes() {
         <Route path="/playground" element={<PlaygroundPage />} />
         <Route path="/diagnostics" element={<DiagnosticsPage />} />
         <Route path="/config" element={<ConfigPage />} />
-        <Route path="/monitor" element={<MonitorPage />} />
+        <Route path="/monitor" element={<Navigate to="/overview" replace />} />
       </Route>
       <Route path="*" element={<Navigate to="/overview" replace />} />
     </Routes>

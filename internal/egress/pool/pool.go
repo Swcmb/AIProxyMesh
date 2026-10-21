@@ -156,6 +156,45 @@ func (p *Pool) PruneSubscriptions(keep map[string]struct{}) int {
 	return removed
 }
 
+// NodesOfSubscription returns the entries currently referenced by one source.
+func (p *Pool) NodesOfSubscription(subID string) []*node.Entry {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	out := make([]*node.Entry, 0, 16)
+	for h, refs := range p.refs {
+		if _, ok := refs[subID]; !ok {
+			continue
+		}
+		if entry := p.entries[h]; entry != nil {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+// RemoveNodeFromSub drops one subscription's reference to a node. The node
+// leaves the pool when no other subscription still references it. It reports
+// whether the node left the pool entirely.
+func (p *Pool) RemoveNodeFromSub(subID string, h node.Hash) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	refs, ok := p.refs[h]
+	if !ok {
+		return false
+	}
+	delete(refs, subID)
+	if entry := p.entries[h]; entry != nil {
+		entry.RemoveSubscriptionID(subID)
+	}
+	if len(refs) > 0 {
+		p.refs[h] = refs
+		return false
+	}
+	delete(p.refs, h)
+	delete(p.entries, h)
+	return true
+}
+
 // PruneCooling drops this subscription's references to nodes that are currently
 // cooling down. Nodes with no remaining reference leave the pool, so the next
 // refresh re-adds them with cleared health. It returns how many nodes left.

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/node"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/pool"
 )
 
@@ -189,6 +190,73 @@ func TestReconcileRemovesMissingSources(t *testing.T) {
 	}
 	if statuses := manager.Statuses(); len(statuses) != 1 || statuses[0].ID != "sub-a" {
 		t.Fatalf("statuses = %+v", statuses)
+	}
+}
+
+func TestReconcileRegistersNewSources(t *testing.T) {
+	set := &sourceSet{}
+	manager, p := newTestManager(t, set)
+	manager.Reconcile()
+	if len(manager.Statuses()) != 0 {
+		t.Fatalf("empty config must have no statuses")
+	}
+	set.set(Source{ID: "sub-c", Name: "c", URL: "https://feed.test/c", Enabled: true, Refresh: time.Hour})
+	manager.Reconcile()
+	statuses := manager.Statuses()
+	if len(statuses) != 1 || statuses[0].ID != "sub-c" {
+		t.Fatalf("reconcile must register a new subscription, statuses = %+v", statuses)
+	}
+	if statuses[0].Name != "c" || statuses[0].IntervalSeconds != 3600 {
+		t.Fatalf("registered status incomplete: %+v", statuses[0])
+	}
+	if p.Len() != 0 {
+		t.Fatalf("registration must not import nodes before a refresh, pool = %d", p.Len())
+	}
+}
+
+func TestScanIntervalStaysInResinWindow(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		interval := scanInterval()
+		if interval < 13*time.Second || interval > 17*time.Second {
+			t.Fatalf("scan interval = %s", interval)
+		}
+	}
+}
+
+func TestEphemeralEvictionAndReaddSuppression(t *testing.T) {
+	set := &sourceSet{}
+	set.set(Source{
+		ID: "eph", Name: "eph",
+		Content:   "http://1.1.1.1:8080#a\nhttp://2.2.2.2:8080#b",
+		Enabled:   true,
+		Ephemeral: true, EvictDelay: time.Minute,
+	})
+	manager, p := newTestManager(t, set)
+	manager.RefreshAll(context.Background())
+	if p.Len() != 2 {
+		t.Fatalf("pool = %d", p.Len())
+	}
+	var target *node.Entry
+	for _, entry := range p.List() {
+		if entry.Name() == "a" {
+			target = entry
+		}
+	}
+	if target == nil {
+		t.Fatal("fixture node missing")
+	}
+	target.RecordCooldown(time.Now().Add(time.Hour))
+	target.RestoreHealth(true, time.Now().Add(-2*time.Minute).UnixNano(), "", 0)
+	manager.evictEphemeral(time.Now())
+	if p.Get(target.Hash) != nil {
+		t.Fatal("a node cooling past the delay must be evicted")
+	}
+	manager.RefreshAll(context.Background())
+	if p.Get(target.Hash) != nil {
+		t.Fatal("the eviction memory must suppress an immediate re-add")
+	}
+	if p.Len() != 1 {
+		t.Fatalf("pool after eviction = %d", p.Len())
 	}
 }
 

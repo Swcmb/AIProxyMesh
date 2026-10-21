@@ -37,15 +37,19 @@ type UpstreamRecord struct {
 
 // NodeRecord is the durable part of one node.
 type NodeRecord struct {
-	Hash          string
-	Raw           []byte
-	Enabled       bool
-	Failures      int32
-	CooldownUntil time.Time
-	CreatedAt     time.Time
-	Subscriptions []string
-	Latency       map[string]LatencyRecord
-	Upstream      map[string]UpstreamRecord
+	Hash             string
+	Raw              []byte
+	Enabled          bool
+	Failures         int32
+	CooldownUntil    time.Time
+	CooldownSince    time.Time
+	EverHealthy      bool
+	EgressIP         string
+	LastEgressUpdate time.Time
+	CreatedAt        time.Time
+	Subscriptions    []string
+	Latency          map[string]LatencyRecord
+	Upstream         map[string]UpstreamRecord
 }
 
 // Snapshot is the full persisted pool state.
@@ -152,20 +156,33 @@ func (s *Store) Save(ctx context.Context, snapshot Snapshot) error {
 		if !record.CooldownUntil.IsZero() {
 			cooldown = record.CooldownUntil.UnixNano()
 		}
+		cooldownSince := int64(0)
+		if !record.CooldownSince.IsZero() {
+			cooldownSince = record.CooldownSince.UnixNano()
+		}
+		lastEgress := int64(0)
+		if !record.LastEgressUpdate.IsZero() {
+			lastEgress = record.LastEgressUpdate.UnixNano()
+		}
 		created := record.CreatedAt
 		if created.IsZero() {
 			created = time.Now()
 		}
 		_, err = tx.ExecContext(ctx, `
-			INSERT INTO egress_nodes (hash, raw, enabled, failures, cooldown_until, created_at)
-			VALUES (?, ?, ?, ?, ?, ?)
+			INSERT INTO egress_nodes (hash, raw, enabled, failures, cooldown_until, created_at, cooldown_since, ever_healthy, egress_ip, last_egress_update)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(hash) DO UPDATE SET
 				raw = excluded.raw,
 				enabled = excluded.enabled,
 				failures = excluded.failures,
 				cooldown_until = excluded.cooldown_until,
-				created_at = excluded.created_at`,
-			record.Hash, record.Raw, boolInt(record.Enabled), record.Failures, cooldown, created.UnixNano())
+				created_at = excluded.created_at,
+				cooldown_since = excluded.cooldown_since,
+				ever_healthy = excluded.ever_healthy,
+				egress_ip = excluded.egress_ip,
+				last_egress_update = excluded.last_egress_update`,
+			record.Hash, record.Raw, boolInt(record.Enabled), record.Failures, cooldown, created.UnixNano(),
+			cooldownSince, boolInt(record.EverHealthy), record.EgressIP, lastEgress)
 		if err != nil {
 			return fmt.Errorf("egress state: upsert node: %w", err)
 		}
@@ -225,7 +242,7 @@ func (s *Store) Save(ctx context.Context, snapshot Snapshot) error {
 // Load reads the persisted pool snapshot.
 func (s *Store) Load(ctx context.Context) (Snapshot, error) {
 	snapshot := Snapshot{}
-	rows, err := s.db.QueryContext(ctx, `SELECT hash, raw, enabled, failures, cooldown_until, created_at FROM egress_nodes`)
+	rows, err := s.db.QueryContext(ctx, `SELECT hash, raw, enabled, failures, cooldown_until, created_at, cooldown_since, ever_healthy, egress_ip, last_egress_update FROM egress_nodes`)
 	if err != nil {
 		return snapshot, fmt.Errorf("egress state: load nodes: %w", err)
 	}
@@ -233,14 +250,24 @@ func (s *Store) Load(ctx context.Context) (Snapshot, error) {
 	byHash := make(map[string]*NodeRecord)
 	for rows.Next() {
 		record := &NodeRecord{}
-		var enabled int
-		var cooldown, created int64
-		if err := rows.Scan(&record.Hash, &record.Raw, &enabled, &record.Failures, &cooldown, &created); err != nil {
+		var enabled, everHealthy int
+		var cooldown, created, cooldownSince, lastEgress int64
+		var egressIP string
+		if err := rows.Scan(&record.Hash, &record.Raw, &enabled, &record.Failures, &cooldown, &created,
+			&cooldownSince, &everHealthy, &egressIP, &lastEgress); err != nil {
 			return snapshot, fmt.Errorf("egress state: scan node: %w", err)
 		}
 		record.Enabled = enabled != 0
+		record.EverHealthy = everHealthy != 0
+		record.EgressIP = egressIP
 		if cooldown != 0 {
 			record.CooldownUntil = time.Unix(0, cooldown).UTC()
+		}
+		if cooldownSince != 0 {
+			record.CooldownSince = time.Unix(0, cooldownSince).UTC()
+		}
+		if lastEgress != 0 {
+			record.LastEgressUpdate = time.Unix(0, lastEgress).UTC()
 		}
 		record.CreatedAt = time.Unix(0, created).UTC()
 		record.Latency = make(map[string]LatencyRecord)

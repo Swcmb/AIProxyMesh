@@ -163,3 +163,47 @@ func TestSnapshot(t *testing.T) {
 		t.Fatal("test fixture broken")
 	}
 }
+
+func TestExpiredCooldownRestartsStreak(t *testing.T) {
+	entry := NewEntry(Hash{2}, nil, Options{Type: HTTP}, time.Now(), 8)
+	entry.RecordCooldown(time.Now().Add(-time.Minute))
+	entry.RestoreHealth(true, time.Now().Add(-time.Hour).UnixNano(), "", 0)
+	time.Sleep(2 * time.Millisecond)
+	entry.RecordCooldown(time.Now().Add(time.Minute))
+	if since := entry.CooldownSince(); since < time.Now().Add(-time.Second).UnixNano() {
+		t.Fatalf("an expired cooldown must restart the streak, since=%d", since)
+	}
+}
+
+func TestCooldownSinceHealthAndEgressIP(t *testing.T) {
+	entry := NewEntry(Hash{1}, nil, Options{Type: HTTP}, time.Now(), 8)
+	if entry.EverHealthy() {
+		t.Fatal("a new proxy exit must start unroutable")
+	}
+	entry.RecordCooldown(time.Now().Add(time.Minute))
+	since := entry.CooldownSince()
+	if since == 0 {
+		t.Fatal("cooldown must stamp its start")
+	}
+	time.Sleep(2 * time.Millisecond)
+	entry.RecordCooldown(time.Now().Add(2 * time.Minute))
+	if entry.CooldownSince() != since {
+		t.Fatal("extending a cooldown must keep the original start")
+	}
+	entry.RecordProbeResult(true, time.Now())
+	if !entry.EverHealthy() {
+		t.Fatal("a successful probe must admit the node")
+	}
+	entry.RecordSuccess()
+	if entry.CooldownSince() != 0 {
+		t.Fatal("success must clear the cooldown start")
+	}
+	entry.RecordEgressAttempt("203.0.113.9", time.Now())
+	if entry.EgressIP() != "203.0.113.9" || entry.LastEgressAttempt() == 0 {
+		t.Fatal("egress attempt must persist the address and timestamp")
+	}
+	snap := entry.Snapshot("", time.Now())
+	if snap.EgressIP != "203.0.113.9" || !snap.EverHealthy || snap.CooldownSince != nil {
+		t.Fatalf("snapshot = %+v", snap)
+	}
+}

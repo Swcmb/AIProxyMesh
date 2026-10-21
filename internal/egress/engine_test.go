@@ -59,6 +59,11 @@ func TestEngineRestoresAndSelects(t *testing.T) {
 	defer engine.Close()
 
 	engine.RefreshAll(context.Background())
+	// The probe sweep is what admits new exits; simulate its first success so
+	// this test exercises selection rather than the pending gate.
+	for _, entry := range engine.Pool().List() {
+		entry.MarkHealthy()
+	}
 	if engine.Pool().Len() != 2 {
 		t.Fatalf("pool = %d", engine.Pool().Len())
 	}

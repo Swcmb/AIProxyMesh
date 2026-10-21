@@ -2,7 +2,6 @@ import { test, expect, type Page } from "@playwright/test";
 
 const routes = [
   "/overview",
-  "/monitor",
   "/quotas",
   "/models",
   "/nodes",
@@ -39,7 +38,7 @@ async function assertNoOverflow(page: Page, route: string) {
   expect(overflow, `${route} 出现横向溢出`).toBe(false);
 }
 
-test("导航分组与 14 条路由（深色）", async ({ page }) => {
+test("导航分组与 13 条路由（深色）", async ({ page }) => {
   await page.addInitScript(() => {
     try {
       localStorage.setItem("mesh.theme", "dark");
@@ -120,11 +119,15 @@ test("图表颜色取自 token 并随主题切换", async ({ page }) => {
   expect(await dangerCurve.evaluate((element) => getComputedStyle(element).stroke)).toBe(
     "rgb(201, 42, 42)",
   );
-
-  await page.goto("/monitor");
-  await expect(page.locator(".recharts-surface").first()).toBeVisible();
-  await expect(page.locator(".chart-series-primary").first()).toBeAttached();
+  await page.getByRole("tab", { name: /实时监控/ }).click();
   await expect(page.locator(".chart-series-warning").first()).toBeAttached();
+});
+
+test("/monitor 重定向到合并后的总览", async ({ page }) => {
+  await page.goto("/monitor");
+  await expect(page).toHaveURL(/\/overview$/);
+  await expect(page.locator(".sidebar")).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
 });
 
 test("Key 创建、Esc 关闭弹窗与删除确认", async ({ page }) => {

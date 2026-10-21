@@ -9,12 +9,14 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"sort"
 	"sync"
 	"time"
 
+	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/node"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/parser"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/pool"
 )
@@ -35,6 +37,10 @@ type Source struct {
 	// Internal sources feed the pool but are not operator-visible
 	// subscriptions: the legacy proxies/proxyfile compatibility layer is one.
 	Internal bool
+	// Ephemeral sources evict nodes that stay continuously circuit-open for
+	// longer than EvictDelay instead of retrying them forever.
+	Ephemeral  bool
+	EvictDelay time.Duration
 }
 
 // Status is the operator-facing state of one subscription.
@@ -71,8 +77,11 @@ type Manager struct {
 	mu       sync.Mutex
 	statuses map[string]*Status
 	lastSeen map[string]time.Time
-	refresh  sync.Mutex
-	now      func() time.Time
+	// evicted remembers nodes dropped by ephemeral cleanup so a refresh that
+	// still lists them does not undo the eviction immediately.
+	evicted map[string]time.Time
+	refresh sync.Mutex
+	now     func() time.Time
 }
 
 // New creates a subscription manager.
@@ -87,6 +96,7 @@ func New(p *pool.Pool, client *http.Client, provider SourceProvider, logger *slo
 		logger:   logger,
 		statuses: make(map[string]*Status),
 		lastSeen: make(map[string]time.Time),
+		evicted:  make(map[string]time.Time),
 		now:      time.Now,
 	}
 }
@@ -99,20 +109,28 @@ func (m *Manager) SetClock(now func() time.Time) {
 }
 
 // Start refreshes everything once, then reconciles and refreshes due sources
-// on a fixed scan interval until ctx ends.
+// on a jittered 13-17 second scan until ctx ends.
 func (m *Manager) Start(ctx context.Context) {
 	m.RefreshAll(ctx)
-	ticker := time.NewTicker(15 * time.Second)
-	defer ticker.Stop()
+	timer := time.NewTimer(scanInterval())
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-timer.C:
+			m.evictEphemeral(m.clock())
 			m.Reconcile()
 			m.RefreshDue(ctx)
+			timer.Reset(scanInterval())
 		}
 	}
+}
+
+// scanInterval keeps subscription scans inside Resin's 13-17s window so
+// multiple instances do not burst at the same instant.
+func scanInterval() time.Duration {
+	return 13*time.Second + time.Duration(rand.IntN(4001))*time.Millisecond
 }
 
 // RefreshAll refreshes every configured source, ignoring due times.
@@ -140,13 +158,18 @@ func (m *Manager) RefreshDue(ctx context.Context) {
 	}
 }
 
-// Reconcile removes subscriptions that disappeared from the configuration.
+// Reconcile syncs the status registry with the current configuration: it
+// registers operator-visible rows for newly configured subscriptions so they
+// appear immediately (before the first fetch completes), and removes rows whose
+// subscription disappeared.
 func (m *Manager) Reconcile() {
-	known := make(map[string]struct{})
-	for _, source := range m.sources() {
-		known[source.ID] = struct{}{}
-	}
+	sources := m.sources()
+	known := make(map[string]struct{}, len(sources))
 	m.mu.Lock()
+	for _, source := range sources {
+		known[source.ID] = struct{}{}
+		m.statusFor(source)
+	}
 	var removed []string
 	for id := range m.statuses {
 		if _, ok := known[id]; !ok {
@@ -199,6 +222,7 @@ func (m *Manager) Refresh(ctx context.Context, id string) error {
 		return err
 	}
 	nodes := filterProtocols(result.Nodes, source.Protocols, &result.Stats)
+	nodes = m.filterEvicted(id, nodes)
 	inputs := make([]pool.Input, 0, len(nodes))
 	for _, entry := range nodes {
 		inputs = append(inputs, pool.Input{Options: entry.Options, Raw: entry.Raw})
@@ -356,6 +380,58 @@ func (m *Manager) logf(id string, err error) {
 		return
 	}
 	m.logger.Warn("subscription refresh failed", "component", "egress", "event", "subscription_refresh_failed", "subscription", id, "error", err)
+}
+
+// evictEphemeral drops nodes that have stayed continuously circuit-open past
+// their subscription's eviction delay. The evicted hash is remembered for one
+// delay so the next refresh cannot immediately re-add the same dead node.
+func (m *Manager) evictEphemeral(now time.Time) {
+	for _, source := range m.sources() {
+		if !source.Ephemeral || source.EvictDelay <= 0 {
+			continue
+		}
+		for _, entry := range m.pool.NodesOfSubscription(source.ID) {
+			if !entry.Cooling(now) {
+				continue
+			}
+			since := entry.CooldownSince()
+			if since <= 0 || now.Sub(time.Unix(0, since)) < source.EvictDelay {
+				continue
+			}
+			m.pool.RemoveNodeFromSub(source.ID, entry.Hash)
+			m.markEvicted(source.ID, entry.Hash.String(), now.Add(source.EvictDelay))
+			if m.logger != nil {
+				m.logger.Info("ephemeral node evicted",
+					"component", "egress", "event", "ephemeral_node_evicted",
+					"subscription", source.ID, "node", entry.ID(),
+					"cooldown_for", now.Sub(time.Unix(0, since)).String())
+			}
+		}
+	}
+}
+
+func (m *Manager) markEvicted(subID, hash string, until time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.evicted[subID+"\x00"+hash] = until
+}
+
+func (m *Manager) filterEvicted(subID string, nodes []parser.Node) []parser.Node {
+	now := m.clock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := nodes[:0]
+	for _, item := range nodes {
+		key := subID + "\x00" + node.HashOptions(item.Options).String()
+		if until, ok := m.evicted[key]; ok {
+			if now.Before(until) {
+				continue
+			}
+			delete(m.evicted, key)
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 // filterProtocols drops nodes outside a source's scheme allowlist and keeps the

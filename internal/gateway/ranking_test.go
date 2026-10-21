@@ -101,6 +101,66 @@ func TestRankingsMergeProvidersPerModel(t *testing.T) {
 	t.Fatal("zen-only missing from results")
 }
 
+func TestRankingsUseAnonymousLaneWithoutKeys(t *testing.T) {
+	upstream := newFakeUpstream(t)
+	cfg := testConfig(upstream.server.URL, nil)
+	cfg.GoKeys = nil
+	cfg.Models.Protocols = map[string]string{"free-tools": "chat"}
+	cfg.Ranking.Capabilities = map[string]config.RankingCapability{
+		"free-tools": {L: f64ptr(80)},
+	}
+	g, err := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), telemetry.NewMonitor())
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata := map[config.Tier]map[string]models.Metadata{
+		config.TierZen: {
+			"free-tools": {
+				ToolCall: true, ContextWindow: 200000, MaxOutput: 16000,
+				InputModalities: []string{"text"},
+			},
+		},
+	}
+	g.catalog.ReplaceWithCapabilities([]string{"free-tools"}, nil, nil, nil, metadata)
+
+	_, results, err := g.Rankings("agent-coding")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, result := range results {
+		if result.ModelID != "free-tools" {
+			continue
+		}
+		found = true
+		if !result.Gate {
+			t.Fatalf("anonymous free model must pass the agent-coding gate: %+v", result.GateReasons)
+		}
+		if result.Provider != "anonymous" {
+			t.Fatalf("provider = %q", result.Provider)
+		}
+		if result.CostPerTask == nil || *result.CostPerTask != 0 {
+			t.Fatalf("anonymous cost = %v", result.CostPerTask)
+		}
+		if result.FinalScore <= 0 {
+			t.Fatalf("anonymous model score = %v", result.FinalScore)
+		}
+	}
+	if !found {
+		t.Fatal("free-tools missing from rankings")
+	}
+
+	_, vision, err := g.Rankings("vision")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, result := range vision {
+		if result.ModelID == "free-tools" && result.Gate {
+			t.Fatal("text-only anonymous model must stay gated for vision")
+		}
+	}
+}
+
 func TestRankingRejectsRouteWithoutRequiredCapability(t *testing.T) {
 	g := rankingTestGateway(t)
 	_, results, err := g.Rankings("agent-coding")

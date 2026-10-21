@@ -64,6 +64,9 @@ type Engine struct {
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
 	closeOnce sync.Once
+
+	probeMu  sync.Mutex
+	probeJob *batchProbeState
 }
 
 // New builds and restores the engine. Call Start to run background work.
@@ -255,6 +258,88 @@ func (e *Engine) RefreshAll(ctx context.Context) { e.subs.RefreshAll(ctx) }
 // ProbeAll synchronously probes every supported node.
 func (e *Engine) ProbeAll(ctx context.Context) { e.probe.ProbeAll(ctx) }
 
+// ProbeNodes probes the given node IDs and returns how many entries were
+// actually probed; unknown or unsupported IDs are skipped. The caller bounds
+// the batch so a manual refresh stays bounded even with a very large pool.
+func (e *Engine) ProbeNodes(ctx context.Context, ids []string) int {
+	return e.probe.ProbeBatch(ctx, ids, nil)
+}
+
+// BatchProbeView is the management view of one asynchronous probe job.
+type BatchProbeView struct {
+	ID         string     `json:"id"`
+	Total      int        `json:"total"`
+	Done       int        `json:"done"`
+	Running    bool       `json:"running"`
+	StartedAt  time.Time  `json:"started_at"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+}
+
+type batchProbeState struct {
+	mu   sync.Mutex
+	view BatchProbeView
+}
+
+func (s *batchProbeState) setDone(done int) {
+	s.mu.Lock()
+	s.view.Done = done
+	s.mu.Unlock()
+}
+
+func (s *batchProbeState) finish() {
+	s.mu.Lock()
+	s.view.Running = false
+	now := time.Now()
+	s.view.FinishedAt = &now
+	s.mu.Unlock()
+}
+
+func (s *batchProbeState) snapshot() BatchProbeView {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.view
+}
+
+// StartBatchProbe starts one asynchronous probe job for a large selection.
+// Only one job runs at a time; the caller gets the running job back with
+// started=false instead of stacking another sweep.
+func (e *Engine) StartBatchProbe(ids []string) (BatchProbeView, bool) {
+	e.probeMu.Lock()
+	if e.probeJob != nil && e.probeJob.snapshot().Running {
+		view := e.probeJob.snapshot()
+		e.probeMu.Unlock()
+		return view, false
+	}
+	ctx := e.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	job := &batchProbeState{view: BatchProbeView{
+		ID:        fmt.Sprintf("probe-%d", time.Now().UnixNano()),
+		Total:     len(ids),
+		Running:   true,
+		StartedAt: time.Now(),
+	}}
+	e.probeJob = job
+	e.probeMu.Unlock()
+	go func() {
+		e.probe.ProbeBatch(ctx, ids, func(done, _ int) { job.setDone(done) })
+		job.finish()
+	}()
+	return job.snapshot(), true
+}
+
+// BatchProbeStatus returns the current asynchronous probe job, if any.
+func (e *Engine) BatchProbeStatus() BatchProbeView {
+	e.probeMu.Lock()
+	job := e.probeJob
+	e.probeMu.Unlock()
+	if job == nil {
+		return BatchProbeView{}
+	}
+	return job.snapshot()
+}
+
 // RecordEvent queues a failover event for persistence. It never blocks the
 // request path; events are dropped when the buffer is full.
 func (e *Engine) RecordEvent(event state.Event) {
@@ -399,13 +484,15 @@ func (e *Engine) sources() []subscription.Source {
 	out := make([]subscription.Source, 0, len(cfg.Subscriptions)+1)
 	for _, sub := range cfg.Subscriptions {
 		out = append(out, subscription.Source{
-			ID:        sub.ID,
-			Name:      sub.Name,
-			URL:       sub.URL,
-			Content:   sub.Content,
-			Enabled:   sub.Enabled,
-			Protocols: append([]string(nil), sub.Protocols...),
-			Refresh:   time.Duration(sub.RefreshSeconds) * time.Second,
+			ID:         sub.ID,
+			Name:       sub.Name,
+			URL:        sub.URL,
+			Content:    sub.Content,
+			Enabled:    sub.Enabled,
+			Protocols:  append([]string(nil), sub.Protocols...),
+			Refresh:    time.Duration(sub.RefreshSeconds) * time.Second,
+			Ephemeral:  sub.Ephemeral,
+			EvictDelay: time.Duration(sub.EvictDelaySeconds) * time.Second,
 		})
 	}
 	if cfg.LegacyProxiesImported() && current.legacy != "" {
@@ -441,6 +528,17 @@ func (e *Engine) restore(ctx context.Context) error {
 			cooldown = record.CooldownUntil.UnixNano()
 		}
 		entry.RestoreCooldown(record.Failures, cooldown)
+		cooldownSince := int64(0)
+		if !record.CooldownSince.IsZero() {
+			cooldownSince = record.CooldownSince.UnixNano()
+		}
+		lastEgress := int64(0)
+		if !record.LastEgressUpdate.IsZero() {
+			lastEgress = record.LastEgressUpdate.UnixNano()
+		}
+		// Legacy records carry no ever_healthy column and get its default (1),
+		// so an upgrade keeps routing until the first probe sweep finishes.
+		entry.RestoreHealth(record.EverHealthy, cooldownSince, record.EgressIP, lastEgress)
 		if latency := entry.Latency(); latency != nil {
 			for host, sample := range record.Latency {
 				latency.Load(host, node.DomainStats{EWMA: sample.EWMA, LastUpdated: sample.UpdatedAt})
@@ -462,6 +560,8 @@ func (e *Engine) save(ctx context.Context) error {
 			Raw:           entry.Raw,
 			Enabled:       entry.Enabled(),
 			Failures:      int32(entry.Failures()),
+			EverHealthy:   entry.EverHealthy(),
+			EgressIP:      entry.EgressIP(),
 			CreatedAt:     entry.CreatedAt,
 			Subscriptions: entry.SubscriptionIDs(),
 			Latency:       map[string]state.LatencyRecord{},
@@ -469,6 +569,12 @@ func (e *Engine) save(ctx context.Context) error {
 		}
 		if until := entry.CooldownUntil(); until > 0 {
 			record.CooldownUntil = time.Unix(0, until).UTC()
+		}
+		if since := entry.CooldownSince(); since > 0 {
+			record.CooldownSince = time.Unix(0, since).UTC()
+		}
+		if at := entry.LastEgressAttempt(); at > 0 {
+			record.LastEgressUpdate = time.Unix(0, at).UTC()
 		}
 		if latency := entry.Latency(); latency != nil {
 			for host, stats := range latency.Snapshot() {
@@ -533,6 +639,9 @@ func probeConfig(cfg *config.EgressConfig, upstream config.UpstreamConfig) probe
 	result.Interval = time.Duration(cfg.Probe.IntervalSeconds) * time.Second
 	result.Timeout = time.Duration(cfg.Probe.TimeoutSeconds) * time.Second
 	result.Concurrency = cfg.Probe.Concurrency
+	result.EgressIPEnabled = cfg.Probe.EgressIPEnabled == nil || *cfg.Probe.EgressIPEnabled
+	result.EgressIPInterval = time.Duration(cfg.Probe.EgressIPIntervalSeconds) * time.Second
+	result.EgressIPTarget = cfg.Probe.EgressIPTarget
 	result.Targets = append([]string(nil), cfg.Probe.Targets...)
 	if len(result.Targets) == 0 {
 		for _, raw := range []string{upstream.Zen, upstream.Go, upstream.Anonymous} {

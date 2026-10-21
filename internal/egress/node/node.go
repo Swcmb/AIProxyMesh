@@ -150,6 +150,16 @@ type Entry struct {
 	enabled       atomic.Bool
 	failures      atomic.Int32
 	cooldownUntil atomic.Int64
+	// cooldownSince is when the current uninterrupted cooling streak began.
+	// Ephemeral cleanup evicts nodes that stay circuit-open too long.
+	cooldownSince atomic.Int64
+	// everHealthy turns true after the first successful probe or passthrough
+	// request. New nodes stay unroutable until then, mirroring Resin's
+	// default-circuit-open behaviour.
+	everHealthy atomic.Bool
+
+	egressIP         atomic.Pointer[string]
+	lastEgressUpdate atomic.Int64
 
 	netSuccess atomic.Uint64
 	netFailure atomic.Uint64
@@ -172,6 +182,11 @@ type UpstreamStats struct {
 func NewEntry(h Hash, raw json.RawMessage, o Options, now time.Time, maxLatencyEntries int) *Entry {
 	e := &Entry{Hash: h, Raw: raw, Options: o, CreatedAt: now}
 	e.enabled.Store(true)
+	// The direct exit is the local connection itself; there is no proxy hop to
+	// validate, so it starts trusted instead of waiting for a probe.
+	if o.Type == Direct {
+		e.everHealthy.Store(true)
+	}
 	if maxLatencyEntries > 0 {
 		e.latency = NewLatencyTable(maxLatencyEntries)
 	}
@@ -290,16 +305,64 @@ func (e *Entry) Cooling(now time.Time) bool {
 // CooldownUntil returns the cooldown deadline in Unix nanoseconds (0 = none).
 func (e *Entry) CooldownUntil() int64 { return e.cooldownUntil.Load() }
 
+// CooldownSince returns when the current cooling streak started in Unix
+// nanoseconds (0 = not cooling).
+func (e *Entry) CooldownSince() int64 { return e.cooldownSince.Load() }
+
 // RestoreCooldown reloads a persisted cooldown on startup.
 func (e *Entry) RestoreCooldown(failures int32, untilNanos int64) {
 	e.failures.Store(failures)
 	e.cooldownUntil.Store(untilNanos)
 }
 
+// RestoreHealth reloads persisted health metadata. everHealthy defaults to
+// true for legacy records so an upgrade does not empty the routing pool while
+// the first probe sweep runs.
+func (e *Entry) RestoreHealth(everHealthy bool, cooldownSinceNanos int64, egressIP string, lastEgressNanos int64) {
+	e.everHealthy.Store(everHealthy)
+	e.cooldownSince.Store(cooldownSinceNanos)
+	if egressIP != "" {
+		value := egressIP
+		e.egressIP.Store(&value)
+	}
+	e.lastEgressUpdate.Store(lastEgressNanos)
+}
+
+// MarkHealthy records the first positive reachability signal.
+func (e *Entry) MarkHealthy() { e.everHealthy.Store(true) }
+
+// EverHealthy reports whether the node has ever produced a successful
+// connection. A node that is still false is kept out of routing.
+func (e *Entry) EverHealthy() bool { return e.everHealthy.Load() }
+
+// EgressIP returns the last observed public exit address, if any.
+func (e *Entry) EgressIP() string {
+	if value := e.egressIP.Load(); value != nil {
+		return *value
+	}
+	return ""
+}
+
+// LastEgressAttempt returns the last egress-IP probe attempt in Unix
+// nanoseconds (0 = never).
+func (e *Entry) LastEgressAttempt() int64 { return e.lastEgressUpdate.Load() }
+
+// RecordEgressAttempt stores the attempt time and, when ip is non-empty, the
+// observed exit address.
+func (e *Entry) RecordEgressAttempt(ip string, at time.Time) {
+	if ip != "" {
+		value := ip
+		e.egressIP.Store(&value)
+	}
+	e.lastEgressUpdate.Store(at.UnixNano())
+}
+
 // RecordSuccess clears the failure streak, cooldown and its reason.
 func (e *Entry) RecordSuccess() {
 	e.failures.Store(0)
 	e.cooldownUntil.Store(0)
+	e.cooldownSince.Store(0)
+	e.everHealthy.Store(true)
 	e.mu.Lock()
 	e.cooldownReason = ""
 	e.mu.Unlock()
@@ -312,10 +375,17 @@ func (e *Entry) RecordCooldown(until time.Time) {
 
 // RecordCooldownReason starts a cooldown and records why it was applied, so a
 // later upstream-consensus verdict can clear only the cooldowns it invalidates.
+// The first cooldown of an uninterrupted streak stamps CooldownSince.
 func (e *Entry) RecordCooldownReason(until time.Time, reason string) {
 	e.failures.Add(1)
 	if until.IsZero() {
 		until = time.Now()
+	}
+	now := time.Now()
+	// A cooldown that already expired means the previous cooling streak ended
+	// without a recorded success; the new failure starts a fresh streak.
+	if prev := e.cooldownUntil.Load(); prev == 0 || now.UnixNano() >= prev {
+		e.cooldownSince.Store(now.UnixNano())
 	}
 	e.cooldownUntil.Store(until.UnixNano())
 	e.mu.Lock()
@@ -338,6 +408,7 @@ func (e *Entry) ClearCooldownFor(reason string) bool {
 	e.mu.Unlock()
 	e.failures.Store(0)
 	e.cooldownUntil.Store(0)
+	e.cooldownSince.Store(0)
 	return true
 }
 
@@ -355,6 +426,7 @@ func (e *Entry) RecordNetworkResult(ok bool) {
 func (e *Entry) RecordProbeResult(ok bool, at time.Time) {
 	if ok {
 		e.probeOK.Add(1)
+		e.everHealthy.Store(true)
 	} else {
 		e.probeFail.Add(1)
 	}
@@ -403,6 +475,7 @@ func (e *Entry) RecordUpstreamResult(target string, ok bool) {
 	stats := value.(*UpstreamStats)
 	if ok {
 		stats.Success.Add(1)
+		e.everHealthy.Store(true)
 	} else {
 		stats.Failure.Add(1)
 	}
@@ -459,6 +532,9 @@ type Snapshot struct {
 	Aliases       []Alias    `json:"aliases,omitempty"`
 	Failures      int        `json:"failures"`
 	CooldownUntil *time.Time `json:"cooldown_until,omitempty"`
+	CooldownSince *time.Time `json:"cooldown_since,omitempty"`
+	EverHealthy   bool       `json:"ever_healthy"`
+	EgressIP      string     `json:"egress_ip,omitempty"`
 	HealthScore   float64    `json:"health_score"`
 	LatencyMS     float64    `json:"latency_ms,omitempty"`
 	HasLatency    bool       `json:"has_latency"`
@@ -489,6 +565,8 @@ func (e *Entry) Snapshot(target string, now time.Time) Snapshot {
 		Subscriptions: e.SubscriptionIDs(),
 		Aliases:       e.Aliases(),
 		Failures:      e.Failures(),
+		EverHealthy:   e.EverHealthy(),
+		EgressIP:      e.EgressIP(),
 		HealthScore:   e.HealthScore(),
 		LastError:     e.LastError(),
 		CreatedAt:     e.CreatedAt,
@@ -496,6 +574,10 @@ func (e *Entry) Snapshot(target string, now time.Time) Snapshot {
 	if until := e.CooldownUntil(); until > 0 {
 		value := time.Unix(0, until).UTC()
 		snap.CooldownUntil = &value
+	}
+	if since := e.CooldownSince(); since > 0 {
+		value := time.Unix(0, since).UTC()
+		snap.CooldownSince = &value
 	}
 	if host := targetHost(target); host != "" {
 		if latency, ok := e.LatencyFor(host); ok {

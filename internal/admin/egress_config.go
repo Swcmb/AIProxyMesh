@@ -14,13 +14,15 @@ import (
 // Inline subscriptions report only a line count; the full content is served by
 // the single-subscription endpoint.
 type EgressSubscriptionView struct {
-	ID             string `json:"id"`
-	Name           string `json:"name,omitempty"`
-	URL            string `json:"url,omitempty"`
-	Inline         bool   `json:"inline,omitempty"`
-	ContentLines   int    `json:"content_lines,omitempty"`
-	Enabled        bool   `json:"enabled"`
-	RefreshSeconds int    `json:"refresh_seconds,omitempty"`
+	ID                string `json:"id"`
+	Name              string `json:"name,omitempty"`
+	URL               string `json:"url,omitempty"`
+	Inline            bool   `json:"inline,omitempty"`
+	ContentLines      int    `json:"content_lines,omitempty"`
+	Enabled           bool   `json:"enabled"`
+	RefreshSeconds    int    `json:"refresh_seconds,omitempty"`
+	Ephemeral         bool   `json:"ephemeral,omitempty"`
+	EvictDelaySeconds int    `json:"evict_delay_seconds,omitempty"`
 }
 
 // EgressView is the management representation of the exit-pool section.
@@ -35,17 +37,20 @@ type EgressView struct {
 	Probe               config.EgressProbe       `json:"probe"`
 	StatePath           string                   `json:"state_path,omitempty"`
 	MaxLatencyEntries   int                      `json:"max_latency_entries,omitempty"`
+	GeoIP               *config.EgressGeoIP      `json:"geoip,omitempty"`
 }
 
 // EgressSubscriptionUpdate accepts either a new URL, inline content, or an
 // empty source that keeps whatever is already stored under the same ID.
 type EgressSubscriptionUpdate struct {
-	ID             string `json:"id"`
-	Name           string `json:"name,omitempty"`
-	URL            string `json:"url,omitempty"`
-	Content        string `json:"content,omitempty"`
-	Enabled        bool   `json:"enabled"`
-	RefreshSeconds int    `json:"refresh_seconds,omitempty"`
+	ID                string `json:"id"`
+	Name              string `json:"name,omitempty"`
+	URL               string `json:"url,omitempty"`
+	Content           string `json:"content,omitempty"`
+	Enabled           bool   `json:"enabled"`
+	RefreshSeconds    int    `json:"refresh_seconds,omitempty"`
+	Ephemeral         bool   `json:"ephemeral,omitempty"`
+	EvictDelaySeconds int    `json:"evict_delay_seconds,omitempty"`
 }
 
 // EgressUpdate is the writable form of the egress section.
@@ -60,6 +65,7 @@ type EgressUpdate struct {
 	Probe               config.EgressProbe         `json:"probe"`
 	StatePath           string                     `json:"state_path,omitempty"`
 	MaxLatencyEntries   int                        `json:"max_latency_entries,omitempty"`
+	GeoIP               *config.EgressGeoIP        `json:"geoip,omitempty"`
 }
 
 func egressView(cfg *config.EgressConfig) *EgressView {
@@ -76,12 +82,14 @@ func egressView(cfg *config.EgressConfig) *EgressView {
 		Probe:               cfg.Probe,
 		StatePath:           cfg.StatePath,
 		MaxLatencyEntries:   cfg.MaxLatencyEntries,
+		GeoIP:               cfg.GeoIP,
 	}
 	for _, sub := range cfg.Subscriptions {
 		view.Subscriptions = append(view.Subscriptions, EgressSubscriptionView{
 			ID: sub.ID, Name: sub.Name, URL: maskSubscriptionURL(sub.URL),
 			Inline: sub.Content != "", ContentLines: lineCount(sub.Content),
 			Enabled: sub.Enabled, RefreshSeconds: sub.RefreshSeconds,
+			Ephemeral: sub.Ephemeral, EvictDelaySeconds: sub.EvictDelaySeconds,
 		})
 	}
 	return view
@@ -133,6 +141,7 @@ func resolveEgressUpdate(update *EgressUpdate, current *config.EgressConfig) (*c
 		Probe:               update.Probe,
 		StatePath:           update.StatePath,
 		MaxLatencyEntries:   update.MaxLatencyEntries,
+		GeoIP:               update.GeoIP,
 	}
 	seen := make(map[string]struct{}, len(update.Subscriptions))
 	for _, sub := range update.Subscriptions {
@@ -169,6 +178,7 @@ func resolveEgressUpdate(update *EgressUpdate, current *config.EgressConfig) (*c
 		result.Subscriptions = append(result.Subscriptions, config.EgressSubscription{
 			ID: id, Name: sub.Name, URL: resolved, Content: content,
 			Enabled: sub.Enabled, RefreshSeconds: sub.RefreshSeconds,
+			Ephemeral: sub.Ephemeral, EvictDelaySeconds: sub.EvictDelaySeconds,
 		})
 	}
 	return result, nil

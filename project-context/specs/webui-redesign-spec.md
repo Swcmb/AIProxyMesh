@@ -66,8 +66,7 @@
 
 | 侧栏分组 | 新页面归属 | 承接的旧页面与功能点 |
 |---|---|---|
-| 仪表盘 | 总览 Overview | OverviewPage（运行状态、指标卡、趋势图） |
-| 仪表盘 | 实时监控 Monitor | MonitorPage（3s 轮询 + `/api/logs/stream` SSE 保留） |
+| 仪表盘 | 总览 Overview（合并实时监控） | OverviewPage（运行状态、指标卡、趋势图；3s 轮询、SSE 日志流、分布与暂停；`/monitor` 重定向到此处） |
 | 资源管理 | 模型管理 Models | ModelsPage（排名、任务类型、可用性、手动恢复；列表含优先级与状态列） |
 | 资源管理 | 节点池 Nodes | NodesPage（服务端分页/筛选/排序、启用/探测；**GeoIP 4 条镜像 URL 常量（`NodesPage.tsx:505-522`）逐字保留迁移，改造中不得改动**） |
 | 资源管理 | 订阅 Subscriptions | SubscriptionsPage（CRUD、refresh、cleanup、预设；详情受 §3.3 脱敏约束） |
@@ -86,7 +85,7 @@
 
 ### 4.2 设计 Token 与主题
 
-- 新建 `styles/tokens.css`：颜色（深色基准 + `[data-theme="light"]` 覆盖）、间距（4px 基线）、字号字重层级（沿用 Manrope/Sora）、圆角、边框、阴影、层级 z-index 标度、过渡时长。
+- 新建 `styles/tokens.css`：颜色（深色基准 + `[data-theme="light"]` 覆盖）、间距（4px 基线）、字号字重层级（Geist Sans / Geist Mono，13px 基准，对齐 OpenCode 密度）、圆角、边框、阴影、层级 z-index 标度、过渡时长。
 - 命名沿用 Geist 尺度语义（`--space-1..`、`--font-size-*`、`--radius-*`、`--shadow-*`），OpenCode 气质：深色低饱和表面 + 单一主色 + 细边框。
 - `styles/base.css` 重写为 token 消费层，按 T9 方法删除死类后以使用集重建；`mesh.css` 合并入统一命名空间。
 - 主题机制：废弃 `index.html` 的 `<meta name="color-scheme">`，改为在 `[data-theme]` 上声明 CSS `color-scheme` 属性（`dark` / `light`），使表单控件、滚动条随主题联动；`html` 根元素挂 `data-theme`，偏好存 `localStorage("mesh.theme")`，默认深色。
@@ -125,7 +124,7 @@
 | T1 | Token 与主题骨架 | `styles/tokens.css`（新）、`index.html`、`base.css` 变量层 | 双主题变量齐备；`[data-theme]` 挂 CSS `color-scheme` 属性且切换后表单控件/滚动条联动；构建通过 |
 | T2 | 全局布局与侧栏 | `AppShell.tsx`、`routes.tsx`、`RequireAuth.tsx`、`LoginPage.tsx` | 5 分组导航 + 主题开关 + 14 路由可达；键盘可完成登录→导航 |
 | T3 | 通用组件库 | `components/ui/*`（新增 8 项）、`Common.tsx` | 每组件有可渲染出口；tsc 零错误；键盘走查（Tab/Esc/方向键）+ aria 角色齐备 |
-| T4 | 仪表盘三页 | `OverviewPage.tsx`、`MonitorPage.tsx`、`QuotasPage.tsx` | 数据全部来自真实端点；图表配色走 token 变量；指标卡均含标签/单位/时间范围；SSE 与轮询行为不变 |
+| T4 | 仪表盘两页（总览合并实时监控 + 额度） | `OverviewPage.tsx`、`QuotasPage.tsx` | 数据全部来自真实端点；图表配色走 token 变量；指标卡均含标签/单位/时间范围；总览双视图与 SSE/轮询行为不变 |
 | T5 | 资源管理五页 | `ModelsPage` `NodesPage` `SubscriptionsPage` `RotationPage` `UpstreamsPage` | 表格用 DataTable；筛选/分页/排序接服务端参数；操作按钮全部 mutate 到真实 API；Models 含优先级列；GeoIP 常量逐字保留 |
 | T6 | 可观测两页 | `RequestsPage` `DiagnosticsPage` | before 游标分页；详情 Drawer 完整字段；订阅原文等敏感信息不落 UI/console/截图 |
 | T7 | 配置两页 | `APIKeysPage` `ConfigPage` | reveal/确认走 Modal；脏检查 + 保存基线比对生效；只读设置项显式标注只读状态 |
@@ -138,7 +137,7 @@
 逐项对照 `webui-redesign.md` §七，并附加可度量门槛：
 
 1. `npm run build`（tsc --noEmit + vite）通过；`go build ./... && go vet ./... && go test ./...` 与 §2 基线（2026-10-21 全绿）一致零回归。
-2. 14 个页面 + 登录页全部可达，逐页核对 §4.1 映射表无遗漏入口（勾记表随任务推进更新）。
+2. 13 个页面 + 登录页全部可达（总览与实时监控合并，`/monitor` 重定向），逐页核对 §4.1 映射表无遗漏入口（勾记表随任务推进更新）。
 3. 全仓库 grep：`window.alert`、`window.confirm`、`window.prompt` 结果为 0。
 4. 无硬编码假数据：新增/改动代码中不存在伪造的状态、延迟、健康值（人工复查 + grep 复核）。
 5. `PUT /api/config` 负载字段与 `lib/types.ts` 一致（diff 审查）。
@@ -148,6 +147,7 @@
 9. 敏感信息零出口：密钥、订阅原文/`content`、Authorization 头不出现在前端源码、列表视图、console、截图与报告中（截图逐张复核）。
 10. 每个任务的 §10 快照存在且回退路径演练过一次（至少对一个页面做快照恢复 + 重放验证）。
 11. 交付报告按 `webui-redesign.md` §八 8 节格式输出，未执行项如实标注。
+12. 1440×900 视口下各页面无页面级纵向滚动（数据量在分页/分区范围内）；更窄窗口允许滚动。
 
 ## 7. 验证方法
 

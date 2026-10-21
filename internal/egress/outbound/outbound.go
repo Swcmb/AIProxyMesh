@@ -3,9 +3,11 @@
 package outbound
 
 import (
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"sync"
 	"time"
 
@@ -56,7 +58,7 @@ func (m *Manager) Client(entry *node.Entry) (*http.Client, error) {
 	if client, ok := m.clients[entry.Hash]; ok {
 		return client, nil
 	}
-	client, err := m.build(entry.Options)
+	client, err := m.build(entry)
 	if err != nil {
 		return nil, err
 	}
@@ -64,7 +66,46 @@ func (m *Manager) Client(entry *node.Entry) (*http.Client, error) {
 	return client, nil
 }
 
-func (m *Manager) build(opts node.Options) (*http.Client, error) {
+// tracedTransport records passive latency from real traffic. TLS handshake
+// duration is preferred; plain HTTP or a reused connection falls back to the
+// full round-trip time. A successful round trip also marks the node reachable.
+type tracedTransport struct {
+	base  http.RoundTripper
+	entry *node.Entry
+}
+
+func (t *tracedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	start := time.Now()
+	var handshakeStart time.Time
+	var handshake time.Duration
+	trace := &httptrace.ClientTrace{
+		TLSHandshakeStart: func() { handshakeStart = time.Now() },
+		TLSHandshakeDone: func(_ tls.ConnectionState, err error) {
+			if err == nil && !handshakeStart.IsZero() {
+				handshake = time.Since(handshakeStart)
+			}
+		},
+	}
+	traced := req.Clone(httptrace.WithClientTrace(req.Context(), trace))
+	resp, err := t.base.RoundTrip(traced)
+	if err != nil {
+		return resp, err
+	}
+	t.entry.MarkHealthy()
+	latency := handshake
+	if latency <= 0 {
+		latency = time.Since(start)
+	}
+	if host := req.URL.Hostname(); host != "" && latency > 0 {
+		if table := t.entry.Latency(); table != nil {
+			table.Update(host, latency, 10*time.Minute)
+		}
+	}
+	return resp, nil
+}
+
+func (m *Manager) build(entry *node.Entry) (*http.Client, error) {
+	opts := entry.Options
 	proxyURL, err := opts.ProxyURL()
 	if err != nil {
 		return nil, fmt.Errorf("outbound: node %s: %w", opts.Tag, err)
@@ -90,7 +131,7 @@ func (m *Manager) build(opts node.Options) (*http.Client, error) {
 	if proxyURL != nil {
 		transport.Proxy = http.ProxyURL(proxyURL)
 	}
-	return &http.Client{Transport: transport}, nil
+	return &http.Client{Transport: &tracedTransport{base: transport, entry: entry}}, nil
 }
 
 // Remove drops a cached client and closes its idle connections.

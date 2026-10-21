@@ -179,3 +179,25 @@ func TestPruneCoolingDropsOnlyCoolingReferences(t *testing.T) {
 		t.Fatal("second prune must be a no-op")
 	}
 }
+
+func TestRemoveNodeFromSubKeepsSharedRefs(t *testing.T) {
+	p := New(8)
+	opts := node.Options{Type: node.HTTP, Server: "1.1.1.1", Port: 8080}
+	entry, _ := p.Add("sub-a", input(opts))
+	p.Add("sub-b", input(opts))
+	if p.RemoveNodeFromSub("sub-a", entry.Hash) {
+		t.Fatal("a shared node must stay in the pool")
+	}
+	if ids := entry.SubscriptionIDs(); len(ids) != 1 || ids[0] != "sub-b" {
+		t.Fatalf("subscriptions = %v", ids)
+	}
+	if p.Get(entry.Hash) == nil {
+		t.Fatal("entry must remain reachable")
+	}
+	if !p.RemoveNodeFromSub("sub-b", entry.Hash) {
+		t.Fatal("the last reference must remove the node")
+	}
+	if p.Get(entry.Hash) != nil {
+		t.Fatal("entry must leave the pool")
+	}
+}

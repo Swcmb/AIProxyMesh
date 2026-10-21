@@ -26,12 +26,29 @@ type Draft = {
   content: string;
   enabled: boolean;
   refresh_seconds: number;
+  ephemeral: boolean;
+  evict_delay_seconds: number;
 };
 
-const emptyDraft: Draft = { id: "", name: "", kind: "url", url: "", content: "", enabled: true, refresh_seconds: 3600 };
+const emptyDraft: Draft = {
+  id: "",
+  name: "",
+  kind: "url",
+  url: "",
+  content: "",
+  enabled: true,
+  refresh_seconds: 3600,
+  ephemeral: false,
+  evict_delay_seconds: 600,
+};
 
 function draftPayload(draft: Draft): Record<string, unknown> {
-  const body: Record<string, unknown> = { enabled: draft.enabled, name: draft.name.trim() };
+  const body: Record<string, unknown> = {
+    enabled: draft.enabled,
+    name: draft.name.trim(),
+    ephemeral: draft.ephemeral,
+    evict_delay_seconds: draft.ephemeral ? draft.evict_delay_seconds : 0,
+  };
   if (draft.kind === "url") {
     body.url = draft.url.trim();
     body.content = "";
@@ -144,6 +161,8 @@ export function SubscriptionsPage() {
       content: "",
       enabled: entry.enabled,
       refresh_seconds: entry.refresh_seconds ?? 0,
+      ephemeral: entry.ephemeral ?? false,
+      evict_delay_seconds: entry.evict_delay_seconds || 600,
     });
   };
 
@@ -165,6 +184,11 @@ export function SubscriptionsPage() {
         <div>
           <strong>{sub.name || sub.id}</strong>
           <div className="muted mono">{sub.id}</div>
+          {sub.ephemeral ? (
+            <span className="tag" title="连续熔断超过该时长后从本订阅驱逐">
+              临时 · 驱逐 {sub.evict_delay_seconds ?? 0}s
+            </span>
+          ) : null}
         </div>
       ),
     },
@@ -405,6 +429,29 @@ export function SubscriptionsPage() {
               onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })}
               aria-label="启用该订阅"
             />
+          </label>
+          <label className="field-group">
+            <span className="field-label">临时源（连续熔断驱逐）</span>
+            <div className="field-inline">
+              <Switch
+                checked={draft.ephemeral}
+                onChange={(event) => setDraft({ ...draft, ephemeral: event.target.checked })}
+                aria-label="标记为临时源"
+              />
+              <Input
+                type="number"
+                min={60}
+                max={86400}
+                value={draft.evict_delay_seconds}
+                disabled={!draft.ephemeral}
+                onChange={(event) =>
+                  setDraft({ ...draft, evict_delay_seconds: Number(event.target.value) || 60 })
+                }
+                aria-label="驱逐延迟秒数"
+                style={{ width: 92 }}
+              />
+              <span className="muted">秒</span>
+            </div>
           </label>
           <div className="field-inline" style={{ alignItems: "flex-end" }}>
             <Button onClick={submit} disabled={busy}>
