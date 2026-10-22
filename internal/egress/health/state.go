@@ -3,6 +3,7 @@ package health
 import (
 	"math"
 	"math/rand/v2"
+	"sync"
 	"time"
 )
 
@@ -251,18 +252,16 @@ type Transition struct {
 	Changed bool
 }
 
-// stateMutex hides the lock behind enter/leave and uses a channel instead of
-// sync.Mutex so KeyStats can be copied into a snapshot without copylocks noise.
+// stateMutex hides sync.Mutex behind enter/leave so KeyStats does not itself
+// implement sync.Locker and can still be copied into a snapshot value.
 type stateMutex struct {
-	ch chan struct{}
+	mu sync.Mutex
 }
 
-func newStateMutex() *stateMutex {
-	return &stateMutex{ch: make(chan struct{}, 1)}
-}
+func newStateMutex() *stateMutex { return &stateMutex{} }
 
-func (m *stateMutex) enter() { m.ch <- struct{}{} }
-func (m *stateMutex) leave() { <-m.ch }
+func (m *stateMutex) enter() { m.mu.Lock() }
+func (m *stateMutex) leave() { m.mu.Unlock() }
 
 // KeyStats is the complete in-memory health record of one key.
 //
@@ -336,9 +335,12 @@ type KeyStats struct {
 	LastFailureAt      time.Time
 	LastProbeAt        time.Time
 	NextProbeAt        time.Time
-	LastStatus         int
-	LastError          string
-	StateVersion       uint64
+	// ProbeEnqueued marks the key has entered the scheduler heap at least once;
+	// it drives the anti-starvation bonus.
+	ProbeEnqueued bool
+	LastStatus    int
+	LastError     string
+	StateVersion  uint64
 }
 
 // NewKeyStats creates a fresh candidate record.
@@ -401,6 +403,34 @@ func (s *KeyStats) StateOf() State {
 	s.Acquire()
 	defer s.Release()
 	return s.State
+}
+
+// ProbeSnapshot is the small view the scheduler needs. It avoids copying
+// reservoirs, histograms and counters that a scan never reads.
+type ProbeSnapshot struct {
+	Key             HealthKey
+	State           State
+	LastProbeAt     time.Time
+	LastReachableAt time.Time
+	OpenUntil       time.Time
+	PrimarySuccess  uint32
+	PrimaryFailure  uint32
+	ProbeEnqueued   bool
+	BetaWeight      float64
+	FailureRate     float64
+}
+
+// ProbeSnapshot returns the scheduler view under the key lock.
+func (s *KeyStats) ProbeSnapshot(now time.Time) ProbeSnapshot {
+	s.Acquire()
+	defer s.Release()
+	rate, _ := s.Window.FailureRate(now)
+	return ProbeSnapshot{
+		Key: s.Key, State: s.State,
+		LastProbeAt: s.LastProbeAt, LastReachableAt: s.LastReachableAt, OpenUntil: s.OpenUntil,
+		PrimarySuccess: s.PrimarySuccess, PrimaryFailure: s.PrimaryFailure, ProbeEnqueued: s.ProbeEnqueued,
+		BetaWeight: s.Beta200.RecentWeight(), FailureRate: rate,
+	}
 }
 
 // Snapshot copies the record for persistence and API rendering.

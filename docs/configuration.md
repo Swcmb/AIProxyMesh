@@ -99,10 +99,13 @@
 | `bootstrap.mode` | `direct`（默认）或 `http_connect`；Mesh 到节点端点始终显式拨号，不读系统代理 |
 | `bootstrap.url` | `http_connect` 模式的 HTTP CONNECT 代理；必填 |
 | `bootstrap.probe_url` | 经 bootstrap 路径探测的地址；其延迟不进入节点 TTFB |
+| `bootstrap.failure_grace_seconds` | 可归因传输失败的暂存宽限（0–600，默认 60）；宽限内环境异常或 target 暂停则改判丢弃 |
 | `health.mode` | `shadow`（默认，只记录证据）、`prefer`（稳定池优先 + 探索）、`strict`（只走 ACTIVE） |
 | `health.min_samples` / `valid_min_samples` | 准入最小样本；默认 96 / 46，并受 alpha-spending 首检约束 |
 | `health.exploration_ratio` / `candidate_exploration_ratio` | `prefer` 模式的探索配额（默认 10%，其中 2% 给候选） |
 | `health.max_keys_per_node` | 每节点健康键上限（1–32，默认 4）；稳定态不参与淘汰 |
+| `health.max_pending_observations` | 传输失败暂存队列上限（默认 10000）；溢出丢弃最旧观测并计数 |
+| `probe.target_pause_seconds` | 404 未达跨出口共识或上游共识时暂停该 target 探测的时长（0–3600，默认 60） |
 | `state_path` | SQLite 路径；默认 `config.json.egress.db` |
 | `max_latency_entries` | 每节点延迟表上限（1–4096） |
 | `geoip` | 国家地区库配置；该段存在即启用地区解析，`{"enabled": false}` 关闭 |
@@ -132,6 +135,10 @@ bootstrap 失败或本地网络异常归入环境状态，不冷却节点：连�
 | `dead` | 否 | 同键重复 404 且其他出口可用 |
 
 有效推理：Chat/Responses/Anthropic 首批输出事件必须可解析且不含错误；`systemone` 只校验 HTTP 200。201/204 不计入 HTTP 200 成功率。地区 403 是硬性封锁，过滤后为空时返回明确错误，不回退到被封锁地区。
+
+可归因传输失败先进入 `failure_grace_seconds` 暂存队列：宽限内环境进入 degraded/unavailable 或该 target 被暂停时，观测改判为环境失败并丢弃；否则到期提交节点冷却与键级失败。丢弃与待定数量在 `/api/egress/health` 的 `observations` 中可见。
+
+健康键以完整列 + 固定 BLOB 写入 SQLite（reservoir 版本字节、10×12 字节窗口桶、16×uint32 延迟直方图），同时保留 `payload_json` 供旧版本读取；启动时优先读 JSON，为空则从列与 BLOB 重建，坏行跳过并计数。
 
 ### `egress.geoip`
 

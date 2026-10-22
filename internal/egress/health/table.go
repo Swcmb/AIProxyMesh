@@ -113,6 +113,34 @@ func (t *Table) Upsert(stats *KeyStats) {
 	t.data[key] = entry
 }
 
+// ProbeSnapshots returns the scheduler view of every tracked key.
+func (t *Table) ProbeSnapshots(now time.Time) []ProbeSnapshot {
+	t.mu.Lock()
+	stats := make([]*KeyStats, 0, len(t.data))
+	for _, entry := range t.data {
+		stats = append(stats, entry.stats)
+	}
+	t.mu.Unlock()
+	out := make([]ProbeSnapshot, 0, len(stats))
+	for _, record := range stats {
+		out = append(out, record.ProbeSnapshot(now))
+	}
+	return out
+}
+
+// MarkProbeEnqueued records that a key has been scheduled at least once.
+func (t *Table) MarkProbeEnqueued(key HealthKey) {
+	t.mu.Lock()
+	entry := t.data[key]
+	t.mu.Unlock()
+	if entry == nil {
+		return
+	}
+	entry.stats.Acquire()
+	entry.stats.ProbeEnqueued = true
+	entry.stats.Release()
+}
+
 // Snapshot copies every tracked record.
 func (t *Table) Snapshot() []KeyStats {
 	t.mu.Lock()

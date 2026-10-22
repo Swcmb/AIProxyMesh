@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math"
 	"math/rand/v2"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -66,6 +67,35 @@ type scheduleTask struct {
 	priority   float64
 	enqueuedAt time.Time
 	index      int
+	pIndex     int
+}
+
+// priorityHeap keeps the lowest-priority task at the root so a full heap can
+// evict it in O(log n).
+type priorityHeap []*scheduleTask
+
+func (h priorityHeap) Len() int { return len(h) }
+func (h priorityHeap) Less(i, j int) bool {
+	if h[i].priority != h[j].priority {
+		return h[i].priority < h[j].priority
+	}
+	return h[i].enqueuedAt.Before(h[j].enqueuedAt)
+}
+func (h priorityHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+	h[i].pIndex, h[j].pIndex = i, j
+}
+func (h *priorityHeap) Push(value any) {
+	task := value.(*scheduleTask)
+	task.pIndex = len(*h)
+	*h = append(*h, task)
+}
+func (h *priorityHeap) Pop() any {
+	old := *h
+	task := old[len(old)-1]
+	old[len(old)-1] = nil
+	*h = old[:len(old)-1]
+	return task
 }
 
 type taskHeap []*scheduleTask
@@ -94,17 +124,24 @@ func (h *taskHeap) Pop() any {
 // Scheduler runs budgeted canary probes and feeds evidence back into the
 // health tables.
 type Scheduler struct {
-	pool     *pool.Pool
-	cfg      atomicConfig
-	logger   *slog.Logger
-	execMu   sync.RWMutex
-	executor CanaryFunc
-	env      atomic.Pointer[health.Environment]
+	pool        *pool.Pool
+	cfg         atomicConfig
+	logger      *slog.Logger
+	nowFn       func() time.Time
+	hookMu      sync.RWMutex
+	enqueueHook func(string)
+	scans       atomic.Int64
+	examined    atomic.Int64
+	enqueued    atomic.Int64
+	execMu      sync.RWMutex
+	executor    CanaryFunc
+	env         atomic.Pointer[health.Environment]
 
-	mu       sync.Mutex
-	tasks    taskHeap
-	queued   map[string]struct{}
-	inflight map[string]struct{}
+	mu         sync.Mutex
+	tasks      taskHeap
+	byPriority priorityHeap
+	queued     map[string]struct{}
+	inflight   map[string]struct{}
 
 	budgetMu   sync.Mutex
 	tokens     float64
@@ -137,6 +174,7 @@ func NewScheduler(p *pool.Pool, cfg ScheduleConfig, logger *slog.Logger) *Schedu
 	s := &Scheduler{
 		pool:     p,
 		logger:   logger,
+		nowFn:    time.Now,
 		queued:   make(map[string]struct{}),
 		inflight: make(map[string]struct{}),
 	}
@@ -162,6 +200,46 @@ func (s *Scheduler) executorFn() CanaryFunc {
 // SetEnvironment installs the local-link classifier.
 func (s *Scheduler) SetEnvironment(env *health.Environment) { s.env.Store(env) }
 
+// SetClock replaces the scheduler clock (tests and the fairness simulation).
+func (s *Scheduler) SetClock(now func() time.Time) {
+	if now != nil {
+		s.nowFn = now
+	}
+}
+
+func (s *Scheduler) clock() time.Time {
+	if s.nowFn == nil {
+		return time.Now()
+	}
+	return s.nowFn()
+}
+
+// SetEnqueueHook observes successfully enqueued task ids (coverage tests).
+func (s *Scheduler) SetEnqueueHook(hook func(string)) {
+	s.hookMu.Lock()
+	s.enqueueHook = hook
+	s.hookMu.Unlock()
+}
+
+// SchedulerStats is cumulative scan instrumentation.
+type SchedulerStats struct {
+	Scans    int64
+	Examined int64
+	Enqueued int64
+	Queued   int
+}
+
+// Stats returns cumulative scheduler counters.
+func (s *Scheduler) Stats() SchedulerStats {
+	return SchedulerStats{
+		Scans: s.scans.Load(), Examined: s.examined.Load(),
+		Enqueued: s.enqueued.Load(), Queued: s.QueueDepth(),
+	}
+}
+
+// ScanOnce runs one fair scan at the supplied time.
+func (s *Scheduler) ScanOnce(now time.Time) { s.scan(now) }
+
 func (s *Scheduler) frozen() bool {
 	env := s.env.Load()
 	return env != nil && env.Frozen()
@@ -186,7 +264,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-scan.C:
-			s.scan(time.Now())
+			s.scan(s.clock())
 		case <-dispatch.C:
 			for i := 0; i < 4; i++ {
 				if !s.dispatchOne(ctx, time.Now()) {
@@ -210,16 +288,17 @@ func (s *Scheduler) scan(now time.Time) {
 	if len(entries) == 0 {
 		return
 	}
-	// The persisted cursor keeps the starting point stable across restarts.
+	// pool.List is map-ordered. Sort by stable node id so scanCursor is a real
+	// ring position; otherwise the cursor would jump randomly and starve keys.
+	sort.Slice(entries, func(i, j int) bool { return entries[i].ID() < entries[j].ID() })
 	start := 0
 	if s.scanCursor != "" {
-		for i, entry := range entries {
-			if entry.ID() > s.scanCursor {
-				start = i
-				break
-			}
+		start = sort.Search(len(entries), func(i int) bool { return entries[i].ID() > s.scanCursor })
+		if start == len(entries) {
+			start = 0
 		}
 	}
+	s.scans.Add(1)
 	budget := cfg.MaxPerScan
 	if budget <= 0 {
 		budget = 2000
@@ -231,8 +310,9 @@ func (s *Scheduler) scan(now time.Time) {
 			continue
 		}
 		tracked := 0
-		for _, record := range table.Snapshot() {
+		for _, record := range table.ProbeSnapshots(now) {
 			tracked++
+			s.examined.Add(1)
 			if budget <= 0 {
 				break
 			}
@@ -240,18 +320,19 @@ func (s *Scheduler) scan(now time.Time) {
 			if !due {
 				continue
 			}
-			if s.enqueue(entry, record.Key, next, priority, now) {
+			if s.enqueue(entry, record.Key, next, priority, now, !record.ProbeEnqueued) {
 				budget--
 			}
 		}
 		if tracked == 0 && cfg.CanaryModel != "" && cfg.CanaryTarget != "" {
+			s.examined.Add(1)
 			// A reachable node without any key gets one synthetic candidate key,
 			// so a configured canary model can discover exits before real traffic.
 			if last := entry.LastSuccessAt(); last > 0 {
 				if key, err := health.NewKey(cfg.CanaryTarget, cfg.CanaryModel, health.ProtocolChat, health.ModeStream); err == nil {
-					record := health.KeyStats{Key: key, State: health.Candidate, LastReachableAt: time.Unix(0, last)}
+					record := health.ProbeSnapshot{Key: key, State: health.Candidate, LastReachableAt: time.Unix(0, last)}
 					next, priority, due := s.dueTime(entry, record, cfg, now)
-					if due && s.enqueue(entry, key, next, priority, now) {
+					if due && s.enqueue(entry, key, next, priority, now, true) {
 						budget--
 					}
 				}
@@ -261,7 +342,7 @@ func (s *Scheduler) scan(now time.Time) {
 	}
 }
 
-func (s *Scheduler) dueTime(entry *node.Entry, record health.KeyStats, cfg ScheduleConfig, now time.Time) (time.Time, float64, bool) {
+func (s *Scheduler) dueTime(entry *node.Entry, record health.ProbeSnapshot, cfg ScheduleConfig, now time.Time) (time.Time, float64, bool) {
 	if cfg.TargetPause > 0 && s.targetPaused(record.Key.Target, now) {
 		return time.Time{}, 0, false
 	}
@@ -293,7 +374,7 @@ func (s *Scheduler) dueTime(entry *node.Entry, record health.KeyStats, cfg Sched
 		if !lastProbe.IsZero() && now.Sub(lastProbe) < interval {
 			return time.Time{}, 0, false
 		}
-		if record.PrimarySuccess+record.PrimaryFailure >= uint32(cfg.Health.MinSamples) && record.Beta200.RecentWeight() >= cfg.Health.MinRecentWeight {
+		if record.PrimarySuccess+record.PrimaryFailure >= uint32(cfg.Health.MinSamples) && record.BetaWeight >= cfg.Health.MinRecentWeight {
 			return time.Time{}, 0, false
 		}
 	case health.Open, health.HalfOpen:
@@ -311,28 +392,34 @@ func (s *Scheduler) dueTime(entry *node.Entry, record health.KeyStats, cfg Sched
 	return now, priority, true
 }
 
-func (s *Scheduler) priority(entry *node.Entry, record health.KeyStats, cfg ScheduleConfig) float64 {
+func (s *Scheduler) priority(entry *node.Entry, record health.ProbeSnapshot, cfg ScheduleConfig) float64 {
 	samples := record.PrimarySuccess + record.PrimaryFailure
 	insufficient := 1 - math.Min(float64(samples)/float64(max(cfg.Health.MinSamples, 1)), 1)
-	failureRate, _ := record.Window.FailureRate(time.Now())
+	failureRate := record.FailureRate
 	recovery := 0.0
 	switch record.State {
 	case health.HalfOpen:
 		recovery = 1
 	case health.Open:
-		if time.Until(record.OpenUntil) < time.Minute {
+		if record.OpenUntil.Sub(s.clock()) < time.Minute {
 			recovery = 0.5
 		}
 	}
 	gap := 0.0
-	return 0.35*insufficient + 0.25*failureRate + 0.25*recovery + 0.15*gap
+	// A key that never entered the heap gets the maximum aging bonus, so
+	// high-priority states cannot starve it indefinitely.
+	aging := 0.0
+	if !record.ProbeEnqueued {
+		aging = 0.3
+	}
+	return 0.35*insufficient + 0.25*failureRate + 0.25*recovery + 0.15*gap + aging
 }
 
 func taskID(entry *node.Entry, key health.HealthKey) string {
 	return entry.ID() + "|" + key.Target + "|" + key.Model + "|" + key.Protocol + "|" + key.Mode
 }
 
-func (s *Scheduler) enqueue(entry *node.Entry, key health.HealthKey, next time.Time, priority float64, now time.Time) bool {
+func (s *Scheduler) enqueue(entry *node.Entry, key health.HealthKey, next time.Time, priority float64, now time.Time, newcomer bool) bool {
 	id := taskID(entry, key)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -343,21 +430,41 @@ func (s *Scheduler) enqueue(entry *node.Entry, key health.HealthKey, next time.T
 		return false
 	}
 	if maxKeys := s.cfg.load().MaxKeys; maxKeys > 0 && s.tasks.Len() >= maxKeys {
-		// Drop the lowest-priority pending task; the scan will reconsider it.
-		lowest := -1
-		for i, task := range s.tasks {
-			if lowest < 0 || task.priority < s.tasks[lowest].priority {
-				lowest = i
+		if len(s.byPriority) == 0 {
+			return false
+		}
+		lowest := s.byPriority[0]
+		// A never-scheduled key may evict the lowest-priority task even when
+		// that task ranks higher; first coverage is a hard fairness guarantee.
+		if !newcomer {
+			if lowest.priority > priority {
+				return false
+			}
+			// Equal priority: evict the older task so every candidate eventually
+			// enters the heap (the fairness guarantee relies on this rotation).
+			if lowest.priority == priority && !lowest.enqueuedAt.Before(now) {
+				return false
 			}
 		}
-		if lowest >= 0 && s.tasks[lowest].priority < priority {
-			evicted := s.tasks[lowest]
-			heap.Remove(&s.tasks, lowest)
-			delete(s.queued, taskID(evicted.entry, evicted.key))
-		}
+		evicted := lowest
+		heap.Remove(&s.byPriority, evicted.pIndex)
+		heap.Remove(&s.tasks, evicted.index)
+		delete(s.queued, taskID(evicted.entry, evicted.key))
 	}
-	heap.Push(&s.tasks, &scheduleTask{entry: entry, key: key, nextAt: next, priority: priority, enqueuedAt: now})
+	task := &scheduleTask{entry: entry, key: key, nextAt: next, priority: priority, enqueuedAt: now}
+	heap.Push(&s.tasks, task)
+	heap.Push(&s.byPriority, task)
 	s.queued[id] = struct{}{}
+	s.enqueued.Add(1)
+	s.hookMu.RLock()
+	hook := s.enqueueHook
+	s.hookMu.RUnlock()
+	if table := entry.ExistingHealthTable(); table != nil {
+		table.MarkProbeEnqueued(key)
+	}
+	if hook != nil {
+		hook(id)
+	}
 	return true
 }
 
@@ -379,12 +486,15 @@ func (s *Scheduler) dispatchOne(ctx context.Context, now time.Time) bool {
 		s.mu.Unlock()
 		return false
 	}
+	heap.Remove(&s.byPriority, task.pIndex)
 	heap.Pop(&s.tasks)
 	delete(s.queued, taskID(task.entry, task.key))
 	if len(s.inflight) >= max(cfg.MaxInflight, 1) {
 		s.mu.Unlock()
 		next := now.Add(5 * time.Second)
-		heap.Push(&s.tasks, &scheduleTask{entry: task.entry, key: task.key, nextAt: next, priority: task.priority, enqueuedAt: task.enqueuedAt})
+		requeued := &scheduleTask{entry: task.entry, key: task.key, nextAt: next, priority: task.priority, enqueuedAt: task.enqueuedAt}
+		heap.Push(&s.tasks, requeued)
+		heap.Push(&s.byPriority, requeued)
 		s.queued[taskID(task.entry, task.key)] = struct{}{}
 		return true
 	}
@@ -394,7 +504,7 @@ func (s *Scheduler) dispatchOne(ctx context.Context, now time.Time) bool {
 
 	if !s.takeToken(cfg, time.Now()) {
 		s.finishTask(task, id)
-		s.enqueue(task.entry, task.key, now.Add(time.Second), task.priority, now)
+		s.enqueue(task.entry, task.key, now.Add(time.Second), task.priority, now, false)
 		return true
 	}
 

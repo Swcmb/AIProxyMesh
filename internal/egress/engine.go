@@ -266,7 +266,7 @@ func (e *Engine) Close() error {
 			e.logger.Info("egress pending observations dropped on shutdown",
 				"component", "egress", "event", "health_observations_dropped", "count", dropped)
 		}
-		saveCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		saveCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		if saveErr := e.save(saveCtx); saveErr != nil {
 			err = saveErr
 		}
@@ -373,13 +373,17 @@ func (e *Engine) ProbeNodes(ctx context.Context, ids []string) int {
 
 // BatchProbeView is the management view of one asynchronous probe job.
 type BatchProbeView struct {
-	ID         string     `json:"id"`
-	Total      int        `json:"total"`
-	Done       int        `json:"done"`
-	Running    bool       `json:"running"`
-	Cancelled  bool       `json:"cancelled"`
-	StartedAt  time.Time  `json:"started_at"`
-	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	ID            string     `json:"id"`
+	Total         int        `json:"total"`
+	Done          int        `json:"done"`
+	Running       bool       `json:"running"`
+	Cancelled     bool       `json:"cancelled"`
+	TCPChecked    int        `json:"tcp_checked"`
+	TCPReachable  int        `json:"tcp_reachable"`
+	HTTPProbed    int        `json:"http_probed"`
+	HTTPReachable int        `json:"http_reachable"`
+	StartedAt     time.Time  `json:"started_at"`
+	FinishedAt    *time.Time `json:"finished_at,omitempty"`
 }
 
 type batchProbeState struct {
@@ -399,6 +403,15 @@ func (s *batchProbeState) finish() {
 	s.view.Running = false
 	now := time.Now()
 	s.view.FinishedAt = &now
+	s.mu.Unlock()
+}
+
+func (s *batchProbeState) setStats(stats probe.FastProbeStats) {
+	s.mu.Lock()
+	s.view.TCPChecked = stats.TCPChecked
+	s.view.TCPReachable = stats.TCPReachable
+	s.view.HTTPProbed = stats.HTTPProbed
+	s.view.HTTPReachable = stats.HTTPReachable
 	s.mu.Unlock()
 }
 
@@ -458,7 +471,8 @@ func (e *Engine) startBatchProbe(ids []string) (BatchProbeView, bool) {
 	e.probeMu.Unlock()
 	go func() {
 		defer cancel()
-		e.probe.ProbeBatchFast(ctx, ids, func(done, _ int) { job.setDone(done) })
+		stats := e.probe.ProbeBatchFastStats(ctx, ids, func(done, _ int) { job.setDone(done) })
+		job.setStats(stats)
 		job.finish()
 	}()
 	return job.snapshot(), true
