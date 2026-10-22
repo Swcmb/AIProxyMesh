@@ -43,6 +43,26 @@ const statusTone: Record<string, string> = {
   unsupported: "badge-muted",
 };
 
+const healthLabels: Record<string, string> = {
+  candidate: "候选",
+  verifying: "验证中",
+  active: "稳定",
+  suspect: "可疑",
+  open: "熔断",
+  half_open: "半开",
+  dead: "淘汰",
+};
+
+const healthTone: Record<string, string> = {
+  active: "badge-success",
+  suspect: "badge-warning",
+  open: "badge-danger",
+  half_open: "badge-info",
+  dead: "badge-muted",
+  verifying: "badge-info",
+  candidate: "badge-neutral",
+};
+
 const pageSizes = [20, 50, 100, 200, 500];
 
 type Filters = {
@@ -334,8 +354,23 @@ export function NodesPage() {
       ),
     },
     {
+      key: "health_state",
+      header: "健康态",
+      cell: (node) => (
+        <div>
+          <span className={`badge ${healthTone[node.health_state ?? ""] ?? "badge-neutral"}`}>
+            {healthLabels[node.health_state ?? ""] ?? node.health_state ?? "无证据"}
+          </span>
+          {node.http200_lower != null ? (
+            <div className="muted">HTTP {formatPercent(node.http200_lower, 1)}</div>
+          ) : null}
+          {node.valid_lower != null ? <div className="muted">推理 {formatPercent(node.valid_lower, 1)}</div> : null}
+        </div>
+      ),
+    },
+    {
       key: "health",
-      header: "健康",
+      header: "健康分",
       sortKey: "health",
       cell: (node) => formatPercent(node.health_score, 1),
     },
@@ -967,6 +1002,60 @@ function NodeDetail({ node, names }: { node: EgressNode; names: Record<string, s
             <dd className="pre-wrap">{node.last_error || "-"}</dd>
           </div>
         </dl>
+      </section>
+
+      <section className="detail-section">
+        <div className="detail-section-head">
+          <h4>健康键</h4>
+          <p>按「上游 × 模型 × 协议 × 模式」统计的准入证据；样本不足时下界为空</p>
+        </div>
+        {node.health_keys && node.health_keys.length > 0 ? (
+          <div className="table-scroll">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>上游 / 模型</th>
+                  <th>协议 / 模式</th>
+                  <th>状态</th>
+                  <th>样本</th>
+                  <th>HTTP 下界</th>
+                  <th>推理下界</th>
+                  <th>TTFB p95</th>
+                </tr>
+              </thead>
+              <tbody>
+                {node.health_keys.map((key) => (
+                  <tr key={`${key.target}-${key.model}-${key.protocol}-${key.mode}`}>
+                    <td>
+                      <div className="mono">{key.model}</div>
+                      <div className="muted">{key.target}</div>
+                    </td>
+                    <td>
+                      <span className="tag">{key.protocol}</span> <span className="muted">{key.mode}</span>
+                    </td>
+                    <td>
+                      <span className={`badge ${healthTone[key.state] ?? "badge-neutral"}`}>
+                        {healthLabels[key.state] ?? key.state}
+                      </span>
+                      {key.pending_reverify ? <div className="muted">待复验 {key.reverify_success}</div> : null}
+                    </td>
+                    <td>
+                      {key.samples}
+                      <div className="muted">
+                        {key.primary_success}/{key.primary_failure}
+                      </div>
+                    </td>
+                    <td>{key.http200_lower == null ? "证据不足" : formatPercent(key.http200_lower, 1)}</td>
+                    <td>{key.valid_lower == null ? "证据不足" : formatPercent(key.valid_lower, 1)}</td>
+                    <td>{key.ttfb_p95_ms > 0 ? `${key.ttfb_p95_ms} ms` : "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="muted">该节点暂无健康键证据。</p>
+        )}
       </section>
 
       <section className="detail-section">

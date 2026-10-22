@@ -466,6 +466,70 @@ export interface EgressNode {
   region_name?: string;
   score: EgressNodeScore;
   eligible: boolean;
+  health_state?: string;
+  http200_lower?: number | null;
+  valid_lower?: number | null;
+  next_probe_at?: string;
+  health_keys?: EgressHealthKey[];
+}
+
+export interface EgressHealthKey {
+  target: string;
+  model: string;
+  protocol: string;
+  mode: string;
+  state: string;
+  valid_required: boolean;
+  http200_success: number;
+  http200_failure: number;
+  valid_success: number;
+  valid_failure: number;
+  primary_success: number;
+  primary_failure: number;
+  samples: number;
+  http200_lower: number | null;
+  valid_lower: number | null;
+  ttfb_p95_ms: number;
+  environment_epoch: number;
+  pending_reverify: boolean;
+  reverify_success: number;
+  active_epoch: number;
+  next_probe_at?: string;
+  last_success_at?: string;
+}
+
+export interface EgressHealthSummary {
+  mode: string;
+  counts: {
+    candidate: number;
+    verifying: number;
+    active: number;
+    suspect: number;
+    open: number;
+    half_open: number;
+    dead: number;
+  };
+  environment: {
+    state: string;
+    epoch: number;
+    bootstrap_mode: string;
+    bootstrap_latency_ms: number;
+    probe_last_at?: string;
+    probe_failures: number;
+    bootstrap_failures: number;
+    environment_failures: number;
+  };
+  stable_pool: number;
+  stable_min_capacity: number;
+  targets: { target: string; active: number; verifying: number }[];
+  probe: {
+    queue_depth: number;
+    due: number;
+    budget_per_second: number;
+    canary_today: number;
+    canary_daily_budget: number;
+    last_probe_at?: string;
+  };
 }
 
 export interface GeoIPStatus {

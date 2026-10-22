@@ -31,6 +31,15 @@ func (a *Server) handleEgressSummary(w http.ResponseWriter, _ *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, engine.Snapshot())
 }
 
+func (a *Server) handleEgressHealth(w http.ResponseWriter, _ *http.Request) {
+	engine := a.egressEngine()
+	if engine == nil {
+		writeEgressDisabled(w)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, engine.HealthSummary())
+}
+
 func (a *Server) handleEgressNodes(w http.ResponseWriter, r *http.Request) {
 	engine := a.egressEngine()
 	if engine == nil {
