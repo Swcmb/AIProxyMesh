@@ -147,9 +147,18 @@ func (b *attemptBody) Close() error {
 // request-level budget is gone.
 func doInferenceAttempt(client *http.Client, req *http.Request, firstEventTimeout, attemptTimeout time.Duration,
 	protocol wire.Protocol, mode string, maxPeek int, onStreamEnd func(bool)) (*http.Response, inferenceVerdict, error) {
-	if (firstEventTimeout <= 0 && attemptTimeout <= 0) || strings.HasSuffix(req.URL.Path, "/systemone") {
+	if strings.HasSuffix(req.URL.Path, "/systemone") {
 		resp, err := client.Do(req)
 		return resp, inferenceVerdict{}, err
+	}
+	if firstEventTimeout <= 0 {
+		// 0 no longer means "skip the wait": fall back to the attempt budget,
+		// then to the approved 60 second window.
+		if attemptTimeout > 0 {
+			firstEventTimeout = attemptTimeout
+		} else {
+			firstEventTimeout = 60 * time.Second
+		}
 	}
 	trace := &attemptTrace{}
 	ctx, cancel := context.WithCancelCause(req.Context())

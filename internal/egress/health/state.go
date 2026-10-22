@@ -561,7 +561,12 @@ func primaryResult(obs Observation, validRequired bool) (success bool, counts bo
 		if obs.Status != 200 {
 			return false, true
 		}
-		if validRequired && obs.ValidKnown && !obs.ValidInference {
+		if validRequired && !obs.ValidKnown {
+			// Unknown payloads only count as HTTP 200 evidence; they must not
+			// advance the primary metric.
+			return false, false
+		}
+		if validRequired && !obs.ValidInference {
 			return false, true
 		}
 		return true, true

@@ -222,6 +222,23 @@ func TestStateMachineAdmissionAndRecovery(t *testing.T) {
 	}
 }
 
+func TestUnknownPayloadOnlyCountsHTTP200(t *testing.T) {
+	cfg := DefaultConfig()
+	now := time.Unix(2_500_000, 0)
+	key, _ := NewKey("https://opencode.ai/zen", "m", ProtocolChat, ModeStream)
+	stats := NewKeyStats(key, cfg, now)
+	stats.Apply(Observation{Kind: OutcomeSuccess, Status: 200, ValidKnown: false}, cfg, now)
+	if stats.HTTP200Success != 1 {
+		t.Fatalf("HTTP 200 evidence = %d", stats.HTTP200Success)
+	}
+	if stats.PrimarySuccess != 0 || stats.PrimaryFailure != 0 {
+		t.Fatalf("unknown must not advance the primary metric: %+v", stats)
+	}
+	if stats.UnknownStreak != 1 {
+		t.Fatalf("unknown streak = %d", stats.UnknownStreak)
+	}
+}
+
 func TestStreamFailureDemotesActive(t *testing.T) {
 	cfg := DefaultConfig()
 	now := time.Unix(3_000_000, 0)
