@@ -315,7 +315,11 @@ func (r *Router) applyHealth(attempt *Attempt, outcome Outcome, now time.Time) {
 	if env != nil && env.Frozen() {
 		return
 	}
-	if outcome.Kind == ProxyFailure && !outcome.Bootstrap {
+	if outcome.Kind == BootstrapFailure {
+		if env != nil {
+			env.ReportBootstrapProbe(false, 0, now)
+		}
+	} else if outcome.Kind == ProxyFailure && !outcome.Bootstrap {
 		if env != nil {
 			env.ReportTransportFailure(attempt.NodeID, attempt.Key.Target, now)
 		}

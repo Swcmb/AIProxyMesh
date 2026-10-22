@@ -335,16 +335,10 @@ func (r *Router) SelectAffinity(ctx context.Context, target *url.URL, exclude ma
 	// hits dead nodes and ends in 503 after the retry budget. The full eligible
 	// set stays as a fallback until the first sweep finds verified nodes.
 	if blocked := r.blockedRegions(host, now); len(blocked) > 0 {
-		if filtered := r.filterBlocked(picks, blocked); len(filtered) > 0 {
-			picks = filtered
-		}
-		if len(verified) > 0 {
-			if filtered := r.filterBlocked(verified, blocked); len(filtered) > 0 {
-				verified = filtered
-			} else {
-				verified = nil
-			}
-		}
+		// Region blocks are hard: an empty filtered set stays empty and the
+		// request fails with ErrNoEligible instead of retrying a blocked region.
+		picks = r.filterBlocked(picks, blocked)
+		verified = r.filterBlocked(verified, blocked)
 	}
 	if len(verified) > 0 {
 		picks = verified

@@ -101,13 +101,12 @@ func TestSelectSkipsBlockedRegion(t *testing.T) {
 		attempt.Report(Outcome{Kind: Success})
 	}
 
-	// Blocking every region must fall back instead of locking routing out.
+	// Region blocks are hard constraints: all blocked means no eligible exit,
+	// never a fallback to a blocked region.
 	r.RecordRegionBlock(u.Hostname(), "us")
-	attempt, err := r.Select(context.Background(), u, nil)
-	if err != nil {
-		t.Fatalf("fallback with all regions blocked: %v", err)
+	if _, err := r.Select(context.Background(), u, nil); !errors.Is(err, ErrNoEligible) {
+		t.Fatalf("all regions blocked must return ErrNoEligible, got %v", err)
 	}
-	attempt.Release()
 }
 
 func TestRegionBlockedOutcomeHidesRegion(t *testing.T) {

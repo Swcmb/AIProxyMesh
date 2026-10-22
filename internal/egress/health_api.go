@@ -114,6 +114,12 @@ func (e *Engine) HealthSummary() HealthSummary {
 	}
 	sort.Slice(summary.Targets, func(i, j int) bool { return summary.Targets[i].Target < summary.Targets[j].Target })
 	summary.Environment.BootstrapMode = cfg.Bootstrap.Mode
+	if e.scheduler != nil {
+		now := time.Now()
+		summary.Probe.QueueDepth = e.scheduler.QueueDepth()
+		summary.Probe.Due = e.scheduler.DueCount(now)
+		summary.Probe.CanaryToday = e.scheduler.DailyCount()
+	}
 	if e.environment != nil {
 		snapshot := e.environment.Snapshot()
 		summary.Environment.State = string(snapshot.State)

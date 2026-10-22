@@ -48,13 +48,14 @@ type settings struct {
 
 // Engine owns the egress subsystem.
 type Engine struct {
-	pool     *pool.Pool
-	outbound *outbound.Manager
-	router   *routing.Router
-	probe    *probe.Manager
-	subs     *subscription.Manager
-	store    *state.Store
-	geoip    *geoip.Service
+	pool      *pool.Pool
+	outbound  *outbound.Manager
+	router    *routing.Router
+	probe     *probe.Manager
+	scheduler *probe.Scheduler
+	subs      *subscription.Manager
+	store     *state.Store
+	geoip     *geoip.Service
 	// geoipConfig records the section the service was built from, so a hot
 	// reload only rebuilds it when something actually changed.
 	geoipConfig *config.EgressGeoIP
@@ -105,12 +106,15 @@ func New(opts Options) (*Engine, error) {
 	environment := health.NewEnvironment(cfg.Bootstrap.EnvironmentConfig(), time.Now())
 	router.SetEnvironment(environment)
 	prober := probe.New(nodePool, outboundManager, probeConfig(cfg, opts.Upstream), logger)
+	scheduler := probe.NewScheduler(nodePool, schedulerConfig(cfg), logger)
+	scheduler.SetEnvironment(environment)
 
 	e := &Engine{
 		pool:        nodePool,
 		outbound:    outboundManager,
 		router:      router,
 		probe:       prober,
+		scheduler:   scheduler,
 		store:       store,
 		logger:      logger,
 		environment: environment,
@@ -176,6 +180,12 @@ func (e *Engine) Start(parent context.Context) {
 	go func() {
 		defer e.wg.Done()
 		e.bootstrapProbeLoop(e.ctx)
+	}()
+
+	e.wg.Add(1)
+	go func() {
+		defer e.wg.Done()
+		e.scheduler.Run(e.ctx)
 	}()
 
 	e.StartGeoIP(e.ctx)
@@ -262,6 +272,8 @@ func (e *Engine) Apply(egress *config.EgressConfig, upstream config.UpstreamConf
 	}
 	e.router.Configure(routerConfig(egress))
 	e.probe.Configure(probeConfig(egress, upstream))
+	e.scheduler.Configure(schedulerConfig(egress))
+	e.scheduler.SetEnvironment(e.environment)
 	e.subs.Reconcile()
 	e.pruneOrphanedReferences()
 	if e.ctx != nil {
@@ -806,6 +818,30 @@ func (e *Engine) saveHealth(ctx context.Context) error {
 	return nil
 }
 
+func schedulerConfig(cfg *config.EgressConfig) probe.ScheduleConfig {
+	healthCfg := cfg.Health.HealthKeyConfig()
+	return probe.ScheduleConfig{
+		Enabled:          cfg.Probe.CanaryEnabled == nil || *cfg.Probe.CanaryEnabled,
+		BudgetPerSecond:  cfg.Probe.BudgetPerSecond,
+		Burst:            cfg.Probe.BudgetBurst,
+		DailyBudget:      cfg.Probe.CanaryDailyBudget,
+		MaxPerScan:       cfg.Probe.MaxSchedulePerScan,
+		MaxKeys:          cfg.Probe.MaxScheduledKeys,
+		MaxInflight:      cfg.Probe.CanaryMaxInflight,
+		CanaryMaxTokens:  cfg.Probe.CanaryMaxTokens,
+		DefaultMode:      cfg.Probe.CanaryDefaultMode,
+		VerifyingRecheck: time.Duration(cfg.Probe.VerifyingRecheckSeconds) * time.Second,
+		ActiveRecheck:    time.Duration(cfg.Probe.ActiveRecheckSeconds) * time.Second,
+		DeadRecheck:      time.Duration(cfg.Health.DeadRecheckSeconds) * time.Second,
+		BackoffBase:      time.Duration(cfg.Probe.BackoffBaseSeconds) * time.Second,
+		BackoffMax:       time.Duration(cfg.Probe.BackoffMaxSeconds) * time.Second,
+		JitterRatio:      cfg.Probe.JitterRatio,
+		TargetPause:      time.Duration(cfg.Probe.TargetPauseSeconds) * time.Second,
+		Health:           healthCfg,
+		MaxKeysPerNode:   cfg.Health.MaxKeysPerNode,
+	}
+}
+
 func outboundConfig(perf config.PerformanceConfig) outbound.Config {
 	cfg := outbound.DefaultConfig()
 	if perf.MaxIdleConns > 0 {
@@ -885,6 +921,18 @@ func (e *Engine) PrimaryTarget() *url.URL {
 		return nil
 	}
 	return parsed
+}
+
+// SetCanaryExecutor installs the gateway-side canary implementation.
+func (e *Engine) SetCanaryExecutor(executor probe.CanaryFunc) {
+	if e.scheduler != nil {
+		e.scheduler.SetExecutor(executor)
+	}
+}
+
+// OutboundClient returns the node-bound HTTP client for canary execution.
+func (e *Engine) OutboundClient(entry *node.Entry) (*http.Client, error) {
+	return e.outbound.Client(entry)
 }
 
 // newTransportFactory builds the explicit Mesh-to-node link factory.

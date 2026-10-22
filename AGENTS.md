@@ -32,8 +32,10 @@ docker build -t mesh:local .
 - **上游地址唯一来源**：`upstream.zen/go/anonymous`；禁止新增 `target_domain` 或第二份目标地址。
 - **尝试预算**：唯一总预算 = `retry.max_attempts`；匿名阶段与各 tier 共享，换出口消耗一次。
 - **冷却分层**：节点层 `egress.cooldown`（30–900s，`Retry-After` 可延长至 24h）与通道层 `performance.failure_cooldown_seconds`（Key）独立；同一失败只触一层。
-- **节点准入与探测**：新节点首次连通信号（主动探测或真实流量）之前不进入路由（`direct` 除外）；路由优先选择近期验证成功的节点，全池未验证时才回退；主动探测使用双优先级固定 worker 池与 13–17s 抖动扫描，失败节点指数退避（上限 30min），批量刷新以 TCP 预检 + 并发探测执行并支持取消；出口 IP 按 `egress.probe.egress_ip_*` 低频探测并优先用于地区解析；`ephemeral: true` 的订阅会驱逐连续熔断超过 `evict_delay_seconds` 的节点。
-- **归因纪律**：401/403 与上游全网共识只走通道层；连接失败/单出口 429/可归因 5xx 只走节点层；direct 连接失败视为上游不可达。例外：403 响应体明确为地区限制时按出口国家临时隔离该地区 30 分钟并换出口（不冷却节点，全部地区被隔离时回退）。
+- **健康键与准入**：准入对象是「出口 × 上游 base path × 模型 × 协议 × 请求模式」；HTTP 200 与有效推理各自使用 Wilson 下界 + alpha-spending 检查点 + 时间桶蓄水池，近期健康使用衰减 Beta 分位。七态状态机 `candidate/verifying/active/suspect/open/half_open/dead` 同时约束节点层冷却与键级熔断；`egress.health.mode` 默认 `shadow`，`prefer`/`strict` 需显式开启。每节点健康键有界（默认 4），稳定态 pin 不淘汰。
+- **探测与金丝雀**：新节点首次连通信号（主动探测或真实流量）之前不进入路由（`direct` 除外）；快速刷新以 TCP 预检 + 并发探测执行并支持取消，只产生可达证据；金丝雀使用匿名免费通道的真实推理请求，受令牌桶、每日预算、单飞与环境暂停约束；主动探测使用双优先级固定 worker 池与 13–17s 抖动扫描，失败节点指数退避（上限 30min）；出口 IP 按 `egress.probe.egress_ip_*` 低频探测并优先用于地区解析；`ephemeral: true` 的订阅会驱逐连续熔断超过 `evict_delay_seconds` 的节点。
+- **链路隔离**：Mesh 到节点端点只经 `internal/egress/transport` 工厂，`direct` 忽略系统代理，`http_connect` 走显式 CONNECT；bootstrap 失败只进入环境状态，不冷却节点、不驱逐候选。bootstrap 延迟不进入节点 TTFB。
+- **归因纪律**：401/403 与上游全网共识只走通道层；连接失败/单出口 429/可归因 5xx 只走节点层；direct 连接失败视为上游不可达。403 响应体明确为地区限制时按出口国家硬性隔离 30 分钟并换出口（不冷却节点）；全部候选地区被封锁时返回 `ErrNoEligible`，任何回退层都不得放宽封锁。
 - **错误终止**：400/422 的请求级拒绝（上下文超长、参数非法）立即原样返回，不跨出口、Key 或 tier 重试；匿名通道可用 `models.anonymous_backoff` 熔断。
 - **单一出口池**：`proxies` / `proxyfile` 经兼容层进入同一节点池；不保留平台管理、请求头规则、粘性租约、反向代理、多接入点模块。
 - **模型排名**：排名对象是「模型 + 任务类型」，Zen/Go 作为接入路线合并（费用取最省、可用性与能力取最好、遥测汇总）；综合分 `G × (Q/E/A/F)`，硬性准入先行，模型管理页的列表按此顺序排列。
