@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/config"
+	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/health"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/routing"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/httpx"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/identity"
@@ -305,6 +306,7 @@ func (g *Gateway) doAnonymousUpstream(ctx context.Context, route models.Route, b
 	// collapses the stream back when the downstream client asked for a plain
 	// JSON reply. Key tiers keep their original bodies.
 	body = prepareAnonymousBody(body, route.ProtocolFor(config.TierZen))
+	anonymousKey := healthKeyFor(g.cfg.Upstream.Anonymous, route, config.TierZen, body)
 
 	var cursor *anonymousCursor
 	if !g.egressEnabled() {
@@ -333,7 +335,7 @@ func (g *Gateway) doAnonymousUpstream(ctx context.Context, route models.Route, b
 			if err != nil {
 				return nil, err, attempts
 			}
-			egressAttempt, err = g.selectEgress(ctx, target, exclude, ids.Session)
+			egressAttempt, err = g.selectEgress(ctx, target, anonymousKey, exclude, ids.Session)
 			if err != nil {
 				if retryWait > 0 && waitForRetryAfter(ctx, retryWait) {
 					retryWait = 0
@@ -373,7 +375,19 @@ func (g *Gateway) doAnonymousUpstream(ctx context.Context, route models.Route, b
 			return nil, err, attempts
 		}
 		started := time.Now()
-		resp, err := doInferenceAttempt(client, req, time.Duration(g.cfg.Performance.FirstEventTimeoutSeconds)*time.Second, g.attemptTimeout)
+		var streamCallback func(bool)
+		if egressAttempt != nil {
+			attemptRef := egressAttempt
+			streamCallback = func(clean bool) {
+				if clean {
+					attemptRef.ReportStream(health.StreamSuccess)
+				} else {
+					attemptRef.ReportStream(health.StreamFailure)
+				}
+			}
+		}
+		resp, verdict, err := doInferenceAttempt(client, req, time.Duration(g.cfg.Performance.FirstEventTimeoutSeconds)*time.Second, g.attemptTimeout,
+			route.ProtocolFor(config.TierZen), requestMode(body), g.healthMaxPeek(), streamCallback)
 		duration := time.Since(started)
 		if ctx.Err() != nil {
 			// The parent budget expired while this attempt was in flight. Its
@@ -401,7 +415,7 @@ func (g *Gateway) doAnonymousUpstream(ctx context.Context, route models.Route, b
 		}
 
 		if egressAttempt != nil {
-			classification := g.reportEgressAttempt(ctx, route, ids, attemptOffset+attempts, "anonymous", "anonymous", true, egressAttempt, resp, err, duration)
+			classification := g.reportEgressAttempt(ctx, route, ids, attemptOffset+attempts, "anonymous", "anonymous", true, egressAttempt, resp, err, verdict, duration)
 			status := upstreamStatus(resp)
 			switch classification.Kind {
 			case routing.Success, routing.Neutral:
@@ -775,7 +789,7 @@ func (g *Gateway) doSelectedKeyUpstream(ctx context.Context, route models.Route,
 		if targetErr != nil {
 			return nil, targetErr, 0
 		}
-		egressAttempt, err = g.selectEgress(ctx, target, nil, keyID)
+		egressAttempt, err = g.selectEgress(ctx, target, healthKeyFor(baseURL, route, override.Tier, body), nil, keyID)
 		if err != nil {
 			return nil, err, 0
 		}
@@ -791,7 +805,8 @@ func (g *Gateway) doSelectedKeyUpstream(ctx context.Context, route models.Route,
 	}
 
 	started := time.Now()
-	resp, err := doInferenceAttempt(client, req, time.Duration(g.cfg.Performance.FirstEventTimeoutSeconds)*time.Second, g.attemptTimeout)
+	resp, _, err := doInferenceAttempt(client, req, time.Duration(g.cfg.Performance.FirstEventTimeoutSeconds)*time.Second, g.attemptTimeout,
+		route.ProtocolFor(override.Tier), requestMode(body), 0, nil)
 	duration := time.Since(started)
 	if egressAttempt != nil {
 		// Diagnostics must not change pool state; release the in-flight slot
@@ -845,6 +860,7 @@ func (g *Gateway) doKeyUpstream(ctx context.Context, route models.Route, bodies 
 	var current *upstreamNode
 	exclude := make(map[string]struct{})
 	var retryWait time.Duration
+	attemptKey := healthKeyFor(baseURL, route, route.Tier, body)
 	for attempts < remaining {
 		if ctx.Err() != nil {
 			// Same guard as the anonymous loop: an exhausted request budget
@@ -874,7 +890,7 @@ func (g *Gateway) doKeyUpstream(ctx context.Context, route models.Route, bodies 
 			if err != nil {
 				return nil, err, attempts
 			}
-			egressAttempt, err = g.selectEgress(ctx, target, exclude, keyID)
+			egressAttempt, err = g.selectEgress(ctx, target, attemptKey, exclude, keyID)
 			if err != nil {
 				if retryWait > 0 && waitForRetryAfter(ctx, retryWait) {
 					retryWait = 0
@@ -906,7 +922,19 @@ func (g *Gateway) doKeyUpstream(ctx context.Context, route models.Route, bodies 
 		}
 		attempts++
 		attemptStarted := time.Now()
-		resp, err := doInferenceAttempt(client, req, time.Duration(g.cfg.Performance.FirstEventTimeoutSeconds)*time.Second, g.attemptTimeout)
+		var streamCallback func(bool)
+		if egressAttempt != nil {
+			attemptRef := egressAttempt
+			streamCallback = func(clean bool) {
+				if clean {
+					attemptRef.ReportStream(health.StreamSuccess)
+				} else {
+					attemptRef.ReportStream(health.StreamFailure)
+				}
+			}
+		}
+		resp, verdict, err := doInferenceAttempt(client, req, time.Duration(g.cfg.Performance.FirstEventTimeoutSeconds)*time.Second, g.attemptTimeout,
+			route.ProtocolFor(route.Tier), requestMode(body), g.healthMaxPeek(), streamCallback)
 		attemptDuration := time.Since(attemptStarted)
 		if ctx.Err() != nil {
 			// The request budget expired while this attempt was in flight. A
@@ -932,7 +960,7 @@ func (g *Gateway) doKeyUpstream(ctx context.Context, route models.Route, bodies 
 		}
 
 		if egressAttempt != nil {
-			classification := g.reportEgressAttempt(ctx, route, ids, attemptOffset+attempts, keyID, "key", false, egressAttempt, resp, err, attemptDuration)
+			classification := g.reportEgressAttempt(ctx, route, ids, attemptOffset+attempts, keyID, "key", false, egressAttempt, resp, err, verdict, attemptDuration)
 			status := upstreamStatus(resp)
 			switch classification.Kind {
 			case routing.Success, routing.Neutral:

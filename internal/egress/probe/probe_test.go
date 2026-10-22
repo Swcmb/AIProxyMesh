@@ -193,6 +193,28 @@ func TestEnqueuePrioritizesPendingNodes(t *testing.T) {
 	}
 }
 
+func TestProbeBatchFastFiltersUnreachable(t *testing.T) {
+	manager, p := newManager(t, []string{"http://127.0.0.1:1"})
+	direct := directEntry(p)
+	opts := node.Options{Type: node.HTTP, Server: "127.0.0.1", Port: 1}
+	raw, _ := json.Marshal(opts)
+	dead, _ := p.Add("sub", pool.Input{Options: opts, Raw: raw})
+
+	var lastDone, lastTotal int
+	probed := manager.ProbeBatchFast(context.Background(), []string{direct.ID(), dead.ID()}, func(done, total int) {
+		lastDone, lastTotal = done, total
+	})
+	if lastDone != 2 || lastTotal != 2 {
+		t.Fatalf("progress = %d/%d", lastDone, lastTotal)
+	}
+	if probed != 1 {
+		t.Fatalf("probed = %d, want 1 (only the direct exit passes precheck)", probed)
+	}
+	if dead.LastProbeAt() == 0 {
+		t.Fatal("a TCP-precheck failure must still record a probe attempt")
+	}
+}
+
 func TestScanIntervalStaysInResinWindow(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		interval := scanInterval()

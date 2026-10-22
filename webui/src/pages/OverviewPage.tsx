@@ -14,7 +14,7 @@ import {
 } from "recharts";
 import { Link } from "react-router-dom";
 import { api } from "../lib/api";
-import type { EgressSnapshot, LogEvent, MonitorResponse, RotationSnapshot } from "../lib/types";
+import type { EgressHealthSummary, EgressSnapshot, LogEvent, MonitorResponse, RotationSnapshot } from "../lib/types";
 import { EmptyState, ErrorNotice, Loading, PageHeader, StatCard, StatusBadge } from "../components/Common";
 import { Button } from "../components/ui/Button";
 import { DataTable, type DataColumn } from "../components/ui/DataTable";
@@ -40,6 +40,11 @@ export function OverviewPage() {
     queryKey: ["rotation", "overview"],
     queryFn: () => api.get<RotationSnapshot>("/api/rotation"),
     refetchInterval: 15_000,
+  });
+  const health = useQuery({
+    queryKey: ["egress", "health"],
+    queryFn: () => api.get<EgressHealthSummary>("/api/egress/health"),
+    refetchInterval: 10_000,
   });
 
   const [view, setView] = useState<View>("overview");
@@ -150,6 +155,16 @@ export function OverviewPage() {
       />
 
       <div className="overview-page">
+      {health.data?.environment.state === "unavailable" ? (
+        <div className="error-notice">
+          本地网络或 bootstrap 异常，健康更新已暂停。恢复后将递增环境 epoch 并重新复验。
+        </div>
+      ) : null}
+      {health.data?.environment.state === "degraded" ? (
+        <div className="error-notice">
+          bootstrap 链路延迟高于预算，节点证据不受影响，但探测已降速。
+        </div>
+      ) : null}
       <div className="stats-grid">
         <StatCard
           label="请求数（近 1 小时）"
@@ -182,6 +197,29 @@ export function OverviewPage() {
           value={counts ? `${counts.eligible}/${counts.total}` : "-"}
           tone={counts && counts.eligible === 0 ? "danger" : undefined}
           hint={counts ? `冷却 ${counts.cooling} · 停用 ${counts.disabled} · 不支持 ${counts.unsupported}` : "出口池未启用"}
+        />
+        <StatCard
+          label="稳定池覆盖"
+          value={health.data ? `${health.data.stable_pool}` : "-"}
+          tone={
+            health.data && health.data.stable_pool < health.data.stable_min_capacity
+              ? "warning"
+              : undefined
+          }
+          hint={
+            health.data
+              ? `下限 ${health.data.stable_min_capacity} · 验证中 ${health.data.counts.verifying} · 熔断 ${health.data.counts.open}`
+              : "健康数据未加载"
+          }
+        />
+        <StatCard
+          label="探测预算"
+          value={health.data ? `${health.data.probe.budget_per_second}/s` : "-"}
+          hint={
+            health.data
+              ? `今日金丝雀 ${health.data.probe.canary_today}/${health.data.probe.canary_daily_budget}`
+              : "探测数据未加载"
+          }
         />
       </div>
 

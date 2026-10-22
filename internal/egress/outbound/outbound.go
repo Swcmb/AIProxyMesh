@@ -5,13 +5,13 @@ package outbound
 import (
 	"crypto/tls"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httptrace"
 	"sync"
 	"time"
 
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/node"
+	egresstransport "github.com/Swcmb/AIProxyMesh/mesh/internal/egress/transport"
 )
 
 // Config mirrors the performance knobs the gateway exposes so pooled
@@ -40,12 +40,30 @@ func DefaultConfig() Config {
 type Manager struct {
 	mu      sync.Mutex
 	cfg     Config
+	factory *egresstransport.Factory
 	clients map[node.Hash]*http.Client
 }
 
-// NewManager creates an empty manager.
+// NewManager creates an empty manager using a direct-mode transport factory
+// until SetFactory installs the engine-configured one.
 func NewManager(cfg Config) *Manager {
-	return &Manager{cfg: cfg, clients: make(map[node.Hash]*http.Client)}
+	return &Manager{cfg: cfg, factory: egresstransport.NewDirect(), clients: make(map[node.Hash]*http.Client)}
+}
+
+// SetFactory installs the explicit bootstrap-aware transport factory and drops
+// cached clients so new requests use it.
+func (m *Manager) SetFactory(factory *egresstransport.Factory) {
+	if factory == nil {
+		return
+	}
+	m.mu.Lock()
+	m.factory = factory
+	old := m.clients
+	m.clients = make(map[node.Hash]*http.Client)
+	m.mu.Unlock()
+	for _, client := range old {
+		closeClient(client)
+	}
 }
 
 // Client returns the cached client for an entry, building it on first use.
@@ -110,7 +128,14 @@ func (m *Manager) build(entry *node.Entry) (*http.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("outbound: node %s: %w", opts.Tag, err)
 	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	factory := m.factory
+	if factory == nil {
+		factory = egresstransport.NewDirect()
+	}
+	transport, err := factory.NewTransport(proxyURL, string(opts.Type))
+	if err != nil {
+		return nil, fmt.Errorf("outbound: node %s: %w", opts.Tag, err)
+	}
 	if m.cfg.MaxIdleConns > 0 {
 		transport.MaxIdleConns = m.cfg.MaxIdleConns
 	}
@@ -122,15 +147,6 @@ func (m *Manager) build(entry *node.Entry) (*http.Client, error) {
 		transport.IdleConnTimeout = m.cfg.IdleConnTimeout
 	}
 	transport.ResponseHeaderTimeout = m.cfg.ResponseHeaderTimeout
-	transport.ForceAttemptHTTP2 = true
-	transport.DialContext = (&net.Dialer{
-		Timeout:   m.cfg.ConnectTimeout,
-		KeepAlive: 30 * time.Second,
-	}).DialContext
-	transport.Proxy = nil
-	if proxyURL != nil {
-		transport.Proxy = http.ProxyURL(proxyURL)
-	}
 	return &http.Client{Transport: &tracedTransport{base: transport, entry: entry}}, nil
 }
 

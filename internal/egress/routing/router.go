@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/health"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/node"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/outbound"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/pool"
@@ -24,6 +25,14 @@ import (
 // ErrNoEligible reports that no node can serve the target right now.
 var ErrNoEligible = errors.New("egress: no eligible exit node")
 
+// verifiedWindow is how long a successful signal keeps a node in the preferred
+// routing set.
+const verifiedWindow = 10 * time.Minute
+
+// regionBlockTTL is how long an upstream's country rejection hides that
+// country's exits from routing.
+const regionBlockTTL = 30 * time.Minute
+
 // Config controls scoring, cooldown and attribution behaviour.
 type Config struct {
 	Weights          Weights
@@ -31,6 +40,18 @@ type Config struct {
 	CooldownMax      time.Duration
 	UpstreamWindow   time.Duration
 	AllowedProtocols map[node.Protocol]bool
+
+	// Health mode and admission parameters.
+	HealthMode                string
+	Health                    health.Config
+	ExplorationRatio          float64
+	CandidateExplorationRatio float64
+	StableMinCapacity         int
+	ColdStartFallback         bool
+	ReachableWindow           time.Duration
+	MaxKeysPerNode            int
+	MaxPendingKeys            int
+	RouteSampleSize           int
 }
 
 // DefaultConfig returns the approved initial parameters.
@@ -67,6 +88,31 @@ func (c Config) normalized() Config {
 	if c.UpstreamWindow <= 0 {
 		c.UpstreamWindow = time.Minute
 	}
+	if c.HealthMode == "" {
+		c.HealthMode = "shadow"
+	}
+	c.Health = c.Health.Normalize()
+	if c.ExplorationRatio < 0 || c.ExplorationRatio > 0.5 {
+		c.ExplorationRatio = 0.10
+	}
+	if c.CandidateExplorationRatio < 0 || c.CandidateExplorationRatio > c.ExplorationRatio {
+		c.CandidateExplorationRatio = 0.02
+	}
+	if c.StableMinCapacity <= 0 {
+		c.StableMinCapacity = 50
+	}
+	if c.ReachableWindow <= 0 {
+		c.ReachableWindow = 10 * time.Minute
+	}
+	if c.MaxKeysPerNode <= 0 {
+		c.MaxKeysPerNode = 4
+	}
+	if c.MaxPendingKeys <= 0 {
+		c.MaxPendingKeys = 10000
+	}
+	if c.RouteSampleSize <= 0 {
+		c.RouteSampleSize = 64
+	}
 	return c
 }
 
@@ -81,6 +127,15 @@ type Router struct {
 	mu       sync.Mutex
 	inflight map[node.Hash]int
 	now      func() time.Time
+
+	regionMu     sync.Mutex
+	regionBlocks map[string]map[string]time.Time
+	regionOf     func(*node.Entry) string
+
+	environment atomic.Pointer[health.Environment]
+	index       *Index
+	seedMu      sync.Mutex
+	lastSeed    map[health.HealthKey]time.Time
 }
 
 // New creates a router.
@@ -93,12 +148,15 @@ func New(p *pool.Pool, manager *outbound.Manager, cfg Config, logger *slog.Logge
 	}
 	cfg = cfg.normalized()
 	r := &Router{
-		pool:     p,
-		outbound: manager,
-		logger:   logger,
-		tracker:  NewUpstreamTracker(cfg.UpstreamWindow),
-		inflight: make(map[node.Hash]int),
-		now:      time.Now,
+		pool:         p,
+		outbound:     manager,
+		logger:       logger,
+		tracker:      NewUpstreamTracker(cfg.UpstreamWindow),
+		inflight:     make(map[node.Hash]int),
+		regionBlocks: make(map[string]map[string]time.Time),
+		index:        NewIndex(),
+		lastSeed:     make(map[health.HealthKey]time.Time),
+		now:          time.Now,
 	}
 	r.cfg.Store(&cfg)
 	return r
@@ -129,13 +187,67 @@ type Attempt struct {
 	Protocol string
 	ProxyURL *url.URL
 	Target   string
+	// Key is the concrete health key this attempt observes.
+	Key health.HealthKey
+	// Direct marks the special direct exit, which bypasses key accounting.
+	Direct bool
 	// KeyID lets attribution distinguish "this key is rate limited" from
 	// "the upstream rejects every exit". Set before Report.
 	KeyID string
 
-	entry  *node.Entry
-	client *http.Client
-	once   sync.Once
+	entry        *node.Entry
+	client       *http.Client
+	once         sync.Once
+	streamOnce   sync.Once
+	completeOnce sync.Once
+}
+
+// RegionBlock is one persisted hard region block.
+type RegionBlock struct {
+	Target  string
+	Country string
+	Until   time.Time
+}
+
+// RegionBlocks snapshots the live hard blocks for persistence.
+func (r *Router) RegionBlocks() []RegionBlock {
+	r.regionMu.Lock()
+	defer r.regionMu.Unlock()
+	now := r.clock()
+	out := make([]RegionBlock, 0)
+	for target, countries := range r.regionBlocks {
+		for country, until := range countries {
+			if now.Before(until) {
+				out = append(out, RegionBlock{Target: target, Country: country, Until: until})
+			}
+		}
+	}
+	return out
+}
+
+// RestoreRegionBlocks reloads blocks that have not expired.
+func (r *Router) RestoreRegionBlocks(blocks []RegionBlock) {
+	r.regionMu.Lock()
+	defer r.regionMu.Unlock()
+	for _, block := range blocks {
+		if block.Target == "" || block.Country == "" {
+			continue
+		}
+		countries := r.regionBlocks[block.Target]
+		if countries == nil {
+			countries = make(map[string]time.Time)
+			r.regionBlocks[block.Target] = countries
+		}
+		countries[block.Country] = block.Until
+	}
+}
+
+// Index exposes the stable-pool index.
+func (r *Router) Index() *Index { return r.index }
+
+// SetEnvironment installs the local-link environment classifier.
+func (r *Router) SetEnvironment(env *health.Environment) {
+	r.environment.Store(env)
 }
 
 // Client returns the HTTP client bound to this exit.
@@ -158,6 +270,79 @@ func (a *Attempt) Release() {
 			a.Router.release(a.entry.Hash)
 		}
 	})
+}
+
+// SetRegionResolver installs the GeoIP lookup used by region filters.
+func (r *Router) SetRegionResolver(fn func(*node.Entry) string) {
+	r.regionMu.Lock()
+	r.regionOf = fn
+	r.regionMu.Unlock()
+}
+
+// RecordRegionBlock hides one country's exits for a target. An upstream that
+// answered "not available in your country" keeps rejecting that country's
+// exits, so retrying with the same region only wastes the attempt budget.
+func (r *Router) RecordRegionBlock(target, country string) {
+	if target == "" || country == "" {
+		return
+	}
+	host := node.NormalizeHost(target)
+	until := r.clock().Add(regionBlockTTL)
+	r.regionMu.Lock()
+	blocked := r.regionBlocks[host]
+	if blocked == nil {
+		blocked = make(map[string]time.Time)
+		r.regionBlocks[host] = blocked
+	}
+	blocked[country] = until
+	r.regionMu.Unlock()
+}
+
+// blockedRegions returns the currently blocked countries for one target.
+func (r *Router) blockedRegions(host string, now time.Time) map[string]struct{} {
+	r.regionMu.Lock()
+	defer r.regionMu.Unlock()
+	blocked := r.regionBlocks[host]
+	if len(blocked) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(blocked))
+	for country, until := range blocked {
+		if now.Before(until) {
+			out[country] = struct{}{}
+			continue
+		}
+		delete(blocked, country)
+	}
+	if len(blocked) == 0 {
+		delete(r.regionBlocks, host)
+	}
+	return out
+}
+
+// filterBlocked drops candidates whose region is blocked. The caller falls
+// back to the unfiltered set when this returns empty.
+func (r *Router) filterBlocked(picks []pick, blocked map[string]struct{}) []pick {
+	r.regionMu.Lock()
+	resolve := r.regionOf
+	r.regionMu.Unlock()
+	out := picks[:0]
+	for _, candidate := range picks {
+		country := candidate.entry.Region()
+		if country == "" && resolve != nil {
+			country = resolve(candidate.entry)
+			if country != "" {
+				candidate.entry.SetRegion(country)
+			}
+		}
+		if country != "" {
+			if _, bad := blocked[country]; bad {
+				continue
+			}
+		}
+		out = append(out, candidate)
+	}
+	return out
 }
 
 // Select chooses the highest-scoring eligible exit using weighted randomness.
@@ -185,17 +370,30 @@ func (r *Router) SelectAffinity(ctx context.Context, target *url.URL, exclude ma
 	cfg := *r.cfg.Load()
 	weights := cfg.Weights
 
-	var picks []pick
+	var picks, verified []pick
 	for _, entry := range r.pool.List() {
 		if !r.eligible(entry, host, now, exclude, cfg) {
 			continue
 		}
-		client, err := r.outbound.Client(entry)
-		if err != nil {
-			continue
-		}
 		score := computeScore(entry, host, r.inflightFor(entry.Hash), weights).Total
-		picks = append(picks, pick{entry: entry, client: client, score: score})
+		candidate := pick{entry: entry, score: score}
+		picks = append(picks, candidate)
+		if last := entry.LastSuccessAt(); last > 0 && now.Sub(time.Unix(0, last)) <= verifiedWindow {
+			verified = append(verified, candidate)
+		}
+	}
+	// Prefer exits that recently proved they can carry traffic. The pool is
+	// dominated by unverified free proxies; choosing uniformly from it mostly
+	// hits dead nodes and ends in 503 after the retry budget. The full eligible
+	// set stays as a fallback until the first sweep finds verified nodes.
+	if blocked := r.blockedRegions(host, now); len(blocked) > 0 {
+		// Region blocks are hard: an empty filtered set stays empty and the
+		// request fails with ErrNoEligible instead of retrying a blocked region.
+		picks = r.filterBlocked(picks, blocked)
+		verified = r.filterBlocked(verified, blocked)
+	}
+	if len(verified) > 0 {
+		picks = verified
 	}
 	if len(picks) == 0 {
 		return nil, ErrNoEligible
@@ -237,6 +435,11 @@ func (r *Router) SelectAffinity(ctx context.Context, target *url.URL, exclude ma
 	r.inflight[chosen.entry.Hash]++
 	r.mu.Unlock()
 
+	client, err := r.outbound.Client(chosen.entry)
+	if err != nil {
+		r.release(chosen.entry.Hash)
+		return nil, err
+	}
 	proxyURL, err := chosen.entry.Options.ProxyURL()
 	if err != nil {
 		r.release(chosen.entry.Hash)
@@ -249,15 +452,15 @@ func (r *Router) SelectAffinity(ctx context.Context, target *url.URL, exclude ma
 		Protocol: string(chosen.entry.Options.Type),
 		ProxyURL: proxyURL,
 		Target:   host,
+		Direct:   chosen.entry.Options.Type == node.Direct,
 		entry:    chosen.entry,
-		client:   chosen.client,
+		client:   client,
 	}, nil
 }
 
 type pick struct {
-	entry  *node.Entry
-	client *http.Client
-	score  float64
+	entry *node.Entry
+	score float64
 }
 
 func rendezvousPick(affinity string, picks []pick) string {
@@ -321,22 +524,38 @@ func (r *Router) clock() time.Time {
 type OutcomeKind string
 
 const (
-	Success         OutcomeKind = "success"
-	ProxyFailure    OutcomeKind = "proxy_failure"
-	ExitFailure     OutcomeKind = "exit_failure"
-	UpstreamFailure OutcomeKind = "upstream_failure"
-	KeyFailure      OutcomeKind = "key_failure"
-	ClientCancel    OutcomeKind = "client_cancel"
-	Neutral         OutcomeKind = "neutral"
+	Success            OutcomeKind = "success"
+	ProxyFailure       OutcomeKind = "proxy_failure"
+	ExitFailure        OutcomeKind = "exit_failure"
+	UpstreamFailure    OutcomeKind = "upstream_failure"
+	KeyFailure         OutcomeKind = "key_failure"
+	RegionBlocked      OutcomeKind = "region_blocked"
+	ClientCancel       OutcomeKind = "client_cancel"
+	Neutral            OutcomeKind = "neutral"
+	BootstrapFailure   OutcomeKind = "bootstrap_failure"
+	EnvironmentFailure OutcomeKind = "environment_failure"
+	EnvironmentSlow    OutcomeKind = "environment_degraded"
+	InferenceTimeout   OutcomeKind = "inference_timeout"
 )
 
 // Outcome is the raw attempt result reported by the gateway.
 type Outcome struct {
-	Kind       OutcomeKind
-	StatusCode int
-	RetryAfter time.Duration
-	Latency    time.Duration
-	Err        error
+	Kind            OutcomeKind
+	StatusCode      int
+	RetryAfter      time.Duration
+	Latency         time.Duration
+	HeadersReceived bool
+	ValidInference  bool
+	ValidKnown      bool
+	Diagnostic      bool
+	Direct          bool
+	UpstreamWide    bool
+	// Bootstrap marks a failure of the Mesh-to-node bootstrap link. It is an
+	// environment signal and never attributes to the node.
+	Bootstrap bool
+	// Region is the GeoIP country of the exit that hit a regional rejection.
+	Region string
+	Err    error
 }
 
 // Classification is what the router decided about the outcome.
@@ -356,8 +575,12 @@ func (r *Router) report(attempt *Attempt, outcome Outcome) Classification {
 	r.release(entry.Hash)
 	now := r.clock()
 	cfg := *r.cfg.Load()
+	if attempt.Direct {
+		outcome.Direct = true
+	}
 
 	result := Classification{Kind: outcome.Kind}
+outcomeSwitch:
 	switch outcome.Kind {
 	case Success:
 		entry.RecordSuccess()
@@ -390,7 +613,7 @@ func (r *Router) report(attempt *Attempt, outcome Outcome) Classification {
 			result.UpstreamWide = true
 			result.Retryable = true
 			result.Reason = "upstream_consensus"
-			return result
+			break outcomeSwitch
 		}
 		until := r.cooldown(entry, outcome.RetryAfter, cfg, now, fmt.Sprintf("exit_class_%d", class))
 		result.NodeCooldown = &until
@@ -407,7 +630,7 @@ func (r *Router) report(attempt *Attempt, outcome Outcome) Classification {
 			result.UpstreamWide = true
 			result.Retryable = true
 			result.Reason = "upstream_consensus"
-			return result
+			break outcomeSwitch
 		}
 		if r.tracker.RecentSuccessByOther(attempt.Target, entry.ID(), now) {
 			// Another exit reached the same upstream recently, so this failure
@@ -427,8 +650,30 @@ func (r *Router) report(attempt *Attempt, outcome Outcome) Classification {
 		result.Retryable = true
 		result.Reason = "key_or_model_failure"
 
+	case RegionBlocked:
+		entry.RecordNetworkResult(true)
+		if outcome.Region != "" {
+			r.RecordRegionBlock(attempt.Target, outcome.Region)
+		}
+		result.Retryable = true
+		result.Reason = "region_blocked"
+
+	case InferenceTimeout:
+		entry.RecordNetworkResult(true)
+		result.Retryable = true
+		result.Reason = "inference_timeout"
+
 	case ClientCancel:
 		result.Reason = "client_cancel"
+
+	case BootstrapFailure, EnvironmentFailure:
+		entry.RecordNetworkResult(true)
+		result.Reason = "environment_failure"
+		result.Retryable = true
+
+	case EnvironmentSlow:
+		entry.RecordNetworkResult(true)
+		result.Reason = "environment_degraded"
 
 	case Neutral:
 		entry.RecordNetworkResult(true)
@@ -437,6 +682,9 @@ func (r *Router) report(attempt *Attempt, outcome Outcome) Classification {
 	default:
 		result.Reason = "unknown_outcome"
 	}
+	outcome.Kind = result.Kind
+	outcome.UpstreamWide = result.UpstreamWide
+	r.applyHealth(attempt, outcome, now)
 	return result
 }
 

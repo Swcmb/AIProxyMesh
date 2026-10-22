@@ -16,6 +16,7 @@ import (
 
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/config"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/geoip"
+	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/health"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/node"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/outbound"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/pool"
@@ -23,6 +24,7 @@ import (
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/routing"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/state"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/subscription"
+	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/transport"
 )
 
 // ErrDisabled reports that the egress section is absent or switched off.
@@ -46,18 +48,22 @@ type settings struct {
 
 // Engine owns the egress subsystem.
 type Engine struct {
-	pool     *pool.Pool
-	outbound *outbound.Manager
-	router   *routing.Router
-	probe    *probe.Manager
-	subs     *subscription.Manager
-	store    *state.Store
-	geoip    *geoip.Service
+	pool      *pool.Pool
+	outbound  *outbound.Manager
+	router    *routing.Router
+	probe     *probe.Manager
+	scheduler *probe.Scheduler
+	subs      *subscription.Manager
+	store     *state.Store
+	geoip     *geoip.Service
 	// geoipConfig records the section the service was built from, so a hot
 	// reload only rebuilds it when something actually changed.
 	geoipConfig *config.EgressGeoIP
 	logger      *slog.Logger
 	settings    atomic.Pointer[settings]
+
+	transportFactory atomic.Pointer[transport.Factory]
+	environment      *health.Environment
 
 	events    chan state.Event
 	ctx       context.Context
@@ -90,21 +96,35 @@ func New(opts Options) (*Engine, error) {
 	}
 	nodePool := pool.New(maxLatency)
 	outboundManager := outbound.NewManager(outboundConfig(opts.Performance))
+	factory, err := newTransportFactory(cfg, opts.Performance)
+	if err != nil {
+		_ = store.Close()
+		return nil, err
+	}
+	outboundManager.SetFactory(factory)
 	router := routing.New(nodePool, outboundManager, routerConfig(cfg), logger)
+	environment := health.NewEnvironment(cfg.Bootstrap.EnvironmentConfig(), time.Now())
+	router.SetEnvironment(environment)
 	prober := probe.New(nodePool, outboundManager, probeConfig(cfg, opts.Upstream), logger)
+	scheduler := probe.NewScheduler(nodePool, schedulerConfig(cfg), logger)
+	scheduler.SetEnvironment(environment)
 
 	e := &Engine{
-		pool:     nodePool,
-		outbound: outboundManager,
-		router:   router,
-		probe:    prober,
-		store:    store,
-		logger:   logger,
-		events:   make(chan state.Event, 1024),
+		pool:        nodePool,
+		outbound:    outboundManager,
+		router:      router,
+		probe:       prober,
+		scheduler:   scheduler,
+		store:       store,
+		logger:      logger,
+		environment: environment,
+		events:      make(chan state.Event, 1024),
 	}
+	e.transportFactory.Store(factory)
 	e.settings.Store(&settings{egress: cfg, upstream: opts.Upstream, performance: opts.Performance, legacy: opts.Legacy})
 	e.subs = subscription.New(nodePool, nil, e.sources, logger)
 	e.geoip = newGeoIPService(cfg, logger)
+	e.router.SetRegionResolver(e.nodeRegionFor)
 	if e.geoip != nil {
 		geo := *cfg.GeoIP
 		e.geoipConfig = &geo
@@ -154,6 +174,18 @@ func (e *Engine) Start(parent context.Context) {
 	go func() {
 		defer e.wg.Done()
 		e.probe.Run(e.ctx)
+	}()
+
+	e.wg.Add(1)
+	go func() {
+		defer e.wg.Done()
+		e.bootstrapProbeLoop(e.ctx)
+	}()
+
+	e.wg.Add(1)
+	go func() {
+		defer e.wg.Done()
+		e.scheduler.Run(e.ctx)
 	}()
 
 	e.StartGeoIP(e.ctx)
@@ -229,8 +261,19 @@ func (e *Engine) Apply(egress *config.EgressConfig, upstream config.UpstreamConf
 	if e.outbound != nil {
 		e.outbound.Reconfigure(outboundConfig(perf))
 	}
+	if factory, err := newTransportFactory(egress, perf); err == nil {
+		e.transportFactory.Store(factory)
+		if e.outbound != nil {
+			e.outbound.SetFactory(factory)
+		}
+	}
+	if e.environment != nil {
+		e.environment.Configure(egress.Bootstrap.EnvironmentConfig())
+	}
 	e.router.Configure(routerConfig(egress))
 	e.probe.Configure(probeConfig(egress, upstream))
+	e.scheduler.Configure(schedulerConfig(egress))
+	e.scheduler.SetEnvironment(e.environment)
 	e.subs.Reconcile()
 	e.pruneOrphanedReferences()
 	if e.ctx != nil {
@@ -255,6 +298,33 @@ func (e *Engine) Subscriptions() *subscription.Manager { return e.subs }
 // RefreshAll synchronously refreshes every configured subscription.
 func (e *Engine) RefreshAll(ctx context.Context) { e.subs.RefreshAll(ctx) }
 
+// NodeRegion resolves one node's GeoIP country, caching it on the entry.
+func (e *Engine) NodeRegion(id string) string {
+	hash, err := node.ParseHex(id)
+	if err != nil {
+		return ""
+	}
+	entry := e.pool.Get(hash)
+	if entry == nil {
+		return ""
+	}
+	return e.nodeRegionFor(entry)
+}
+
+func (e *Engine) nodeRegionFor(entry *node.Entry) string {
+	if entry == nil {
+		return ""
+	}
+	if region := entry.Region(); region != "" {
+		return region
+	}
+	if result, ok := e.regionFor(entryRegionAddress(entry)); ok {
+		entry.SetRegion(result.Country)
+		return result.Country
+	}
+	return ""
+}
+
 // ProbeAll synchronously probes every supported node.
 func (e *Engine) ProbeAll(ctx context.Context) { e.probe.ProbeAll(ctx) }
 
@@ -262,7 +332,7 @@ func (e *Engine) ProbeAll(ctx context.Context) { e.probe.ProbeAll(ctx) }
 // actually probed; unknown or unsupported IDs are skipped. The caller bounds
 // the batch so a manual refresh stays bounded even with a very large pool.
 func (e *Engine) ProbeNodes(ctx context.Context, ids []string) int {
-	return e.probe.ProbeBatch(ctx, ids, nil)
+	return e.probe.ProbeBatchFast(ctx, ids, nil)
 }
 
 // BatchProbeView is the management view of one asynchronous probe job.
@@ -271,13 +341,15 @@ type BatchProbeView struct {
 	Total      int        `json:"total"`
 	Done       int        `json:"done"`
 	Running    bool       `json:"running"`
+	Cancelled  bool       `json:"cancelled"`
 	StartedAt  time.Time  `json:"started_at"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
 }
 
 type batchProbeState struct {
-	mu   sync.Mutex
-	view BatchProbeView
+	mu     sync.Mutex
+	view   BatchProbeView
+	cancel context.CancelFunc
 }
 
 func (s *batchProbeState) setDone(done int) {
@@ -294,6 +366,12 @@ func (s *batchProbeState) finish() {
 	s.mu.Unlock()
 }
 
+func (s *batchProbeState) markCancelled() {
+	s.mu.Lock()
+	s.view.Cancelled = true
+	s.mu.Unlock()
+}
+
 func (s *batchProbeState) snapshot() BatchProbeView {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -304,29 +382,63 @@ func (s *batchProbeState) snapshot() BatchProbeView {
 // Only one job runs at a time; the caller gets the running job back with
 // started=false instead of stacking another sweep.
 func (e *Engine) StartBatchProbe(ids []string) (BatchProbeView, bool) {
+	return e.startBatchProbe(ids)
+}
+
+// StartBatchProbeAll queues every enabled, supported node in the pool.
+func (e *Engine) StartBatchProbeAll() (BatchProbeView, bool) {
+	entries := e.pool.List()
+	ids := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Enabled() && entry.Options.Supported() {
+			ids = append(ids, entry.ID())
+		}
+	}
+	return e.startBatchProbe(ids)
+}
+
+func (e *Engine) startBatchProbe(ids []string) (BatchProbeView, bool) {
 	e.probeMu.Lock()
 	if e.probeJob != nil && e.probeJob.snapshot().Running {
 		view := e.probeJob.snapshot()
 		e.probeMu.Unlock()
 		return view, false
 	}
-	ctx := e.ctx
-	if ctx == nil {
-		ctx = context.Background()
+	base := e.ctx
+	if base == nil {
+		base = context.Background()
 	}
-	job := &batchProbeState{view: BatchProbeView{
-		ID:        fmt.Sprintf("probe-%d", time.Now().UnixNano()),
-		Total:     len(ids),
-		Running:   true,
-		StartedAt: time.Now(),
-	}}
+	ctx, cancel := context.WithCancel(base)
+	job := &batchProbeState{
+		view: BatchProbeView{
+			ID:        fmt.Sprintf("probe-%d", time.Now().UnixNano()),
+			Total:     len(ids),
+			Running:   true,
+			StartedAt: time.Now(),
+		},
+		cancel: cancel,
+	}
 	e.probeJob = job
 	e.probeMu.Unlock()
 	go func() {
-		e.probe.ProbeBatch(ctx, ids, func(done, _ int) { job.setDone(done) })
+		defer cancel()
+		e.probe.ProbeBatchFast(ctx, ids, func(done, _ int) { job.setDone(done) })
 		job.finish()
 	}()
 	return job.snapshot(), true
+}
+
+// CancelBatchProbe stops the running job; finished nodes keep their results.
+func (e *Engine) CancelBatchProbe() bool {
+	e.probeMu.Lock()
+	job := e.probeJob
+	e.probeMu.Unlock()
+	if job == nil || !job.snapshot().Running {
+		return false
+	}
+	job.markCancelled()
+	job.cancel()
+	return true
 }
 
 // BatchProbeStatus returns the current asynchronous probe job, if any.
@@ -539,6 +651,9 @@ func (e *Engine) restore(ctx context.Context) error {
 		// Legacy records carry no ever_healthy column and get its default (1),
 		// so an upgrade keeps routing until the first probe sweep finishes.
 		entry.RestoreHealth(record.EverHealthy, cooldownSince, record.EgressIP, lastEgress)
+		if !record.LastSuccess.IsZero() {
+			entry.RestoreLastSuccess(record.LastSuccess.UnixNano())
+		}
 		if latency := entry.Latency(); latency != nil {
 			for host, sample := range record.Latency {
 				latency.Load(host, node.DomainStats{EWMA: sample.EWMA, LastUpdated: sample.UpdatedAt})
@@ -549,7 +664,88 @@ func (e *Engine) restore(ctx context.Context) error {
 		}
 		e.pool.Restore(entry, record.Subscriptions, record.Enabled)
 	}
+	if err := e.restoreHealth(ctx); err != nil {
+		return err
+	}
 	return nil
+}
+
+// restoreHealth reloads key evidence, the environment epoch and the scheduler
+// cursor. A restart resumes from the same statistics instead of cold-starting.
+func (e *Engine) restoreHealth(ctx context.Context) error {
+	current := e.settings.Load()
+	if current == nil || current.egress == nil {
+		return nil
+	}
+	cfg := current.egress.Health.HealthKeyConfig()
+	now := time.Now()
+	records, err := e.store.LoadHealthKeys(ctx)
+	if err != nil {
+		return err
+	}
+	rebuild := make(map[health.HealthKey][]routing.RebuildEntry)
+	for _, record := range records {
+		hash, err := node.ParseHex(record.NodeHash)
+		if err != nil {
+			continue
+		}
+		entry := e.pool.Get(hash)
+		if entry == nil {
+			continue
+		}
+		table := entry.HealthTable(current.egress.Health.MaxKeysPerNode, current.egress.Health.MaxPendingKeys)
+		table.Upsert(health.FromSnapshot(record.Stats, cfg, now))
+		rebuild[record.Stats.Key] = append(rebuild[record.Stats.Key], routing.RebuildEntry{
+			Hash: hash, State: record.Stats.State, ReachableAt: record.Stats.LastReachableAt,
+		})
+	}
+	if len(rebuild) > 0 {
+		e.router.Index().Rebuild(rebuild)
+	}
+	if blocks, err := e.store.LoadRegionBlocks(ctx, now); err != nil {
+		return err
+	} else if len(blocks) > 0 {
+		restored := make([]routing.RegionBlock, 0, len(blocks))
+		for _, block := range blocks {
+			restored = append(restored, routing.RegionBlock{Target: block.Target, Country: block.Country, Until: block.Until})
+		}
+		e.router.RestoreRegionBlocks(restored)
+	}
+	snapshot, ok, err := e.store.LoadEnvironment(ctx)
+	if err != nil {
+		return err
+	}
+	if ok {
+		environment := health.RestoreEnvironment(snapshot, current.egress.Bootstrap.EnvironmentConfig())
+		e.environment = environment
+		e.router.SetEnvironment(environment)
+	}
+	if e.environment != nil {
+		e.environment.OnEpoch(e.applyEnvironmentEpoch)
+	}
+	return nil
+}
+
+// applyEnvironmentEpoch resets admission evidence after local connectivity
+// recovers. ACTIVE keeps routing but must re-verify in the new epoch.
+func (e *Engine) applyEnvironmentEpoch(epoch uint64) {
+	current := e.settings.Load()
+	if current == nil || current.egress == nil {
+		return
+	}
+	cfg := current.egress.Health.HealthKeyConfig()
+	now := time.Now()
+	for _, entry := range e.pool.List() {
+		table := entry.ExistingHealthTable()
+		if table == nil {
+			continue
+		}
+		for _, record := range table.Snapshot() {
+			if stats := table.Get(record.Key); stats != nil {
+				stats.MarkEnvironmentEpoch(epoch, cfg, now)
+			}
+		}
+	}
 }
 
 func (e *Engine) save(ctx context.Context) error {
@@ -576,6 +772,9 @@ func (e *Engine) save(ctx context.Context) error {
 		if at := entry.LastEgressAttempt(); at > 0 {
 			record.LastEgressUpdate = time.Unix(0, at).UTC()
 		}
+		if at := entry.LastSuccessAt(); at > 0 {
+			record.LastSuccess = time.Unix(0, at).UTC()
+		}
 		if latency := entry.Latency(); latency != nil {
 			for host, stats := range latency.Snapshot() {
 				record.Latency[host] = state.LatencyRecord{EWMA: stats.EWMA, UpdatedAt: stats.LastUpdated}
@@ -594,6 +793,76 @@ func (e *Engine) save(ctx context.Context) error {
 	}
 	_ = e.store.PruneEvents(ctx, 5000)
 	return nil
+}
+
+// saveHealth flushes non-candidate keys, bounded by max_dirty_rows.
+func (e *Engine) saveHealth(ctx context.Context) error {
+	current := e.settings.Load()
+	if current == nil || current.egress == nil {
+		return nil
+	}
+	limit := current.egress.Health.MaxDirtyRows
+	if limit <= 0 {
+		limit = 5000
+	}
+	records := make([]state.HealthRecord, 0, min(limit, 1024))
+	for _, entry := range e.pool.List() {
+		table := entry.ExistingHealthTable()
+		if table == nil {
+			continue
+		}
+		for _, snapshot := range table.Snapshot() {
+			if snapshot.State == health.Candidate && snapshot.HTTP200Success+snapshot.HTTP200Failure == 0 &&
+				snapshot.LastReachableAt.IsZero() {
+				continue
+			}
+			records = append(records, state.HealthRecord{NodeHash: entry.ID(), Stats: snapshot})
+			if len(records) >= limit {
+				break
+			}
+		}
+		if len(records) >= limit {
+			break
+		}
+	}
+	if err := e.store.SaveHealthKeys(ctx, records); err != nil {
+		return err
+	}
+	if e.environment != nil {
+		if err := e.store.SaveEnvironment(ctx, e.environment.Snapshot()); err != nil {
+			return err
+		}
+	}
+	blocks := e.router.RegionBlocks()
+	blockRecords := make([]state.RegionBlockRecord, 0, len(blocks))
+	for _, block := range blocks {
+		blockRecords = append(blockRecords, state.RegionBlockRecord{Target: block.Target, Country: block.Country, Until: block.Until})
+	}
+	return e.store.SaveRegionBlocks(ctx, blockRecords)
+}
+
+func schedulerConfig(cfg *config.EgressConfig) probe.ScheduleConfig {
+	healthCfg := cfg.Health.HealthKeyConfig()
+	return probe.ScheduleConfig{
+		Enabled:          cfg.Probe.CanaryEnabled == nil || *cfg.Probe.CanaryEnabled,
+		BudgetPerSecond:  cfg.Probe.BudgetPerSecond,
+		Burst:            cfg.Probe.BudgetBurst,
+		DailyBudget:      cfg.Probe.CanaryDailyBudget,
+		MaxPerScan:       cfg.Probe.MaxSchedulePerScan,
+		MaxKeys:          cfg.Probe.MaxScheduledKeys,
+		MaxInflight:      cfg.Probe.CanaryMaxInflight,
+		CanaryMaxTokens:  cfg.Probe.CanaryMaxTokens,
+		DefaultMode:      cfg.Probe.CanaryDefaultMode,
+		VerifyingRecheck: time.Duration(cfg.Probe.VerifyingRecheckSeconds) * time.Second,
+		ActiveRecheck:    time.Duration(cfg.Probe.ActiveRecheckSeconds) * time.Second,
+		DeadRecheck:      time.Duration(cfg.Health.DeadRecheckSeconds) * time.Second,
+		BackoffBase:      time.Duration(cfg.Probe.BackoffBaseSeconds) * time.Second,
+		BackoffMax:       time.Duration(cfg.Probe.BackoffMaxSeconds) * time.Second,
+		JitterRatio:      cfg.Probe.JitterRatio,
+		TargetPause:      time.Duration(cfg.Probe.TargetPauseSeconds) * time.Second,
+		Health:           healthCfg,
+		MaxKeysPerNode:   cfg.Health.MaxKeysPerNode,
+	}
 }
 
 func outboundConfig(perf config.PerformanceConfig) outbound.Config {
@@ -624,6 +893,18 @@ func routerConfig(cfg *config.EgressConfig) routing.Config {
 	}
 	result.CooldownBase = time.Duration(cfg.Cooldown.BaseSeconds) * time.Second
 	result.CooldownMax = time.Duration(cfg.Cooldown.MaxSeconds) * time.Second
+	result.HealthMode = cfg.Health.Mode
+	result.Health = cfg.Health.HealthKeyConfig()
+	result.ExplorationRatio = cfg.Health.ExplorationRatio
+	result.CandidateExplorationRatio = cfg.Health.CandidateExplorationRatio
+	result.StableMinCapacity = cfg.Health.StableMinCapacity
+	result.ReachableWindow = time.Duration(cfg.Health.ReachableWindowSeconds) * time.Second
+	result.MaxKeysPerNode = cfg.Health.MaxKeysPerNode
+	result.MaxPendingKeys = cfg.Health.MaxPendingKeys
+	result.RouteSampleSize = cfg.Health.RouteSampleSize
+	if cfg.Health.ColdStartFallback != nil {
+		result.ColdStartFallback = *cfg.Health.ColdStartFallback
+	}
 	result.AllowedProtocols = map[node.Protocol]bool{
 		node.HTTP:    cfg.ProtocolAllowed("http"),
 		node.HTTPS:   cfg.ProtocolAllowed("https"),
@@ -664,4 +945,68 @@ func (e *Engine) PrimaryTarget() *url.URL {
 		return nil
 	}
 	return parsed
+}
+
+// SetCanaryExecutor installs the gateway-side canary implementation.
+func (e *Engine) SetCanaryExecutor(executor probe.CanaryFunc) {
+	if e.scheduler != nil {
+		e.scheduler.SetExecutor(executor)
+	}
+}
+
+// OutboundClient returns the node-bound HTTP client for canary execution.
+func (e *Engine) OutboundClient(entry *node.Entry) (*http.Client, error) {
+	return e.outbound.Client(entry)
+}
+
+// newTransportFactory builds the explicit Mesh-to-node link factory.
+func newTransportFactory(cfg *config.EgressConfig, perf config.PerformanceConfig) (*transport.Factory, error) {
+	transportCfg := transport.DefaultConfig()
+	transportCfg.Mode = transport.Mode(cfg.Bootstrap.Mode)
+	transportCfg.BootstrapURL = cfg.Bootstrap.URL
+	if perf.ConnectTimeoutSeconds > 0 {
+		transportCfg.ConnectTimeout = time.Duration(perf.ConnectTimeoutSeconds) * time.Second
+	}
+	transportCfg.ResponseHeaderTimeout = 0
+	if out := outboundConfig(perf); out.ConnectTimeout > 0 {
+		transportCfg.ConnectTimeout = out.ConnectTimeout
+	}
+	return transport.New(transportCfg)
+}
+
+// bootstrapProbeLoop measures the bootstrap path itself. Its latency never
+// enters node TTFB statistics.
+func (e *Engine) bootstrapProbeLoop(ctx context.Context) {
+	for {
+		current := e.settings.Load()
+		if current == nil {
+			return
+		}
+		bootstrapCfg := current.egress.Bootstrap
+		if bootstrapCfg.Mode != "http_connect" || bootstrapCfg.ProbeURL == "" {
+			return
+		}
+		interval := time.Duration(bootstrapCfg.ProbeIntervalSeconds) * time.Second
+		if interval < 10*time.Second {
+			interval = 10 * time.Second
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(interval):
+		}
+		factory := e.transportFactory.Load()
+		if factory == nil || factory.Dialer() == nil {
+			continue
+		}
+		latency, err := factory.Dialer().Probe(ctx, bootstrapCfg.ProbeURL)
+		now := time.Now()
+		if e.environment == nil {
+			continue
+		}
+		e.environment.ReportBootstrapProbe(err == nil, latency, now)
+		if err == nil {
+			e.environment.ReportBootstrapLatency(latency, now)
+		}
+	}
 }

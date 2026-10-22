@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/config"
+	wire "github.com/Swcmb/AIProxyMesh/mesh/internal/protocol"
 )
 
 var (
@@ -144,9 +145,11 @@ func (b *attemptBody) Close() error {
 // headers + first event). ResponseHeaderTimeout only covers the header wait,
 // so a wedged exit can otherwise hang in the write or dial phase until the
 // request-level budget is gone.
-func doInferenceAttempt(client *http.Client, req *http.Request, firstEventTimeout, attemptTimeout time.Duration) (*http.Response, error) {
+func doInferenceAttempt(client *http.Client, req *http.Request, firstEventTimeout, attemptTimeout time.Duration,
+	protocol wire.Protocol, mode string, maxPeek int, onStreamEnd func(bool)) (*http.Response, inferenceVerdict, error) {
 	if (firstEventTimeout <= 0 && attemptTimeout <= 0) || strings.HasSuffix(req.URL.Path, "/systemone") {
-		return client.Do(req)
+		resp, err := client.Do(req)
+		return resp, inferenceVerdict{}, err
 	}
 	trace := &attemptTrace{}
 	ctx, cancel := context.WithCancelCause(req.Context())
@@ -195,23 +198,49 @@ func doInferenceAttempt(client *http.Client, req *http.Request, firstEventTimeou
 			err = cause
 		}
 		cancel(nil)
-		return resp, &phasedError{err: err, phase: trace.phase()}
+		return resp, inferenceVerdict{}, &phasedError{err: err, phase: trace.phase()}
 	}
-	// Without a first-event wait the attempt is done once headers arrive.
-	if firstEventTimeout <= 0 || resp.StatusCode/100 != 2 || !strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
+	if resp.StatusCode/100 != 2 {
 		if attemptTimer != nil {
 			if cause := commitDeadline(); cause != nil {
 				cancel(nil)
 				resp.Body.Close()
-				return nil, &phasedError{err: cause, phase: trace.phase()}
+				return nil, inferenceVerdict{}, &phasedError{err: cause, phase: trace.phase()}
 			}
 		}
 		resp.Body = &attemptBody{Reader: resp.Body, body: resp.Body, cancel: cancel}
-		return resp, nil
+		return resp, inferenceVerdict{}, nil
+	}
+	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+	streaming := mode == "stream" && strings.Contains(contentType, "text/event-stream")
+	if !streaming {
+		// Non-streaming replies are judged from a bounded prefix. The attempt
+		// timer still covers this read, so a stalled body is abandoned like a
+		// stalled header wait.
+		verdict := inferenceVerdict{}
+		var prefix []byte
+		if protocol != wire.SystemOne && maxPeek > 0 {
+			prefix, verdict = peekJSONVerdict(resp.Body, protocol, maxPeek)
+		}
+		if attemptTimer != nil {
+			if cause := commitDeadline(); cause != nil {
+				cancel(nil)
+				resp.Body.Close()
+				return nil, inferenceVerdict{}, &phasedError{err: cause, phase: trace.phase()}
+			}
+		}
+		if len(prefix) > 0 {
+			resp.Body = struct {
+				io.Reader
+				io.Closer
+			}{io.MultiReader(bytes.NewReader(prefix), resp.Body), resp.Body}
+		}
+		resp.Body = &attemptBody{Reader: resp.Body, body: resp.Body, cancel: cancel}
+		return resp, verdict, nil
 	}
 	timer := time.AfterFunc(firstEventTimeout, func() { cancel(errFirstEventTimeout) })
 	reader := bufio.NewReader(resp.Body)
-	prefix, err := readFirstEvent(reader)
+	prefix, verdict, err := readFirstOutput(reader, protocol, 1<<20)
 	stopped := timer.Stop()
 	if !stopped && ctx.Err() == nil {
 		// Stop(false) means the callback may still be about to run.
@@ -223,15 +252,22 @@ func doInferenceAttempt(client *http.Client, req *http.Request, firstEventTimeou
 		}
 		cancel(nil)
 		resp.Body.Close()
-		return nil, &phasedError{err: err, phase: trace.phase()}
+		return nil, inferenceVerdict{}, &phasedError{err: err, phase: trace.phase()}
 	}
 	if cause := commitDeadline(); cause != nil {
 		cancel(nil)
 		resp.Body.Close()
-		return nil, &phasedError{err: cause, phase: trace.phase()}
+		return nil, inferenceVerdict{}, &phasedError{err: cause, phase: trace.phase()}
 	}
-	resp.Body = &attemptBody{Reader: io.MultiReader(bytes.NewReader(prefix), reader), body: resp.Body, cancel: cancel}
-	return resp, nil
+	body := &attemptBody{Reader: io.MultiReader(bytes.NewReader(prefix), reader), body: resp.Body, cancel: cancel}
+	if onStreamEnd != nil {
+		watcher := newStreamWatcher(body, protocol, onStreamEnd)
+		watcher.output = verdict.Valid
+		resp.Body = watcher
+	} else {
+		resp.Body = body
+	}
+	return resp, verdict, nil
 }
 
 func readFirstEvent(reader *bufio.Reader) ([]byte, error) {

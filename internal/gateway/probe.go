@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/config"
+	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/health"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/routing"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/identity"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/jsonutil"
@@ -91,14 +92,16 @@ func (g *Gateway) probeFreeModel(ctx context.Context, model string) probeResult 
 		// never attribute model-level 4xx responses to the exit.
 		if g.cfg.AnonymousEnabled() {
 			if target, err := g.egressTarget(g.cfg.Upstream.Anonymous); err == nil {
-				if attempt, selErr := g.selectEgress(ctx, target, nil, ids.Session); selErr == nil {
+				probeKey, _ := health.NewKey(g.cfg.Upstream.Anonymous, model, string(protocol), health.ModeStream)
+				if attempt, selErr := g.selectEgress(ctx, target, probeKey, nil, ids.Session); selErr == nil {
 					lanes = append(lanes, lane{anonymousZenKey, "anonymous", g.cfg.Upstream.Anonymous, attempt.Client()})
 					releases = append(releases, attempt)
 				}
 			}
 		}
 		if target, err := g.egressTarget(g.cfg.Upstream.Zen); err == nil {
-			if attempt, selErr := g.selectEgress(ctx, target, nil, ids.Session); selErr == nil {
+			probeKey, _ := health.NewKey(g.cfg.Upstream.Zen, model, string(protocol), health.ModeStream)
+			if attempt, selErr := g.selectEgress(ctx, target, probeKey, nil, ids.Session); selErr == nil {
 				key := ""
 				keyCursor := g.zenNodes.CursorFor(ids.Session)
 				if node := keyCursor.Next(); node != nil {

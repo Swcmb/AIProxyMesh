@@ -223,7 +223,7 @@ func (g *Gateway) rotationAttempt(parent context.Context, w http.ResponseWriter,
 			result.reason = "invalid_upstream"
 			return result
 		}
-		egressAttempt, err = g.selectEgress(ctx, target, exclude, keyID)
+		egressAttempt, err = g.selectEgress(ctx, target, healthKeyFor(g.cfg.Upstream.Go, route, config.TierGo, body), exclude, keyID)
 		if err != nil {
 			result.err = err
 			result.reason = "proxy_unavailable"
@@ -257,7 +257,7 @@ func (g *Gateway) rotationAttempt(parent context.Context, w http.ResponseWriter,
 	resp, err := clientCopy.Do(req)
 	duration := time.Since(started)
 	if egressAttempt != nil {
-		classification := g.reportEgressAttempt(parent, route, ids, attempt, keyID, "key", false, egressAttempt, resp, err, duration)
+		classification := g.reportEgressAttempt(parent, route, ids, attempt, keyID, "key", false, egressAttempt, resp, err, inferenceVerdict{}, duration)
 		switch classification.Kind {
 		case routing.Success, routing.Neutral:
 			g.goNodes.MarkSuccess(node)

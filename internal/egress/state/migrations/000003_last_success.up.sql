@@ -1,0 +1,1 @@
+ALTER TABLE egress_nodes ADD COLUMN last_success INTEGER NOT NULL DEFAULT 0;

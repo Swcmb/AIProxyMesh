@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/config"
+	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/health"
 	modelcatalog "github.com/Swcmb/AIProxyMesh/mesh/internal/models"
 )
 
@@ -286,7 +287,7 @@ func (g *Gateway) refreshViaEgress(ctx context.Context, base, key string) []stri
 	}
 	exclude := make(map[string]struct{})
 	for attempt := 0; attempt < g.cfg.Retry.MaxAttempts; attempt++ {
-		selected, selErr := g.selectEgress(ctx, target, exclude, key)
+		selected, selErr := g.selectEgress(ctx, target, health.HealthKey{}, exclude, key)
 		if selErr != nil {
 			break
 		}

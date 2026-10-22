@@ -103,6 +103,9 @@ func New(cfg config.Config, logger *slog.Logger, monitor *telemetry.Monitor) (*G
 // transport-pool behaviour.
 func (g *Gateway) SetEgress(engine *egresspkg.Engine) {
 	g.egress = engine
+	if engine != nil {
+		engine.SetCanaryExecutor(g.canaryExecutor)
+	}
 }
 
 // discoveryClients lists clients for background catalog refreshes. With the

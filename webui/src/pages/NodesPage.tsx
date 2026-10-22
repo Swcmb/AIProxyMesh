@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { RefreshCw, X, Zap } from "lucide-react";
@@ -41,6 +41,26 @@ const statusTone: Record<string, string> = {
   unprobed: "badge-neutral",
   disabled: "badge-muted",
   unsupported: "badge-muted",
+};
+
+const healthLabels: Record<string, string> = {
+  candidate: "候选",
+  verifying: "验证中",
+  active: "稳定",
+  suspect: "可疑",
+  open: "熔断",
+  half_open: "半开",
+  dead: "淘汰",
+};
+
+const healthTone: Record<string, string> = {
+  active: "badge-success",
+  suspect: "badge-warning",
+  open: "badge-danger",
+  half_open: "badge-info",
+  dead: "badge-muted",
+  verifying: "badge-info",
+  candidate: "badge-neutral",
 };
 
 const pageSizes = [20, 50, 100, 200, 500];
@@ -104,6 +124,9 @@ export function NodesPage() {
   const [detailId, setDetailIdState] = useState<string | null>(params.get("node"));
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [probeJob, setProbeJob] = useState<BatchProbeJob | null>(null);
+  // Tracks jobs this mount actually observed running, so re-entering the page
+  // does not replay a completion toast for an old job.
+  const observedRunning = useRef<string | null>(null);
 
   // The open drawer is part of the URL so a node view can be shared directly.
   const setDetailId = useCallback(
@@ -190,21 +213,41 @@ export function NodesPage() {
       toast.success(result.started ? "批量刷新已开始" : "已有批量刷新在进行，已接入进度");
     },
   });
+  const refreshAll = useMutation({
+    mutationFn: () => api.post<BatchProbeResponse>("/api/egress/nodes/probe", { all: true }),
+    onSuccess: (result) => {
+      if (result.mode !== "async") return;
+      invalidate(queryClient);
+      setProbeJob(result.job);
+      toast.success(result.started ? "全量刷新已开始" : "已有刷新任务在进行，已接入进度");
+    },
+  });
+  const cancelProbe = useMutation({
+    mutationFn: () => api.post<{ cancelled: boolean }>("/api/egress/nodes/probe/cancel"),
+    onSuccess: (result) => {
+      toast.success(result.cancelled ? "已请求取消刷新" : "当前没有运行中的刷新任务");
+    },
+  });
   const jobStatus = useQuery({
-    queryKey: ["egress", "probe-job", probeJob?.id ?? ""],
+    queryKey: ["egress", "probe-job"],
     queryFn: () => api.get<{ job: BatchProbeJob }>("/api/egress/nodes/probe/status"),
-    enabled: Boolean(probeJob?.running),
+    // Always fetch once on mount so leaving the page and coming back
+    // re-attaches to a job that is still running on the server.
     refetchInterval: (current) => (current.state.data?.job?.running ? 1_500 : false),
   });
   useEffect(() => {
     const job = jobStatus.data?.job;
-    if (!job) return;
+    if (!job?.id) return;
     setProbeJob(job);
-    if (!job.running) {
-      invalidate(queryClient);
-      toast.success(`批量刷新完成：${job.done}/${job.total}`);
-      setSelected(new Set());
+    if (job.running) {
+      observedRunning.current = job.id;
+      return;
     }
+    if (observedRunning.current !== job.id) return;
+    observedRunning.current = null;
+    invalidate(queryClient);
+    toast.success(job.cancelled ? `已取消刷新：${job.done}/${job.total}` : `批量刷新完成：${job.done}/${job.total}`);
+    setSelected(new Set());
   }, [jobStatus.data, queryClient, toast]);
 
   if (query.isLoading && !query.data) {
@@ -227,7 +270,7 @@ export function NodesPage() {
   const names = page.subscription_names ?? {};
   const nodes = page.nodes ?? [];
   const batchTargets = selected.size > 0 ? Array.from(selected) : nodes.map((node) => node.id);
-  const batchBusy = batchProbe.isPending || Boolean(probeJob?.running);
+  const batchBusy = batchProbe.isPending || refreshAll.isPending || Boolean(probeJob?.running);
   const totalPages = Math.max(1, Math.ceil(page.total / filters.limit));
   const currentPage = Math.floor(filters.offset / filters.limit) + 1;
   const dirty =
@@ -311,8 +354,23 @@ export function NodesPage() {
       ),
     },
     {
+      key: "health_state",
+      header: "健康态",
+      cell: (node) => (
+        <div>
+          <span className={`badge ${healthTone[node.health_state ?? ""] ?? "badge-neutral"}`}>
+            {healthLabels[node.health_state ?? ""] ?? node.health_state ?? "无证据"}
+          </span>
+          {node.http200_lower != null ? (
+            <div className="muted">HTTP {formatPercent(node.http200_lower, 1)}</div>
+          ) : null}
+          {node.valid_lower != null ? <div className="muted">推理 {formatPercent(node.valid_lower, 1)}</div> : null}
+        </div>
+      ),
+    },
+    {
       key: "health",
-      header: "健康",
+      header: "健康分",
       sortKey: "health",
       cell: (node) => formatPercent(node.health_score, 1),
     },
@@ -527,26 +585,42 @@ export function NodesPage() {
                 清空选择
               </Button>
             ) : null}
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() => batchProbe.mutate(batchTargets)}
-              disabled={batchBusy || batchTargets.length === 0}
-              title={
-                selected.size > 0
-                  ? `重新探测所选 ${selected.size} 个节点`
-                  : `重新探测当前页 ${nodes.length} 个节点；超过 ${200} 个自动转为后台任务`
-              }
-            >
-              <RefreshCw size={13} className={batchBusy ? "spin" : undefined} />
-              {probeJob?.running
-                ? `刷新中 ${probeJob.done}/${probeJob.total}`
-                : batchBusy
-                  ? "刷新中…"
-                  : selected.size > 0
-                    ? `刷新所选 ${selected.size}`
-                    : "批量刷新本页"}
-            </Button>
+            {probeJob?.running ? (
+              <>
+                <span className="badge badge-info">
+                  刷新中 {probeJob.done}/{probeJob.total}
+                </span>
+                <Button size="sm" variant="ghost" onClick={() => cancelProbe.mutate()} disabled={cancelProbe.isPending}>
+                  取消
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => refreshAll.mutate()}
+                  disabled={batchBusy}
+                  title="对池内全部节点执行 TCP 预检 + 探测，后台运行并可取消"
+                >
+                  <RefreshCw size={13} /> 刷新全部
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => batchProbe.mutate(batchTargets)}
+                  disabled={batchBusy || batchTargets.length === 0}
+                  title={
+                    selected.size > 0
+                      ? `重新探测所选 ${selected.size} 个节点`
+                      : `重新探测当前页 ${nodes.length} 个节点；超过 ${200} 个自动转为后台任务`
+                  }
+                >
+                  <RefreshCw size={13} />
+                  {selected.size > 0 ? `刷新所选 ${selected.size}` : "刷新本页"}
+                </Button>
+              </>
+            )}
           </div>
         </div>
         <DataTable
@@ -592,9 +666,11 @@ export function NodesPage() {
             <span className="muted">/ {totalPages} 页</span>
           </div>
         </div>
-        {toggle.isError || probe.isError || batchProbe.isError || detail.isError ? (
+        {toggle.isError || probe.isError || batchProbe.isError || refreshAll.isError || cancelProbe.isError || detail.isError ? (
           <ErrorNotice
-            message={formatApiErrorMessage(toggle.error ?? probe.error ?? batchProbe.error ?? detail.error)}
+            message={formatApiErrorMessage(
+              toggle.error ?? probe.error ?? batchProbe.error ?? refreshAll.error ?? cancelProbe.error ?? detail.error,
+            )}
           />
         ) : null}
       </div>
@@ -898,6 +974,10 @@ function NodeDetail({ node, names }: { node: EgressNode; names: Record<string, s
             </dd>
           </div>
           <div>
+            <dt>上次成功</dt>
+            <dd>{node.last_success_at ? formatRelativeTime(node.last_success_at) : "从未"}</dd>
+          </div>
+          <div>
             <dt>冷却至</dt>
             <dd>{node.cooldown_until ? formatDateTime(node.cooldown_until) : "-"}</dd>
           </div>
@@ -922,6 +1002,60 @@ function NodeDetail({ node, names }: { node: EgressNode; names: Record<string, s
             <dd className="pre-wrap">{node.last_error || "-"}</dd>
           </div>
         </dl>
+      </section>
+
+      <section className="detail-section">
+        <div className="detail-section-head">
+          <h4>健康键</h4>
+          <p>按「上游 × 模型 × 协议 × 模式」统计的准入证据；样本不足时下界为空</p>
+        </div>
+        {node.health_keys && node.health_keys.length > 0 ? (
+          <div className="table-scroll">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>上游 / 模型</th>
+                  <th>协议 / 模式</th>
+                  <th>状态</th>
+                  <th>样本</th>
+                  <th>HTTP 下界</th>
+                  <th>推理下界</th>
+                  <th>TTFB p95</th>
+                </tr>
+              </thead>
+              <tbody>
+                {node.health_keys.map((key) => (
+                  <tr key={`${key.target}-${key.model}-${key.protocol}-${key.mode}`}>
+                    <td>
+                      <div className="mono">{key.model}</div>
+                      <div className="muted">{key.target}</div>
+                    </td>
+                    <td>
+                      <span className="tag">{key.protocol}</span> <span className="muted">{key.mode}</span>
+                    </td>
+                    <td>
+                      <span className={`badge ${healthTone[key.state] ?? "badge-neutral"}`}>
+                        {healthLabels[key.state] ?? key.state}
+                      </span>
+                      {key.pending_reverify ? <div className="muted">待复验 {key.reverify_success}</div> : null}
+                    </td>
+                    <td>
+                      {key.samples}
+                      <div className="muted">
+                        {key.primary_success}/{key.primary_failure}
+                      </div>
+                    </td>
+                    <td>{key.http200_lower == null ? "证据不足" : formatPercent(key.http200_lower, 1)}</td>
+                    <td>{key.valid_lower == null ? "证据不足" : formatPercent(key.valid_lower, 1)}</td>
+                    <td>{key.ttfb_p95_ms > 0 ? `${key.ttfb_p95_ms} ms` : "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="muted">该节点暂无健康键证据。</p>
+        )}
       </section>
 
       <section className="detail-section">

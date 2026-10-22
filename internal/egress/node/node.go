@@ -1,6 +1,6 @@
 // Package node defines the egress node model, identity, health counters and
-// per-target latency statistics. It intentionally depends only on the standard
-// library so that Tier A exits stay dependency-free.
+// per-target latency statistics. It depends only on the standard library and
+// the dependency-free health model so that Tier A exits stay lightweight.
 package node
 
 import (
@@ -16,6 +16,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/health"
 )
 
 // Protocol is the outbound scheme of a node. Tier A protocols are directly
@@ -157,9 +159,18 @@ type Entry struct {
 	// request. New nodes stay unroutable until then, mirroring Resin's
 	// default-circuit-open behaviour.
 	everHealthy atomic.Bool
+	// lastSuccess is when the node last proved it can carry traffic. The router
+	// prefers recently verified exits over the unverified mass of the pool.
+	lastSuccess atomic.Int64
 
 	egressIP         atomic.Pointer[string]
 	lastEgressUpdate atomic.Int64
+	// region caches the GeoIP country of the exit address so region filters do
+	// not re-run an mmdb lookup per candidate per request.
+	region atomic.Pointer[string]
+	// health is the bounded per-node health-key table. It is created lazily so
+	// entries restored from old snapshots keep working.
+	healthTable atomic.Pointer[health.Table]
 
 	netSuccess atomic.Uint64
 	netFailure atomic.Uint64
@@ -329,11 +340,60 @@ func (e *Entry) RestoreHealth(everHealthy bool, cooldownSinceNanos int64, egress
 }
 
 // MarkHealthy records the first positive reachability signal.
-func (e *Entry) MarkHealthy() { e.everHealthy.Store(true) }
+func (e *Entry) MarkHealthy() {
+	e.everHealthy.Store(true)
+	e.lastSuccess.Store(time.Now().UnixNano())
+}
 
 // EverHealthy reports whether the node has ever produced a successful
 // connection. A node that is still false is kept out of routing.
 func (e *Entry) EverHealthy() bool { return e.everHealthy.Load() }
+
+// LastSuccessAt returns the last successful traffic signal in Unix
+// nanoseconds (0 = never).
+func (e *Entry) LastSuccessAt() int64 { return e.lastSuccess.Load() }
+
+// RestoreLastSuccess reloads the persisted success timestamp.
+func (e *Entry) RestoreLastSuccess(at int64) { e.lastSuccess.Store(at) }
+
+// HealthTable returns the node's health table, creating it on first use.
+func (e *Entry) HealthTable(maxKeys, pending int) *health.Table {
+	if table := e.healthTable.Load(); table != nil {
+		return table
+	}
+	table := health.NewTable(maxKeys, pending)
+	if e.healthTable.CompareAndSwap(nil, table) {
+		return table
+	}
+	return e.healthTable.Load()
+}
+
+// ExistingHealthTable returns the table without creating it.
+func (e *Entry) ExistingHealthTable() *health.Table { return e.healthTable.Load() }
+
+// SetHealthTable installs a restored table.
+func (e *Entry) SetHealthTable(table *health.Table) {
+	if table != nil {
+		e.healthTable.Store(table)
+	}
+}
+
+// Region returns the cached GeoIP country code (lowercase), if resolved.
+func (e *Entry) Region() string {
+	if value := e.region.Load(); value != nil {
+		return *value
+	}
+	return ""
+}
+
+// SetRegion caches the GeoIP country code.
+func (e *Entry) SetRegion(country string) {
+	if country == "" {
+		return
+	}
+	value := country
+	e.region.Store(&value)
+}
 
 // EgressIP returns the last observed public exit address, if any.
 func (e *Entry) EgressIP() string {
@@ -363,6 +423,7 @@ func (e *Entry) RecordSuccess() {
 	e.cooldownUntil.Store(0)
 	e.cooldownSince.Store(0)
 	e.everHealthy.Store(true)
+	e.lastSuccess.Store(time.Now().UnixNano())
 	e.mu.Lock()
 	e.cooldownReason = ""
 	e.mu.Unlock()
@@ -427,6 +488,7 @@ func (e *Entry) RecordProbeResult(ok bool, at time.Time) {
 	if ok {
 		e.probeOK.Add(1)
 		e.everHealthy.Store(true)
+		e.lastSuccess.Store(at.UnixNano())
 	} else {
 		e.probeFail.Add(1)
 	}
@@ -476,6 +538,7 @@ func (e *Entry) RecordUpstreamResult(target string, ok bool) {
 	if ok {
 		stats.Success.Add(1)
 		e.everHealthy.Store(true)
+		e.lastSuccess.Store(time.Now().UnixNano())
 	} else {
 		stats.Failure.Add(1)
 	}
@@ -540,6 +603,7 @@ type Snapshot struct {
 	HasLatency    bool       `json:"has_latency"`
 	LastError     string     `json:"last_error,omitempty"`
 	LastProbeAt   *time.Time `json:"last_probe_at,omitempty"`
+	LastSuccessAt *time.Time `json:"last_success_at,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
 }
 
@@ -588,6 +652,10 @@ func (e *Entry) Snapshot(target string, now time.Time) Snapshot {
 	if at := e.LastProbeAt(); at > 0 {
 		value := time.Unix(0, at).UTC()
 		snap.LastProbeAt = &value
+	}
+	if at := e.LastSuccessAt(); at > 0 {
+		value := time.Unix(0, at).UTC()
+		snap.LastSuccessAt = &value
 	}
 	return snap
 }

@@ -37,11 +37,16 @@ type NodeQuery struct {
 // the primary upstream target.
 type NodeView struct {
 	node.Snapshot
-	Status     string        `json:"status"`
-	Region     string        `json:"region,omitempty"`
-	RegionName string        `json:"region_name,omitempty"`
-	Score      routing.Score `json:"score"`
-	Eligible   bool          `json:"eligible"`
+	Status       string          `json:"status"`
+	Region       string          `json:"region,omitempty"`
+	RegionName   string          `json:"region_name,omitempty"`
+	Score        routing.Score   `json:"score"`
+	Eligible     bool            `json:"eligible"`
+	HealthState  string          `json:"health_state,omitempty"`
+	HTTP200Lower *float64        `json:"http200_lower"`
+	ValidLower   *float64        `json:"valid_lower"`
+	NextProbeAt  *time.Time      `json:"next_probe_at,omitempty"`
+	HealthKeys   []KeyHealthView `json:"health_keys,omitempty"`
 }
 
 // NodePage is a filtered view of the whole pool. Total counts the filtered
@@ -208,13 +213,18 @@ func (e *Engine) Nodes(query NodeQuery) NodePage {
 	page.Nodes = make([]NodeView, 0, end-offset)
 	targetString := targetURLString(target)
 	for _, match := range matches[offset:end] {
+		healthState, httpLower, validLower, nextProbe := e.entryHealth(match.id)
 		page.Nodes = append(page.Nodes, NodeView{
-			Snapshot:   match.entry.Snapshot(targetString, now),
-			Status:     match.status,
-			Region:     match.region,
-			RegionName: match.regionName,
-			Score:      match.score,
-			Eligible:   match.eligible,
+			Snapshot:     match.entry.Snapshot(targetString, now),
+			Status:       match.status,
+			Region:       match.region,
+			RegionName:   match.regionName,
+			Score:        match.score,
+			Eligible:     match.eligible,
+			HealthState:  healthState,
+			HTTP200Lower: httpLower,
+			ValidLower:   validLower,
+			NextProbeAt:  nextProbe,
 		})
 	}
 	return page
@@ -338,7 +348,12 @@ func (e *Engine) NodeDetail(id string) (NodeView, bool) {
 	}
 	target := e.PrimaryTarget()
 	now := time.Now()
-	view := NodeView{Snapshot: entry.Snapshot(targetURLString(target), now), Status: entryStatus(entry, now)}
+	healthState, httpLower, validLower, nextProbe := e.entryHealth(id)
+	view := NodeView{
+		Snapshot: entry.Snapshot(targetURLString(target), now), Status: entryStatus(entry, now),
+		HealthState: healthState, HTTP200Lower: httpLower, ValidLower: validLower,
+		NextProbeAt: nextProbe, HealthKeys: e.keyViews(id),
+	}
 	if result, ok := e.regionFor(entryRegionAddress(entry)); ok {
 		view.Region = result.Country
 		view.RegionName = result.Name

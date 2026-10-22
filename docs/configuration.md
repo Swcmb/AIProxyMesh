@@ -85,10 +85,22 @@
 | `failover.status_policy` | 策略映射；429/401/403/5xx 的默认语义见上 |
 | `failover.request_method_policy` | 方法级重试策略，默认允许 |
 | `failover.honor_retry_after` | 是否解析并遵循 `Retry-After` |
-| `probe.targets` | 留空时从 `upstream.zen/go/anonymous` 派生；探测只到 origin |
+| `probe.targets` | 留空时从 `upstream.zen/go/anonymous` 派生；必须保留 base path，`/zen` 与 `/zen/go` 是不同健康键 |
 | `probe.egress_ip_enabled` | 是否启用出口 IP 探测（默认 true）；结果写入节点 `egress_ip`，地区优先按真实出口解析 |
 | `probe.egress_ip_interval_seconds` | 出口 IP 探测周期（60–604800，默认 21600）；每 13–17 秒抖动扫描，每轮最多入队 250 个 |
 | `probe.egress_ip_target` | 出口 IP 探测地址；默认 `https://cloudflare.com/cdn-cgi/trace`，解析响应中的 `ip=` 行 |
+| `probe.canary_enabled` | 是否启用推理金丝雀（默认 true）；关闭后只依赖真实流量积累证据 |
+| `probe.budget_per_second` / `budget_burst` | 金丝雀全局令牌桶（默认 2/s，突发 4） |
+| `probe.canary_daily_budget` | 金丝雀每日上限（默认 20000），按 UTC 零点重置 |
+| `probe.canary_max_inflight` | 全局在途金丝雀上限（默认 8）；同一键另有单飞约束 |
+| `probe.active_recheck_seconds` / `verifying_recheck_seconds` | 稳定键与验证键的主动复验下限（预算允许时才执行） |
+| `bootstrap.mode` | `direct`（默认）或 `http_connect`；Mesh 到节点端点始终显式拨号，不读系统代理 |
+| `bootstrap.url` | `http_connect` 模式的 HTTP CONNECT 代理；必填 |
+| `bootstrap.probe_url` | 经 bootstrap 路径探测的地址；其延迟不进入节点 TTFB |
+| `health.mode` | `shadow`（默认，只记录证据）、`prefer`（稳定池优先 + 探索）、`strict`（只走 ACTIVE） |
+| `health.min_samples` / `valid_min_samples` | 准入最小样本；默认 96 / 46，并受 alpha-spending 首检约束 |
+| `health.exploration_ratio` / `candidate_exploration_ratio` | `prefer` 模式的探索配额（默认 10%，其中 2% 给候选） |
+| `health.max_keys_per_node` | 每节点健康键上限（1–32，默认 4）；稳定态不参与淘汰 |
 | `state_path` | SQLite 路径；默认 `config.json.egress.db` |
 | `max_latency_entries` | 每节点延迟表上限（1–4096） |
 | `geoip` | 国家地区库配置；该段存在即启用地区解析，`{"enabled": false}` 关闭 |
@@ -96,6 +108,28 @@
 | `geoip.sha256` | 期望摘要（64 位十六进制）；留空则只校验格式与大小 |
 | `geoip.path` | 本地库路径；默认 `<state_path>.geoip.mmdb` |
 | `geoip.refresh_days` | 自动更新周期（0–365 天），默认 7 天 |
+
+### `egress.bootstrap`
+
+Mesh 到节点端点与节点到上游是两条独立链路。`direct` 直接拨号并忽略 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`；`http_connect` 先与 `bootstrap.url` 建立 CONNECT 隧道，再在隧道内连接节点。v1 的 `http_connect` 只支持 HTTP/HTTPS 节点，SOCKS5 节点会跳过并记录 `unsupported_bootstrap_protocol`。
+
+bootstrap 失败或本地网络异常归入环境状态，不冷却节点：连续 `probe_failure_threshold` 次失败或本地失败率超过 `local_failure_threshold` 且持续 `failure_grace_seconds` 后冻结健康更新；恢复时递增 `environment_epoch`，ACTIVE 键保留路由资格但标记待复验。
+
+### `egress.health`
+
+健康键是「上游 × 模型 × 协议 × 请求模式」。每个键独立维护 HTTP 200、有效推理、主指标、延迟和七态状态机：
+
+| 状态 | 路由 | 说明 |
+| :--- | :--- | :--- |
+| `candidate` | 仅冷启动回退 | 尚无 HTTP 200 证据 |
+| `verifying` | 受限探索 | 已收到 HTTP 200，样本未达准入 |
+| `active` | 是 | Wilson 下界、延迟与有效推理均达标 |
+| `suspect` | 是，权重 ×0.3 | 近期分位、连续失败、流失败或延迟恶化 |
+| `open` | 否 | 键级熔断，到期进入半开 |
+| `half_open` | 单在途探测 | 连续成功恢复到之前状态 |
+| `dead` | 否 | 同键重复 404 且其他出口可用 |
+
+有效推理：Chat/Responses/Anthropic 首批输出事件必须可解析且不含错误；`systemone` 只校验 HTTP 200。201/204 不计入 HTTP 200 成功率。地区 403 是硬性封锁，过滤后为空时返回明确错误，不回退到被封锁地区。
 
 ### `egress.geoip`
 
