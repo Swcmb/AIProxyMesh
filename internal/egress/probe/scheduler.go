@@ -7,6 +7,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/health"
@@ -94,8 +95,9 @@ type Scheduler struct {
 	pool     *pool.Pool
 	cfg      atomicConfig
 	logger   *slog.Logger
+	execMu   sync.RWMutex
 	executor CanaryFunc
-	env      *health.Environment
+	env      atomic.Pointer[health.Environment]
 
 	mu       sync.Mutex
 	tasks    taskHeap
@@ -143,10 +145,30 @@ func NewScheduler(p *pool.Pool, cfg ScheduleConfig, logger *slog.Logger) *Schedu
 }
 
 // SetExecutor installs the gateway-side canary implementation.
-func (s *Scheduler) SetExecutor(executor CanaryFunc) { s.executor = executor }
+func (s *Scheduler) SetExecutor(executor CanaryFunc) {
+	s.execMu.Lock()
+	s.executor = executor
+	s.execMu.Unlock()
+}
+
+func (s *Scheduler) executorFn() CanaryFunc {
+	s.execMu.RLock()
+	defer s.execMu.RUnlock()
+	return s.executor
+}
 
 // SetEnvironment installs the local-link classifier.
-func (s *Scheduler) SetEnvironment(env *health.Environment) { s.env = env }
+func (s *Scheduler) SetEnvironment(env *health.Environment) { s.env.Store(env) }
+
+func (s *Scheduler) frozen() bool {
+	env := s.env.Load()
+	return env != nil && env.Frozen()
+}
+
+func (s *Scheduler) targetPaused(target string, now time.Time) bool {
+	env := s.env.Load()
+	return env != nil && env.TargetPaused(target, now)
+}
 
 // Configure swaps scheduling parameters on hot reload.
 func (s *Scheduler) Configure(cfg ScheduleConfig) { s.cfg.store(cfg) }
@@ -176,10 +198,10 @@ func (s *Scheduler) Run(ctx context.Context) {
 // scan enqueues eligible keys in fair ring order, bounded per pass.
 func (s *Scheduler) scan(now time.Time) {
 	cfg := s.cfg.load()
-	if !cfg.Enabled || s.executor == nil {
+	if !cfg.Enabled || s.executorFn() == nil {
 		return
 	}
-	if s.env != nil && s.env.Frozen() {
+	if s.frozen() {
 		return
 	}
 	entries := s.pool.List()
@@ -223,7 +245,7 @@ func (s *Scheduler) scan(now time.Time) {
 }
 
 func (s *Scheduler) dueTime(entry *node.Entry, record health.KeyStats, cfg ScheduleConfig, now time.Time) (time.Time, float64, bool) {
-	if cfg.TargetPause > 0 && s.env != nil && s.env.TargetPaused(record.Key.Target, now) {
+	if cfg.TargetPause > 0 && s.targetPaused(record.Key.Target, now) {
 		return time.Time{}, 0, false
 	}
 	lastProbe := record.LastProbeAt
@@ -324,10 +346,10 @@ func (s *Scheduler) enqueue(entry *node.Entry, key health.HealthKey, next time.T
 
 func (s *Scheduler) dispatchOne(ctx context.Context, now time.Time) bool {
 	cfg := s.cfg.load()
-	if !cfg.Enabled || s.executor == nil {
+	if !cfg.Enabled || s.executorFn() == nil {
 		return false
 	}
-	if s.env != nil && s.env.Frozen() {
+	if s.frozen() {
 		return false
 	}
 	s.mu.Lock()
@@ -359,7 +381,7 @@ func (s *Scheduler) dispatchOne(ctx context.Context, now time.Time) bool {
 		return true
 	}
 
-	result := s.executor(ctx, CanaryRequest{Entry: task.entry, Key: task.key, Mode: cfg.DefaultMode})
+	result := s.executorFn()(ctx, CanaryRequest{Entry: task.entry, Key: task.key, Mode: cfg.DefaultMode})
 	s.applyResult(task, cfg, result)
 	s.finishTask(task, id)
 
