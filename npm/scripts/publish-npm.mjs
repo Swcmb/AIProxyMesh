@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
-const SCOPE = "@swcmb";
+const SCOPE = "@ianwusb";
 const MAIN_NAME = `${SCOPE}/mesh`;
 
 const PLATFORMS = [
@@ -130,7 +130,8 @@ try {
   } else {
     if (process.env.NPM_TOKEN) {
       const npmrc = path.join(args.out, ".npmrc");
-      fs.writeFileSync(npmrc, `//registry.npmjs.org/:_authToken=${process.env.NPM_TOKEN}\n`);
+      // 固定官方源：机器默认 registry 可能是国内镜像，令牌只能发给 registry.npmjs.org。
+      fs.writeFileSync(npmrc, `registry=https://registry.npmjs.org/\n//registry.npmjs.org/:_authToken=${process.env.NPM_TOKEN}\n`);
     }
     const provenance = process.env.NPM_PROVENANCE === "false" ? [] : ["--provenance"];
     const npmrcArgs = fs.existsSync(path.join(args.out, ".npmrc"))
