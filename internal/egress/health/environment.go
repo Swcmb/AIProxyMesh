@@ -125,6 +125,13 @@ func RestoreEnvironment(snapshot EnvironmentSnapshot, cfg EnvironmentConfig) *En
 	return env
 }
 
+// Configure replaces the environment tuning on hot reload.
+func (e *Environment) Configure(cfg EnvironmentConfig) {
+	e.mu.Lock()
+	e.cfg = cfg.normalized()
+	e.mu.Unlock()
+}
+
 // OnEpoch registers a callback invoked after recovery increments the epoch.
 func (e *Environment) OnEpoch(fn func(uint64)) {
 	e.mu.Lock()

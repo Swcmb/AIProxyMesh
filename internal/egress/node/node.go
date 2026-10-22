@@ -1,6 +1,6 @@
 // Package node defines the egress node model, identity, health counters and
-// per-target latency statistics. It intentionally depends only on the standard
-// library so that Tier A exits stay dependency-free.
+// per-target latency statistics. It depends only on the standard library and
+// the dependency-free health model so that Tier A exits stay lightweight.
 package node
 
 import (
@@ -16,6 +16,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/health"
 )
 
 // Protocol is the outbound scheme of a node. Tier A protocols are directly
@@ -166,6 +168,9 @@ type Entry struct {
 	// region caches the GeoIP country of the exit address so region filters do
 	// not re-run an mmdb lookup per candidate per request.
 	region atomic.Pointer[string]
+	// health is the bounded per-node health-key table. It is created lazily so
+	// entries restored from old snapshots keep working.
+	healthTable atomic.Pointer[health.Table]
 
 	netSuccess atomic.Uint64
 	netFailure atomic.Uint64
@@ -350,6 +355,28 @@ func (e *Entry) LastSuccessAt() int64 { return e.lastSuccess.Load() }
 
 // RestoreLastSuccess reloads the persisted success timestamp.
 func (e *Entry) RestoreLastSuccess(at int64) { e.lastSuccess.Store(at) }
+
+// HealthTable returns the node's health table, creating it on first use.
+func (e *Entry) HealthTable(maxKeys, pending int) *health.Table {
+	if table := e.healthTable.Load(); table != nil {
+		return table
+	}
+	table := health.NewTable(maxKeys, pending)
+	if e.healthTable.CompareAndSwap(nil, table) {
+		return table
+	}
+	return e.healthTable.Load()
+}
+
+// ExistingHealthTable returns the table without creating it.
+func (e *Entry) ExistingHealthTable() *health.Table { return e.healthTable.Load() }
+
+// SetHealthTable installs a restored table.
+func (e *Entry) SetHealthTable(table *health.Table) {
+	if table != nil {
+		e.healthTable.Store(table)
+	}
+}
 
 // Region returns the cached GeoIP country code (lowercase), if resolved.
 func (e *Entry) Region() string {

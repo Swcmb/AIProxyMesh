@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/health"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/node"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/outbound"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/pool"
@@ -39,6 +40,17 @@ type Config struct {
 	CooldownMax      time.Duration
 	UpstreamWindow   time.Duration
 	AllowedProtocols map[node.Protocol]bool
+
+	// Health mode and admission parameters.
+	HealthMode                string
+	Health                    health.Config
+	ExplorationRatio          float64
+	CandidateExplorationRatio float64
+	StableMinCapacity         int
+	ColdStartFallback         bool
+	ReachableWindow           time.Duration
+	MaxKeysPerNode            int
+	MaxPendingKeys            int
 }
 
 // DefaultConfig returns the approved initial parameters.
@@ -75,6 +87,28 @@ func (c Config) normalized() Config {
 	if c.UpstreamWindow <= 0 {
 		c.UpstreamWindow = time.Minute
 	}
+	if c.HealthMode == "" {
+		c.HealthMode = "shadow"
+	}
+	c.Health = c.Health.Normalize()
+	if c.ExplorationRatio < 0 || c.ExplorationRatio > 0.5 {
+		c.ExplorationRatio = 0.10
+	}
+	if c.CandidateExplorationRatio < 0 || c.CandidateExplorationRatio > c.ExplorationRatio {
+		c.CandidateExplorationRatio = 0.02
+	}
+	if c.StableMinCapacity <= 0 {
+		c.StableMinCapacity = 50
+	}
+	if c.ReachableWindow <= 0 {
+		c.ReachableWindow = 10 * time.Minute
+	}
+	if c.MaxKeysPerNode <= 0 {
+		c.MaxKeysPerNode = 4
+	}
+	if c.MaxPendingKeys <= 0 {
+		c.MaxPendingKeys = 10000
+	}
 	return c
 }
 
@@ -93,6 +127,8 @@ type Router struct {
 	regionMu     sync.Mutex
 	regionBlocks map[string]map[string]time.Time
 	regionOf     func(*node.Entry) string
+
+	environment atomic.Pointer[health.Environment]
 }
 
 // New creates a router.
@@ -142,13 +178,24 @@ type Attempt struct {
 	Protocol string
 	ProxyURL *url.URL
 	Target   string
+	// Key is the concrete health key this attempt observes.
+	Key health.HealthKey
+	// Direct marks the special direct exit, which bypasses key accounting.
+	Direct bool
 	// KeyID lets attribution distinguish "this key is rate limited" from
 	// "the upstream rejects every exit". Set before Report.
 	KeyID string
 
-	entry  *node.Entry
-	client *http.Client
-	once   sync.Once
+	entry        *node.Entry
+	client       *http.Client
+	once         sync.Once
+	streamOnce   sync.Once
+	completeOnce sync.Once
+}
+
+// SetEnvironment installs the local-link environment classifier.
+func (r *Router) SetEnvironment(env *health.Environment) {
+	r.environment.Store(env)
 }
 
 // Client returns the HTTP client bound to this exit.
@@ -359,6 +406,7 @@ func (r *Router) SelectAffinity(ctx context.Context, target *url.URL, exclude ma
 		Protocol: string(chosen.entry.Options.Type),
 		ProxyURL: proxyURL,
 		Target:   host,
+		Direct:   chosen.entry.Options.Type == node.Direct,
 		entry:    chosen.entry,
 		client:   client,
 	}, nil
@@ -430,22 +478,34 @@ func (r *Router) clock() time.Time {
 type OutcomeKind string
 
 const (
-	Success         OutcomeKind = "success"
-	ProxyFailure    OutcomeKind = "proxy_failure"
-	ExitFailure     OutcomeKind = "exit_failure"
-	UpstreamFailure OutcomeKind = "upstream_failure"
-	KeyFailure      OutcomeKind = "key_failure"
-	RegionBlocked   OutcomeKind = "region_blocked"
-	ClientCancel    OutcomeKind = "client_cancel"
-	Neutral         OutcomeKind = "neutral"
+	Success            OutcomeKind = "success"
+	ProxyFailure       OutcomeKind = "proxy_failure"
+	ExitFailure        OutcomeKind = "exit_failure"
+	UpstreamFailure    OutcomeKind = "upstream_failure"
+	KeyFailure         OutcomeKind = "key_failure"
+	RegionBlocked      OutcomeKind = "region_blocked"
+	ClientCancel       OutcomeKind = "client_cancel"
+	Neutral            OutcomeKind = "neutral"
+	BootstrapFailure   OutcomeKind = "bootstrap_failure"
+	EnvironmentFailure OutcomeKind = "environment_failure"
+	EnvironmentSlow    OutcomeKind = "environment_degraded"
 )
 
 // Outcome is the raw attempt result reported by the gateway.
 type Outcome struct {
-	Kind       OutcomeKind
-	StatusCode int
-	RetryAfter time.Duration
-	Latency    time.Duration
+	Kind            OutcomeKind
+	StatusCode      int
+	RetryAfter      time.Duration
+	Latency         time.Duration
+	HeadersReceived bool
+	ValidInference  bool
+	ValidKnown      bool
+	Diagnostic      bool
+	Direct          bool
+	UpstreamWide    bool
+	// Bootstrap marks a failure of the Mesh-to-node bootstrap link. It is an
+	// environment signal and never attributes to the node.
+	Bootstrap bool
 	// Region is the GeoIP country of the exit that hit a regional rejection.
 	Region string
 	Err    error
@@ -468,6 +528,10 @@ func (r *Router) report(attempt *Attempt, outcome Outcome) Classification {
 	r.release(entry.Hash)
 	now := r.clock()
 	cfg := *r.cfg.Load()
+	if attempt.Direct {
+		outcome.Direct = true
+	}
+	r.applyHealth(attempt, outcome, now)
 
 	result := Classification{Kind: outcome.Kind}
 	switch outcome.Kind {
@@ -549,6 +613,15 @@ func (r *Router) report(attempt *Attempt, outcome Outcome) Classification {
 
 	case ClientCancel:
 		result.Reason = "client_cancel"
+
+	case BootstrapFailure, EnvironmentFailure:
+		entry.RecordNetworkResult(true)
+		result.Reason = "environment_failure"
+		result.Retryable = true
+
+	case EnvironmentSlow:
+		entry.RecordNetworkResult(true)
+		result.Reason = "environment_degraded"
 
 	case Neutral:
 		entry.RecordNetworkResult(true)

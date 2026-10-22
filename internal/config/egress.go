@@ -19,6 +19,8 @@ type EgressConfig struct {
 	Cooldown            EgressCooldown       `json:"cooldown,omitempty"`
 	Failover            EgressFailover       `json:"failover,omitempty"`
 	Probe               EgressProbe          `json:"probe,omitempty"`
+	Bootstrap           EgressBootstrap      `json:"bootstrap,omitempty"`
+	Health              EgressHealth         `json:"health,omitempty"`
 	StatePath           string               `json:"state_path,omitempty"`
 	MaxLatencyEntries   int                  `json:"max_latency_entries,omitempty"`
 	GeoIP               *EgressGeoIP         `json:"geoip,omitempty"`
@@ -102,6 +104,86 @@ type EgressProbe struct {
 	EgressIPEnabled         *bool  `json:"egress_ip_enabled,omitempty"`
 	EgressIPIntervalSeconds int    `json:"egress_ip_interval_seconds,omitempty"`
 	EgressIPTarget          string `json:"egress_ip_target,omitempty"`
+
+	// Canary scheduling and budget.
+	Scheduler                  string  `json:"scheduler,omitempty"`
+	BudgetPerSecond            float64 `json:"budget_per_second,omitempty"`
+	BudgetBurst                int     `json:"budget_burst,omitempty"`
+	CanaryEnabled              *bool   `json:"canary_enabled,omitempty"`
+	CanaryModel                string  `json:"canary_model,omitempty"`
+	CanaryDefaultMode          string  `json:"canary_default_mode,omitempty"`
+	CanaryConfigBackoffSeconds int     `json:"canary_config_backoff_seconds,omitempty"`
+	CanaryMaxTokens            int     `json:"canary_max_tokens,omitempty"`
+	CanaryMaxInflight          int     `json:"canary_max_inflight,omitempty"`
+	CanaryDailyBudget          int     `json:"canary_daily_budget,omitempty"`
+	CanaryAllowKeyTiers        *bool   `json:"canary_allow_key_tiers,omitempty"`
+	CanaryKeyDailyBudget       int     `json:"canary_key_daily_budget,omitempty"`
+	ActiveRecheckSeconds       int     `json:"active_recheck_seconds,omitempty"`
+	VerifyingRecheckSeconds    int     `json:"verifying_recheck_seconds,omitempty"`
+	BackoffBaseSeconds         int     `json:"backoff_base_seconds,omitempty"`
+	BackoffMaxSeconds          int     `json:"backoff_max_seconds,omitempty"`
+	JitterRatio                float64 `json:"jitter_ratio,omitempty"`
+	TargetPauseSeconds         int     `json:"target_pause_seconds,omitempty"`
+	MaxSchedulePerScan         int     `json:"max_schedule_per_scan,omitempty"`
+	MaxScheduledKeys           int     `json:"max_scheduled_keys,omitempty"`
+}
+
+// EgressBootstrap selects the explicit Mesh-to-node link. Environment proxy
+// variables are never consulted.
+type EgressBootstrap struct {
+	Mode                      string  `json:"mode,omitempty"`
+	URL                       string  `json:"url,omitempty"`
+	ProbeURL                  string  `json:"probe_url,omitempty"`
+	ProbeIntervalSeconds      int     `json:"probe_interval_seconds,omitempty"`
+	ProbeFailureThreshold     int     `json:"probe_failure_threshold,omitempty"`
+	BootstrapLatencyBudgetMS  int     `json:"bootstrap_latency_budget_ms,omitempty"`
+	FailureGraceSeconds       int     `json:"failure_grace_seconds,omitempty"`
+	LocalFailureThreshold     float64 `json:"local_failure_threshold,omitempty"`
+	LocalFailureWindowSeconds int     `json:"local_failure_window_seconds,omitempty"`
+}
+
+// EgressHealth configures admission, recent-health decay and the key-level
+// state machine. Zero values select the approved defaults.
+type EgressHealth struct {
+	Mode                         string  `json:"mode,omitempty"`
+	ConfidenceZ                  float64 `json:"confidence_z,omitempty"`
+	MinSamples                   int     `json:"min_samples,omitempty"`
+	ValidMinSamples              int     `json:"valid_min_samples,omitempty"`
+	EvidenceBucketSeconds        int     `json:"evidence_bucket_seconds,omitempty"`
+	MaxAdmissionSamplesPerBucket int     `json:"max_admission_samples_per_bucket,omitempty"`
+	MinEvidenceBuckets           int     `json:"min_evidence_buckets,omitempty"`
+	HTTP200Target                float64 `json:"http200_target,omitempty"`
+	ValidTarget                  float64 `json:"valid_target,omitempty"`
+	DecayHalfLifeSeconds         int     `json:"decay_half_life_seconds,omitempty"`
+	RecentQuantile               float64 `json:"recent_quantile,omitempty"`
+	SuspectRecentLower           float64 `json:"suspect_recent_lower,omitempty"`
+	SuspectRecoveryLower         float64 `json:"suspect_recovery_lower,omitempty"`
+	MinRecentWeight              float64 `json:"min_recent_weight,omitempty"`
+	SuspectFailures              int     `json:"suspect_failures,omitempty"`
+	SuspectLatencyMinSamples     int     `json:"suspect_latency_min_samples,omitempty"`
+	SuspectRecoverySuccesses     int     `json:"suspect_recovery_successes,omitempty"`
+	ReverifySuccesses            int     `json:"reverify_successes,omitempty"`
+	UnknownStreakSuspect         int     `json:"unknown_streak_suspect,omitempty"`
+	StreamFailureSuspect         int     `json:"stream_failure_suspect,omitempty"`
+	OpenFailures                 int     `json:"open_failures,omitempty"`
+	OpenRateWindowSeconds        int     `json:"open_rate_window_seconds,omitempty"`
+	OpenRateThreshold            float64 `json:"open_rate_threshold,omitempty"`
+	HalfOpenSuccesses            int     `json:"half_open_successes,omitempty"`
+	HalfOpenMaxInflight          int     `json:"half_open_max_inflight,omitempty"`
+	DeadConfirmations            int     `json:"dead_confirmations,omitempty"`
+	DeadRecheckSeconds           int     `json:"dead_recheck_seconds,omitempty"`
+	LatencyBudgetMS              int     `json:"latency_budget_ms,omitempty"`
+	MaxValidPeekBytes            int     `json:"max_valid_peek_bytes,omitempty"`
+	MaxKeysPerNode               int     `json:"max_keys_per_node,omitempty"`
+	MaxPendingKeys               int     `json:"max_pending_keys,omitempty"`
+	MaxPendingObservations       int     `json:"max_pending_observations,omitempty"`
+	StableMinCapacity            int     `json:"stable_min_capacity,omitempty"`
+	ExplorationRatio             float64 `json:"exploration_ratio,omitempty"`
+	CandidateExplorationRatio    float64 `json:"candidate_exploration_ratio,omitempty"`
+	RouteSampleSize              int     `json:"route_sample_size,omitempty"`
+	ColdStartFallback            *bool   `json:"cold_start_fallback,omitempty"`
+	ReachableWindowSeconds       int     `json:"reachable_window_seconds,omitempty"`
+	MaxDirtyRows                 int     `json:"max_dirty_rows,omitempty"`
 }
 
 // EgressEnabled reports whether the unified pool is active.
@@ -173,6 +255,9 @@ func (e *EgressConfig) applyDefaults(configPath string) {
 	if e.Probe.EgressIPTarget == "" {
 		e.Probe.EgressIPTarget = "https://cloudflare.com/cdn-cgi/trace"
 	}
+	applyProbeDefaults(&e.Probe)
+	applyBootstrapDefaults(&e.Bootstrap)
+	applyHealthDefaults(&e.Health)
 	if e.StatePath == "" {
 		e.StatePath = configPath + ".egress.db"
 	}
@@ -285,6 +370,15 @@ func (e *EgressConfig) normalize(configPath string) error {
 			return fmt.Errorf("egress.probe.targets contains invalid URL %q", target)
 		}
 	}
+	if err := validateProbeScheduling(&e.Probe); err != nil {
+		return err
+	}
+	if err := validateBootstrap(&e.Bootstrap); err != nil {
+		return err
+	}
+	if err := validateHealth(&e.Health); err != nil {
+		return err
+	}
 	if e.MaxLatencyEntries < 1 || e.MaxLatencyEntries > 4096 {
 		return errors.New("egress.max_latency_entries must be between 1 and 4096")
 	}
@@ -327,6 +421,18 @@ func cloneEgress(in *EgressConfig) *EgressConfig {
 		out.Subscriptions[i].Protocols = append([]string(nil), in.Subscriptions[i].Protocols...)
 	}
 	out.Probe.Targets = append([]string(nil), in.Probe.Targets...)
+	if in.Probe.CanaryEnabled != nil {
+		value := *in.Probe.CanaryEnabled
+		out.Probe.CanaryEnabled = &value
+	}
+	if in.Probe.CanaryAllowKeyTiers != nil {
+		value := *in.Probe.CanaryAllowKeyTiers
+		out.Probe.CanaryAllowKeyTiers = &value
+	}
+	if in.Health.ColdStartFallback != nil {
+		value := *in.Health.ColdStartFallback
+		out.Health.ColdStartFallback = &value
+	}
 	if in.GeoIP != nil {
 		geo := *in.GeoIP
 		out.GeoIP = &geo

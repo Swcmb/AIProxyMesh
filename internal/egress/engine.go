@@ -16,6 +16,7 @@ import (
 
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/config"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/geoip"
+	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/health"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/node"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/outbound"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/pool"
@@ -23,6 +24,7 @@ import (
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/routing"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/state"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/subscription"
+	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/transport"
 )
 
 // ErrDisabled reports that the egress section is absent or switched off.
@@ -59,6 +61,9 @@ type Engine struct {
 	logger      *slog.Logger
 	settings    atomic.Pointer[settings]
 
+	transportFactory atomic.Pointer[transport.Factory]
+	environment      *health.Environment
+
 	events    chan state.Event
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -90,18 +95,28 @@ func New(opts Options) (*Engine, error) {
 	}
 	nodePool := pool.New(maxLatency)
 	outboundManager := outbound.NewManager(outboundConfig(opts.Performance))
+	factory, err := newTransportFactory(cfg, opts.Performance)
+	if err != nil {
+		_ = store.Close()
+		return nil, err
+	}
+	outboundManager.SetFactory(factory)
 	router := routing.New(nodePool, outboundManager, routerConfig(cfg), logger)
+	environment := health.NewEnvironment(cfg.Bootstrap.EnvironmentConfig(), time.Now())
+	router.SetEnvironment(environment)
 	prober := probe.New(nodePool, outboundManager, probeConfig(cfg, opts.Upstream), logger)
 
 	e := &Engine{
-		pool:     nodePool,
-		outbound: outboundManager,
-		router:   router,
-		probe:    prober,
-		store:    store,
-		logger:   logger,
-		events:   make(chan state.Event, 1024),
+		pool:        nodePool,
+		outbound:    outboundManager,
+		router:      router,
+		probe:       prober,
+		store:       store,
+		logger:      logger,
+		environment: environment,
+		events:      make(chan state.Event, 1024),
 	}
+	e.transportFactory.Store(factory)
 	e.settings.Store(&settings{egress: cfg, upstream: opts.Upstream, performance: opts.Performance, legacy: opts.Legacy})
 	e.subs = subscription.New(nodePool, nil, e.sources, logger)
 	e.geoip = newGeoIPService(cfg, logger)
@@ -155,6 +170,12 @@ func (e *Engine) Start(parent context.Context) {
 	go func() {
 		defer e.wg.Done()
 		e.probe.Run(e.ctx)
+	}()
+
+	e.wg.Add(1)
+	go func() {
+		defer e.wg.Done()
+		e.bootstrapProbeLoop(e.ctx)
 	}()
 
 	e.StartGeoIP(e.ctx)
@@ -229,6 +250,15 @@ func (e *Engine) Apply(egress *config.EgressConfig, upstream config.UpstreamConf
 	e.reconfigureGeoIP(egress)
 	if e.outbound != nil {
 		e.outbound.Reconfigure(outboundConfig(perf))
+	}
+	if factory, err := newTransportFactory(egress, perf); err == nil {
+		e.transportFactory.Store(factory)
+		if e.outbound != nil {
+			e.outbound.SetFactory(factory)
+		}
+	}
+	if e.environment != nil {
+		e.environment.Configure(egress.Bootstrap.EnvironmentConfig())
 	}
 	e.router.Configure(routerConfig(egress))
 	e.probe.Configure(probeConfig(egress, upstream))
@@ -700,6 +730,17 @@ func routerConfig(cfg *config.EgressConfig) routing.Config {
 	}
 	result.CooldownBase = time.Duration(cfg.Cooldown.BaseSeconds) * time.Second
 	result.CooldownMax = time.Duration(cfg.Cooldown.MaxSeconds) * time.Second
+	result.HealthMode = cfg.Health.Mode
+	result.Health = cfg.Health.HealthKeyConfig()
+	result.ExplorationRatio = cfg.Health.ExplorationRatio
+	result.CandidateExplorationRatio = cfg.Health.CandidateExplorationRatio
+	result.StableMinCapacity = cfg.Health.StableMinCapacity
+	result.ReachableWindow = time.Duration(cfg.Health.ReachableWindowSeconds) * time.Second
+	result.MaxKeysPerNode = cfg.Health.MaxKeysPerNode
+	result.MaxPendingKeys = cfg.Health.MaxPendingKeys
+	if cfg.Health.ColdStartFallback != nil {
+		result.ColdStartFallback = *cfg.Health.ColdStartFallback
+	}
 	result.AllowedProtocols = map[node.Protocol]bool{
 		node.HTTP:    cfg.ProtocolAllowed("http"),
 		node.HTTPS:   cfg.ProtocolAllowed("https"),
@@ -740,4 +781,56 @@ func (e *Engine) PrimaryTarget() *url.URL {
 		return nil
 	}
 	return parsed
+}
+
+// newTransportFactory builds the explicit Mesh-to-node link factory.
+func newTransportFactory(cfg *config.EgressConfig, perf config.PerformanceConfig) (*transport.Factory, error) {
+	transportCfg := transport.DefaultConfig()
+	transportCfg.Mode = transport.Mode(cfg.Bootstrap.Mode)
+	transportCfg.BootstrapURL = cfg.Bootstrap.URL
+	if perf.ConnectTimeoutSeconds > 0 {
+		transportCfg.ConnectTimeout = time.Duration(perf.ConnectTimeoutSeconds) * time.Second
+	}
+	transportCfg.ResponseHeaderTimeout = 0
+	if out := outboundConfig(perf); out.ConnectTimeout > 0 {
+		transportCfg.ConnectTimeout = out.ConnectTimeout
+	}
+	return transport.New(transportCfg)
+}
+
+// bootstrapProbeLoop measures the bootstrap path itself. Its latency never
+// enters node TTFB statistics.
+func (e *Engine) bootstrapProbeLoop(ctx context.Context) {
+	for {
+		current := e.settings.Load()
+		if current == nil {
+			return
+		}
+		bootstrapCfg := current.egress.Bootstrap
+		if bootstrapCfg.Mode != "http_connect" || bootstrapCfg.ProbeURL == "" {
+			return
+		}
+		interval := time.Duration(bootstrapCfg.ProbeIntervalSeconds) * time.Second
+		if interval < 10*time.Second {
+			interval = 10 * time.Second
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(interval):
+		}
+		factory := e.transportFactory.Load()
+		if factory == nil || factory.Dialer() == nil {
+			continue
+		}
+		latency, err := factory.Dialer().Probe(ctx, bootstrapCfg.ProbeURL)
+		now := time.Now()
+		if e.environment == nil {
+			continue
+		}
+		e.environment.ReportBootstrapProbe(err == nil, latency, now)
+		if err == nil {
+			e.environment.ReportBootstrapLatency(latency, now)
+		}
+	}
 }
