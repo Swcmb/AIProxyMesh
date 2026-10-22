@@ -152,6 +152,9 @@ type Entry struct {
 	enabled       atomic.Bool
 	failures      atomic.Int32
 	cooldownUntil atomic.Int64
+	// quotaStaleUntil marks the window during which this exit's source IP has
+	// spent its upstream quota, proven by a 429 that reached the upstream.
+	quotaStaleUntil atomic.Int64
 	// cooldownSince is when the current uninterrupted cooling streak began.
 	// Ephemeral cleanup evicts nodes that stay circuit-open too long.
 	cooldownSince atomic.Int64
@@ -356,6 +359,18 @@ func (e *Entry) LastSuccessAt() int64 { return e.lastSuccess.Load() }
 // RestoreLastSuccess reloads the persisted success timestamp.
 func (e *Entry) RestoreLastSuccess(at int64) { e.lastSuccess.Store(at) }
 
+// MarkQuotaStale records that this exit reached the upstream and was told the
+// quota is spent, until the given time. It ends the node's verified status
+// without discarding any health evidence.
+func (e *Entry) MarkQuotaStale(until time.Time) { e.quotaStaleUntil.Store(until.UnixNano()) }
+
+// QuotaStale reports whether the exit is still inside its quota-depletion
+// window.
+func (e *Entry) QuotaStale(now time.Time) bool {
+	until := e.quotaStaleUntil.Load()
+	return until != 0 && now.UnixNano() < until
+}
+
 // HealthTable returns the node's health table, creating it on first use.
 func (e *Entry) HealthTable(maxKeys, pending int) *health.Table {
 	if table := e.healthTable.Load(); table != nil {
@@ -422,6 +437,8 @@ func (e *Entry) RecordSuccess() {
 	e.failures.Store(0)
 	e.cooldownUntil.Store(0)
 	e.cooldownSince.Store(0)
+	// An answered request proves this exit's IP has quota again.
+	e.quotaStaleUntil.Store(0)
 	e.everHealthy.Store(true)
 	e.lastSuccess.Store(time.Now().UnixNano())
 	e.mu.Lock()

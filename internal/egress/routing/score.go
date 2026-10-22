@@ -14,11 +14,16 @@ type Weights struct {
 	Latency  float64 `json:"latency_weight"`
 	Routing  float64 `json:"routing_weight"`
 	Upstream float64 `json:"upstream_success_weight"`
+	// Quota weighs how recently this exit's source IP was told the upstream
+	// quota is spent. It is the anonymous-channel freshness signal and stays
+	// outside the primary health metrics.
+	Quota float64 `json:"quota_weight"`
 }
 
-// DefaultWeights matches the initial parameters in the approved spec.
+// DefaultWeights matches the initial parameters in the approved spec, with the
+// quota-freshness dimension folded in at 0.15.
 func DefaultWeights() Weights {
-	return Weights{Health: 0.30, Latency: 0.15, Routing: 0.15, Upstream: 0.40}
+	return Weights{Health: 0.30, Latency: 0.15, Routing: 0.15, Upstream: 0.40, Quota: 0.15}
 }
 
 // Normalize clamps negative weights and rescales the sum to 1.
@@ -27,7 +32,8 @@ func (w Weights) Normalize() Weights {
 	w.Latency = max(w.Latency, 0)
 	w.Routing = max(w.Routing, 0)
 	w.Upstream = max(w.Upstream, 0)
-	sum := w.Health + w.Latency + w.Routing + w.Upstream
+	w.Quota = max(w.Quota, 0)
+	sum := w.Health + w.Latency + w.Routing + w.Upstream + w.Quota
 	if sum <= 0 {
 		return DefaultWeights()
 	}
@@ -36,6 +42,7 @@ func (w Weights) Normalize() Weights {
 		Latency:  w.Latency / sum,
 		Routing:  w.Routing / sum,
 		Upstream: w.Upstream / sum,
+		Quota:    w.Quota / sum,
 	}
 }
 
@@ -45,6 +52,7 @@ type Score struct {
 	Latency  float64 `json:"latency"`
 	Routing  float64 `json:"routing"`
 	Upstream float64 `json:"upstream"`
+	Quota    float64 `json:"quota"`
 	Total    float64 `json:"total"`
 }
 
@@ -71,7 +79,21 @@ func upstreamScore(entry *node.Entry, target string) float64 {
 	return clamp01(entry.UpstreamScore(target))
 }
 
-func computeScore(entry *node.Entry, target string, inflight int, weights Weights) Score {
+// quotaStaleScore is the freshness credited to a node whose last 429 window is
+// still open when no key-level evidence is at hand. It demotes the exit without
+// treating it as unhealthy.
+const quotaStaleScore = 0.2
+
+// nodeQuotaFreshness is the node-level fallback for the quota dimension, used
+// where a selection has no single health key to consult.
+func nodeQuotaFreshness(entry *node.Entry, now time.Time) float64 {
+	if entry.QuotaStale(now) {
+		return quotaStaleScore
+	}
+	return 1
+}
+
+func computeScore(entry *node.Entry, target string, inflight int, weights Weights, quota float64) Score {
 	latency := 0.5
 	if value, ok := entry.LatencyFor(target); ok {
 		latency = latencyScore(value)
@@ -81,11 +103,13 @@ func computeScore(entry *node.Entry, target string, inflight int, weights Weight
 		Latency:  latency,
 		Routing:  routingScore(inflight),
 		Upstream: upstreamScore(entry, target),
+		Quota:    clamp01(quota),
 	}
 	score.Total = 100 * (weights.Health*score.Health +
 		weights.Latency*score.Latency +
 		weights.Routing*score.Routing +
-		weights.Upstream*score.Upstream)
+		weights.Upstream*score.Upstream +
+		weights.Quota*score.Quota)
 	return score
 }
 

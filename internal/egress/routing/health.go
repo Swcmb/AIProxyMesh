@@ -74,7 +74,7 @@ func (r *Router) SelectKey(ctx context.Context, target *url.URL, key health.Heal
 		if entry.Options.Type == node.Direct {
 			// The direct exit is local and has no key-level evidence; the spec
 			// injects it as an independent candidate in both prefer and strict.
-			buckets.active = append(buckets.active, pick{entry: entry, score: computeScore(entry, host, r.inflightFor(entry.Hash), weights).Total})
+			buckets.active = append(buckets.active, pick{entry: entry, score: computeScore(entry, host, r.inflightFor(entry.Hash), weights, 1).Total})
 			continue
 		}
 		stats := entry.HealthTable(cfg.MaxKeysPerNode, cfg.MaxPendingKeys).Get(key)
@@ -82,10 +82,12 @@ func (r *Router) SelectKey(ctx context.Context, target *url.URL, key health.Heal
 			continue
 		}
 		stats.Tick(now, cfg.Health)
-		score := computeScore(entry, host, r.inflightFor(entry.Hash), weights).Total
-		switch stats.StateOf() {
+		snapshot := stats.Snapshot()
+		quota := health.QuotaFreshness(snapshot.RateWindow, now)
+		score := computeScore(entry, host, r.inflightFor(entry.Hash), weights, quota).Total
+		switch snapshot.State {
 		case health.Active:
-			if snapshot := stats.Snapshot(); snapshot.PendingReverify {
+			if snapshot.PendingReverify {
 				score *= 0.5
 			}
 			buckets.active = append(buckets.active, pick{entry: entry, score: score})
