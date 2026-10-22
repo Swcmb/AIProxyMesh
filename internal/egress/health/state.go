@@ -492,6 +492,9 @@ func (s *KeyStats) Apply(obs Observation, cfg Config, now time.Time) Transition 
 }
 
 func (s *KeyStats) applyEvidence(obs Observation, cfg Config, now time.Time) {
+	if obs.Kind != OutcomeNotFound {
+		s.NotFoundCount = 0
+	}
 	if obs.ValidRequired {
 		s.ValidRequired = true
 	}

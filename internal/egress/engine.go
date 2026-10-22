@@ -104,7 +104,7 @@ func New(opts Options) (*Engine, error) {
 	}
 	outboundManager.SetFactory(factory)
 	router := routing.New(nodePool, outboundManager, routerConfig(cfg), logger)
-	environment := health.NewEnvironment(cfg.Bootstrap.EnvironmentConfig(), time.Now())
+	environment := health.NewEnvironment(environmentConfig(cfg), time.Now())
 	router.SetEnvironment(environment)
 	prober := probe.New(nodePool, outboundManager, probeConfig(cfg, opts.Upstream), logger)
 	scheduler := probe.NewScheduler(nodePool, schedulerConfig(cfg, opts.Upstream), logger)
@@ -193,6 +193,21 @@ func (e *Engine) Start(parent context.Context) {
 	e.wg.Add(1)
 	go func() {
 		defer e.wg.Done()
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-e.ctx.Done():
+				return
+			case now := <-ticker.C:
+				e.router.SweepPending(now)
+			}
+		}
+	}()
+
+	e.wg.Add(1)
+	go func() {
+		defer e.wg.Done()
 		for {
 			select {
 			case <-e.ctx.Done():
@@ -247,6 +262,10 @@ func (e *Engine) Close() error {
 			e.cancel()
 		}
 		e.wg.Wait()
+		if dropped := e.router.DropPending(); dropped > 0 && e.logger != nil {
+			e.logger.Info("egress pending observations dropped on shutdown",
+				"component", "egress", "event", "health_observations_dropped", "count", dropped)
+		}
 		saveCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		if saveErr := e.save(saveCtx); saveErr != nil {
 			err = saveErr
@@ -285,7 +304,7 @@ func (e *Engine) Apply(egress *config.EgressConfig, upstream config.UpstreamConf
 		}
 	}
 	if e.environment != nil {
-		e.environment.Configure(egress.Bootstrap.EnvironmentConfig())
+		e.environment.Configure(environmentConfig(egress))
 	}
 	e.router.Configure(routerConfig(egress))
 	e.probe.Configure(probeConfig(egress, upstream))
@@ -733,7 +752,7 @@ func (e *Engine) restoreHealth(ctx context.Context) error {
 		return err
 	}
 	if ok {
-		environment := health.RestoreEnvironment(snapshot, current.egress.Bootstrap.EnvironmentConfig())
+		environment := health.RestoreEnvironment(snapshot, environmentConfig(current.egress))
 		e.environment = environment
 		e.router.SetEnvironment(environment)
 	}
@@ -859,6 +878,16 @@ func (e *Engine) saveHealth(ctx context.Context) error {
 	return e.store.SaveRegionBlocks(ctx, blockRecords)
 }
 
+// environmentConfig applies probe.target_pause_seconds to the environment
+// classifier so scheduling and 404 pauses share one duration.
+func environmentConfig(cfg *config.EgressConfig) health.EnvironmentConfig {
+	result := cfg.Bootstrap.EnvironmentConfig()
+	if cfg.Probe.TargetPauseSeconds > 0 {
+		result.TargetPause = time.Duration(cfg.Probe.TargetPauseSeconds) * time.Second
+	}
+	return result
+}
+
 func schedulerConfig(cfg *config.EgressConfig, upstream config.UpstreamConfig) probe.ScheduleConfig {
 	healthCfg := cfg.Health.HealthKeyConfig()
 	return probe.ScheduleConfig{
@@ -922,6 +951,9 @@ func routerConfig(cfg *config.EgressConfig) routing.Config {
 	result.MaxKeysPerNode = cfg.Health.MaxKeysPerNode
 	result.MaxPendingKeys = cfg.Health.MaxPendingKeys
 	result.RouteSampleSize = cfg.Health.RouteSampleSize
+	result.FailureGrace = cfg.Bootstrap.FailureGrace()
+	result.MaxPendingObservations = cfg.Health.MaxPendingObservations
+	result.TargetPause = time.Duration(cfg.Probe.TargetPauseSeconds) * time.Second
 	if cfg.Health.ColdStartFallback != nil {
 		result.ColdStartFallback = *cfg.Health.ColdStartFallback
 	}

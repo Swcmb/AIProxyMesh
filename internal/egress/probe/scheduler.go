@@ -445,6 +445,11 @@ func (s *Scheduler) applyResult(task *scheduleTask, cfg ScheduleConfig, result C
 	}
 	table := task.entry.HealthTable(cfg.MaxKeysPerNode, 10000)
 	table.Apply(task.key, observation, cfg.Health, time.Now())
+	if result.Status == 404 {
+		if env := s.env.Load(); env != nil && cfg.TargetPause > 0 {
+			env.PauseTarget(task.key.Target, time.Now().Add(cfg.TargetPause))
+		}
+	}
 }
 
 func (s *Scheduler) takeToken(cfg ScheduleConfig, now time.Time) bool {

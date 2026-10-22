@@ -368,6 +368,8 @@ func healthObservation(key health.HealthKey, outcome Outcome) health.Observation
 		obs.Kind = health.OutcomeEnvironmentFailure
 	case EnvironmentSlow:
 		obs.Kind = health.OutcomeEnvironmentSlow
+	case NotFound:
+		obs.Kind = health.OutcomeNotFound
 	case InferenceTimeout:
 		obs.Kind = health.OutcomeInvalidInference
 		obs.Status = http.StatusOK
@@ -383,6 +385,16 @@ func healthObservation(key health.HealthKey, outcome Outcome) health.Observation
 // applyHealth writes one observation into the key's table and reports local
 // transport failures to the environment classifier.
 func (r *Router) applyHealth(attempt *Attempt, outcome Outcome, now time.Time) {
+	r.applyHealthWithEnv(attempt, outcome, now, true)
+}
+
+// applyHealthOnly writes key evidence without re-reporting the local failure;
+// the staging queue already reported it when it was enqueued.
+func (r *Router) applyHealthOnly(attempt *Attempt, outcome Outcome, now time.Time) {
+	r.applyHealthWithEnv(attempt, outcome, now, false)
+}
+
+func (r *Router) applyHealthWithEnv(attempt *Attempt, outcome Outcome, now time.Time, reportEnv bool) {
 	if attempt == nil || attempt.entry == nil || !attempt.Key.Valid() {
 		return
 	}
@@ -394,17 +406,19 @@ func (r *Router) applyHealth(attempt *Attempt, outcome Outcome, now time.Time) {
 	if env != nil && env.Frozen() {
 		return
 	}
-	if outcome.Kind == BootstrapFailure {
-		if env != nil {
-			env.ReportBootstrapProbe(false, 0, now)
-		}
-	} else if outcome.Kind == ProxyFailure && !outcome.Bootstrap {
-		if env != nil {
-			env.ReportTransportFailure(attempt.NodeID, attempt.Key.Target, now)
-		}
-	} else if outcome.Kind == Success {
-		if env != nil {
-			env.ReportTransportSuccess(now)
+	if reportEnv {
+		if outcome.Kind == BootstrapFailure {
+			if env != nil {
+				env.ReportBootstrapProbe(false, 0, now)
+			}
+		} else if outcome.Kind == ProxyFailure && !outcome.Bootstrap {
+			if env != nil {
+				env.ReportTransportFailure(attempt.NodeID, attempt.Key.Target, now)
+			}
+		} else if outcome.Kind == Success {
+			if env != nil {
+				env.ReportTransportSuccess(now)
+			}
 		}
 	}
 	table := attempt.entry.HealthTable(cfg.MaxKeysPerNode, cfg.MaxPendingKeys)

@@ -24,6 +24,8 @@ import (
 
 func boolPtr(v bool) *bool { return &v }
 
+func intPtr(v int) *int { return &v }
+
 func testConfig(zenURL string, zenKeys []string) config.Config {
 	cfg := config.Config{
 		Listen:     "127.0.0.1:0",
@@ -59,7 +61,9 @@ func testEgressEngine(t *testing.T, cfg config.Config, legacy string) *egress.En
 			Protocols: config.EgressProtocols{
 				HTTP: boolPtr(true), HTTPS: boolPtr(true), SOCKS5: boolPtr(true), SOCKS5H: boolPtr(true),
 			},
-			Cooldown:          config.EgressCooldown{BaseSeconds: 30, MaxSeconds: 900, RecoveryProbe: boolPtr(true)},
+			Cooldown: config.EgressCooldown{BaseSeconds: 30, MaxSeconds: 900, RecoveryProbe: boolPtr(true)},
+			// These tests assert immediate cooldown; staging has unit tests.
+			Bootstrap:         config.EgressBootstrap{FailureGraceSeconds: intPtr(0)},
 			Failover:          config.EgressFailover{HonorRetryAfter: boolPtr(true)},
 			Probe:             config.EgressProbe{IntervalSeconds: 60, TimeoutSeconds: 1, Concurrency: 2},
 			StatePath:         filepath.Join(t.TempDir(), "egress.db"),

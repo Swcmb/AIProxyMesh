@@ -79,8 +79,9 @@ func applyBootstrapDefaults(b *EgressBootstrap) {
 	if b.BootstrapLatencyBudgetMS == 0 {
 		b.BootstrapLatencyBudgetMS = 3000
 	}
-	if b.FailureGraceSeconds == 0 {
-		b.FailureGraceSeconds = 60
+	if b.FailureGraceSeconds == nil {
+		value := 60
+		b.FailureGraceSeconds = &value
 	}
 	if b.LocalFailureThreshold == 0 {
 		b.LocalFailureThreshold = 0.3
@@ -294,7 +295,7 @@ func validateBootstrap(b *EgressBootstrap) error {
 	if b.BootstrapLatencyBudgetMS < 100 || b.BootstrapLatencyBudgetMS > 60000 {
 		return errors.New("egress.bootstrap.bootstrap_latency_budget_ms must be between 100 and 60000")
 	}
-	if b.FailureGraceSeconds < 0 || b.FailureGraceSeconds > 600 {
+	if *b.FailureGraceSeconds < 0 || *b.FailureGraceSeconds > 600 {
 		return errors.New("egress.bootstrap.failure_grace_seconds must be 0-600")
 	}
 	if b.LocalFailureThreshold < 0.1 || b.LocalFailureThreshold > 1 {
@@ -465,12 +466,20 @@ func (h *EgressHealth) HealthKeyConfig() health.Config {
 	}
 }
 
+// FailureGrace returns the staging window, defaulting an unset value to 60s.
+func (b *EgressBootstrap) FailureGrace() time.Duration {
+	if b == nil || b.FailureGraceSeconds == nil {
+		return 60 * time.Second
+	}
+	return time.Duration(*b.FailureGraceSeconds) * time.Second
+}
+
 // EnvironmentConfig converts bootstrap settings into the health form.
 func (b *EgressBootstrap) EnvironmentConfig() health.EnvironmentConfig {
 	return health.EnvironmentConfig{
 		ProbeFailureThreshold:  b.ProbeFailureThreshold,
 		BootstrapLatencyBudget: time.Duration(b.BootstrapLatencyBudgetMS) * time.Millisecond,
-		FailureGrace:           time.Duration(b.FailureGraceSeconds) * time.Second,
+		FailureGrace:           b.FailureGrace(),
 		LocalFailureThreshold:  b.LocalFailureThreshold,
 		LocalFailureWindow:     time.Duration(b.LocalFailureWindowSeconds) * time.Second,
 		TargetPause:            60 * time.Second,
