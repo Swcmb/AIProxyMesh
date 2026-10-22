@@ -3,7 +3,6 @@ package state
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -16,107 +15,12 @@ type HealthRecord struct {
 	Stats    health.KeyStats
 }
 
-// SaveHealthKeys upserts the given records in one transaction. The core
-// columns stay queryable; payload_json preserves the full statistical state so
-// a restart resumes from the same evidence.
-func (s *Store) SaveHealthKeys(ctx context.Context, records []HealthRecord) error {
-	if len(records) == 0 {
-		return nil
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("egress state: begin health tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO egress_health_keys (
-			node_hash, target, model, protocol, mode, valid_required, state,
-			http_success, http_failure, valid_success, valid_failure,
-			primary_success, primary_failure, last_success_at, last_failure_at,
-			last_reachable_at, active_epoch, environment_epoch, pending_reverify,
-			reverify_success, next_probe_at, state_version, payload_json, updated_at
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-		ON CONFLICT(node_hash, target, model, protocol, mode) DO UPDATE SET
-			valid_required = excluded.valid_required,
-			state = excluded.state,
-			http_success = excluded.http_success,
-			http_failure = excluded.http_failure,
-			valid_success = excluded.valid_success,
-			valid_failure = excluded.valid_failure,
-			primary_success = excluded.primary_success,
-			primary_failure = excluded.primary_failure,
-			last_success_at = excluded.last_success_at,
-			last_failure_at = excluded.last_failure_at,
-			last_reachable_at = excluded.last_reachable_at,
-			active_epoch = excluded.active_epoch,
-			environment_epoch = excluded.environment_epoch,
-			pending_reverify = excluded.pending_reverify,
-			reverify_success = excluded.reverify_success,
-			next_probe_at = excluded.next_probe_at,
-			state_version = excluded.state_version,
-			payload_json = excluded.payload_json,
-			updated_at = excluded.updated_at
-		WHERE excluded.state_version >= egress_health_keys.state_version`)
-	if err != nil {
-		return fmt.Errorf("egress state: prepare health upsert: %w", err)
-	}
-	defer stmt.Close()
-	now := time.Now()
-	for _, record := range records {
-		snapshot := record.Stats
-		payload, err := json.Marshal(snapshot)
-		if err != nil {
-			return fmt.Errorf("egress state: encode health key: %w", err)
-		}
-		key := snapshot.Key
-		_, err = stmt.ExecContext(ctx, record.NodeHash, key.Target, key.Model, key.Protocol, key.Mode,
-			boolInt(snapshot.ValidRequired), string(snapshot.State),
-			snapshot.HTTP200Success, snapshot.HTTP200Failure, snapshot.ValidSuccess, snapshot.ValidFailure,
-			snapshot.PrimarySuccess, snapshot.PrimaryFailure,
-			timeNanos(snapshot.LastSuccessAt), timeNanos(snapshot.LastFailureAt),
-			timeNanos(snapshot.LastReachableAt), snapshot.ActiveEpoch, snapshot.EnvironmentEpoch,
-			boolInt(snapshot.PendingReverify), snapshot.ReverifySuccess, timeNanos(snapshot.NextProbeAt),
-			snapshot.StateVersion, string(payload), now.UnixNano())
-		if err != nil {
-			return fmt.Errorf("egress state: upsert health key: %w", err)
-		}
-	}
-	return tx.Commit()
-}
-
-// LoadHealthKeys restores every persisted health key.
-func (s *Store) LoadHealthKeys(ctx context.Context) ([]HealthRecord, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT node_hash, target, model, protocol, mode, valid_required, state, payload_json
-		FROM egress_health_keys`)
-	if err != nil {
-		return nil, fmt.Errorf("egress state: load health keys: %w", err)
-	}
-	defer rows.Close()
-	var out []HealthRecord
-	for rows.Next() {
-		var (
-			nodeHash, target, model, protocol, mode, state string
-			validRequired                                  int
-			payload                                        string
-		)
-		if err := rows.Scan(&nodeHash, &target, &model, &protocol, &mode, &validRequired, &state, &payload); err != nil {
-			return nil, fmt.Errorf("egress state: scan health key: %w", err)
-		}
-		record := HealthRecord{NodeHash: nodeHash}
-		if payload != "" {
-			if err := json.Unmarshal([]byte(payload), &record.Stats); err != nil {
-				return nil, fmt.Errorf("egress state: decode health key: %w", err)
-			}
-		}
-		if record.Stats.Key.Target == "" {
-			record.Stats.Key = health.HealthKey{Target: target, Model: model, Protocol: protocol, Mode: mode}
-			record.Stats.ValidRequired = validRequired != 0
-			record.Stats.State = health.State(state)
-		}
-		out = append(out, record)
-	}
-	return out, rows.Err()
+// HealthLoadStats reports how a health-key table was restored.
+type HealthLoadStats struct {
+	Loaded  int
+	Payload int
+	Columns int
+	Skipped int
 }
 
 // SaveEnvironment persists the single environment row.

@@ -715,9 +715,15 @@ func (e *Engine) restoreHealth(ctx context.Context) error {
 	}
 	cfg := current.egress.Health.HealthKeyConfig()
 	now := time.Now()
-	records, err := e.store.LoadHealthKeys(ctx)
+	records, loadStats, err := e.store.LoadHealthKeys(ctx, cfg)
 	if err != nil {
 		return err
+	}
+	if loadStats.Skipped > 0 && e.logger != nil {
+		e.logger.Warn("egress health keys skipped during restore",
+			"component", "egress", "event", "health_keys_skipped",
+			"loaded", loadStats.Loaded, "skipped", loadStats.Skipped,
+			"payload", loadStats.Payload, "columns", loadStats.Columns)
 	}
 	rebuild := make(map[health.HealthKey][]routing.RebuildEntry)
 	for _, record := range records {
