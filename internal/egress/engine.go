@@ -652,7 +652,72 @@ func (e *Engine) restore(ctx context.Context) error {
 		}
 		e.pool.Restore(entry, record.Subscriptions, record.Enabled)
 	}
+	if err := e.restoreHealth(ctx); err != nil {
+		return err
+	}
 	return nil
+}
+
+// restoreHealth reloads key evidence, the environment epoch and the scheduler
+// cursor. A restart resumes from the same statistics instead of cold-starting.
+func (e *Engine) restoreHealth(ctx context.Context) error {
+	current := e.settings.Load()
+	if current == nil || current.egress == nil {
+		return nil
+	}
+	cfg := current.egress.Health.HealthKeyConfig()
+	now := time.Now()
+	records, err := e.store.LoadHealthKeys(ctx)
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
+		hash, err := node.ParseHex(record.NodeHash)
+		if err != nil {
+			continue
+		}
+		entry := e.pool.Get(hash)
+		if entry == nil {
+			continue
+		}
+		table := entry.HealthTable(current.egress.Health.MaxKeysPerNode, current.egress.Health.MaxPendingKeys)
+		table.Upsert(health.FromSnapshot(record.Stats, cfg, now))
+	}
+	snapshot, ok, err := e.store.LoadEnvironment(ctx)
+	if err != nil {
+		return err
+	}
+	if ok {
+		environment := health.RestoreEnvironment(snapshot, current.egress.Bootstrap.EnvironmentConfig())
+		e.environment = environment
+		e.router.SetEnvironment(environment)
+	}
+	if e.environment != nil {
+		e.environment.OnEpoch(e.applyEnvironmentEpoch)
+	}
+	return nil
+}
+
+// applyEnvironmentEpoch resets admission evidence after local connectivity
+// recovers. ACTIVE keeps routing but must re-verify in the new epoch.
+func (e *Engine) applyEnvironmentEpoch(epoch uint64) {
+	current := e.settings.Load()
+	if current == nil || current.egress == nil {
+		return
+	}
+	cfg := current.egress.Health.HealthKeyConfig()
+	now := time.Now()
+	for _, entry := range e.pool.List() {
+		table := entry.ExistingHealthTable()
+		if table == nil {
+			continue
+		}
+		for _, record := range table.Snapshot() {
+			if stats := table.Get(record.Key); stats != nil {
+				stats.MarkEnvironmentEpoch(epoch, cfg, now)
+			}
+		}
+	}
 }
 
 func (e *Engine) save(ctx context.Context) error {
@@ -699,6 +764,45 @@ func (e *Engine) save(ctx context.Context) error {
 		return err
 	}
 	_ = e.store.PruneEvents(ctx, 5000)
+	return nil
+}
+
+// saveHealth flushes non-candidate keys, bounded by max_dirty_rows.
+func (e *Engine) saveHealth(ctx context.Context) error {
+	current := e.settings.Load()
+	if current == nil || current.egress == nil {
+		return nil
+	}
+	limit := current.egress.Health.MaxDirtyRows
+	if limit <= 0 {
+		limit = 5000
+	}
+	records := make([]state.HealthRecord, 0, min(limit, 1024))
+	for _, entry := range e.pool.List() {
+		table := entry.ExistingHealthTable()
+		if table == nil {
+			continue
+		}
+		for _, snapshot := range table.Snapshot() {
+			if snapshot.State == health.Candidate && snapshot.HTTP200Success+snapshot.HTTP200Failure == 0 &&
+				snapshot.LastReachableAt.IsZero() {
+				continue
+			}
+			records = append(records, state.HealthRecord{NodeHash: entry.ID(), Stats: snapshot})
+			if len(records) >= limit {
+				break
+			}
+		}
+		if len(records) >= limit {
+			break
+		}
+	}
+	if err := e.store.SaveHealthKeys(ctx, records); err != nil {
+		return err
+	}
+	if e.environment != nil {
+		return e.store.SaveEnvironment(ctx, e.environment.Snapshot())
+	}
 	return nil
 }
 

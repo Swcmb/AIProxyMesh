@@ -289,6 +289,12 @@ func healthObservation(key health.HealthKey, outcome Outcome) health.Observation
 		obs.Kind = health.OutcomeEnvironmentFailure
 	case EnvironmentSlow:
 		obs.Kind = health.OutcomeEnvironmentSlow
+	case InferenceTimeout:
+		obs.Kind = health.OutcomeInvalidInference
+		obs.Status = http.StatusOK
+		obs.HeadersReceived = true
+		obs.ValidKnown = true
+		obs.ValidInference = false
 	default:
 		obs.Kind = health.OutcomeNeutral
 	}

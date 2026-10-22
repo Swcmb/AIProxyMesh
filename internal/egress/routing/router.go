@@ -489,6 +489,7 @@ const (
 	BootstrapFailure   OutcomeKind = "bootstrap_failure"
 	EnvironmentFailure OutcomeKind = "environment_failure"
 	EnvironmentSlow    OutcomeKind = "environment_degraded"
+	InferenceTimeout   OutcomeKind = "inference_timeout"
 )
 
 // Outcome is the raw attempt result reported by the gateway.
@@ -531,9 +532,9 @@ func (r *Router) report(attempt *Attempt, outcome Outcome) Classification {
 	if attempt.Direct {
 		outcome.Direct = true
 	}
-	r.applyHealth(attempt, outcome, now)
 
 	result := Classification{Kind: outcome.Kind}
+outcomeSwitch:
 	switch outcome.Kind {
 	case Success:
 		entry.RecordSuccess()
@@ -566,7 +567,7 @@ func (r *Router) report(attempt *Attempt, outcome Outcome) Classification {
 			result.UpstreamWide = true
 			result.Retryable = true
 			result.Reason = "upstream_consensus"
-			return result
+			break outcomeSwitch
 		}
 		until := r.cooldown(entry, outcome.RetryAfter, cfg, now, fmt.Sprintf("exit_class_%d", class))
 		result.NodeCooldown = &until
@@ -583,7 +584,7 @@ func (r *Router) report(attempt *Attempt, outcome Outcome) Classification {
 			result.UpstreamWide = true
 			result.Retryable = true
 			result.Reason = "upstream_consensus"
-			return result
+			break outcomeSwitch
 		}
 		if r.tracker.RecentSuccessByOther(attempt.Target, entry.ID(), now) {
 			// Another exit reached the same upstream recently, so this failure
@@ -611,6 +612,11 @@ func (r *Router) report(attempt *Attempt, outcome Outcome) Classification {
 		result.Retryable = true
 		result.Reason = "region_blocked"
 
+	case InferenceTimeout:
+		entry.RecordNetworkResult(true)
+		result.Retryable = true
+		result.Reason = "inference_timeout"
+
 	case ClientCancel:
 		result.Reason = "client_cancel"
 
@@ -630,6 +636,9 @@ func (r *Router) report(attempt *Attempt, outcome Outcome) Classification {
 	default:
 		result.Reason = "unknown_outcome"
 	}
+	outcome.Kind = result.Kind
+	outcome.UpstreamWide = result.UpstreamWide
+	r.applyHealth(attempt, outcome, now)
 	return result
 }
 

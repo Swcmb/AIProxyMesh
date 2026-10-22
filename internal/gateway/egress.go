@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -9,6 +10,8 @@ import (
 	"time"
 
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/config"
+	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/bootstrap"
+	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/health"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/routing"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/state"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/identity"
@@ -33,8 +36,44 @@ func (g *Gateway) egressTarget(baseURL string) (*url.URL, error) {
 	return parsed, nil
 }
 
-func (g *Gateway) selectEgress(ctx context.Context, target *url.URL, exclude map[string]struct{}, affinity string) (*routing.Attempt, error) {
-	attempt, err := g.egress.Router().SelectAffinity(ctx, target, exclude, affinity)
+// requestMode derives the health-key mode from the actual upstream body.
+func requestMode(body []byte) string {
+	var probe struct {
+		Stream *bool `json:"stream"`
+	}
+	if err := json.Unmarshal(body, &probe); err == nil && probe.Stream != nil {
+		if *probe.Stream {
+			return health.ModeStream
+		}
+		return health.ModeJSON
+	}
+	return health.ModeJSON
+}
+
+// healthKeyFor builds the concrete key one attempt will observe.
+func healthKeyFor(baseURL string, route models.Route, tier config.Tier, body []byte) health.HealthKey {
+	key, err := health.NewKey(baseURL, route.ID, string(route.ProtocolFor(tier)), requestMode(body))
+	if err != nil {
+		return health.HealthKey{}
+	}
+	return key
+}
+
+func (g *Gateway) healthMaxPeek() int {
+	if g.cfg.Egress != nil && g.cfg.Egress.Health.MaxValidPeekBytes > 0 {
+		return g.cfg.Egress.Health.MaxValidPeekBytes
+	}
+	return 8192
+}
+
+func (g *Gateway) selectEgress(ctx context.Context, target *url.URL, key health.HealthKey, exclude map[string]struct{}, affinity string) (*routing.Attempt, error) {
+	var attempt *routing.Attempt
+	var err error
+	if key.Valid() {
+		attempt, err = g.egress.Router().SelectKey(ctx, target, key, exclude, affinity)
+	} else {
+		attempt, err = g.egress.Router().SelectAffinity(ctx, target, exclude, affinity)
+	}
 	if err != nil {
 		if errors.Is(err, routing.ErrNoEligible) {
 			return nil, fmt.Errorf("%w: %v", errProxyUnavailable, err)
@@ -52,6 +91,14 @@ func classifyEgressOutcome(ctx context.Context, resp *http.Response, err error, 
 		return routing.Outcome{Kind: routing.ClientCancel, Err: ctx.Err()}
 	}
 	if err != nil {
+		if errors.Is(err, bootstrap.ErrUnavailable) {
+			return routing.Outcome{Kind: routing.BootstrapFailure, Err: err}
+		}
+		if errors.Is(err, errFirstEventTimeout) || upstreamAccepted(err) {
+			// The upstream accepted the request; a slow first event is not a
+			// broken proxy and must not cool the node.
+			return routing.Outcome{Kind: routing.InferenceTimeout, StatusCode: http.StatusOK, HeadersReceived: true, Err: err}
+		}
 		kind := routing.ProxyFailure
 		if direct {
 			kind = routing.UpstreamFailure
@@ -98,10 +145,16 @@ func (g *Gateway) reportEgressAttempt(
 	attempt *routing.Attempt,
 	resp *http.Response,
 	attemptErr error,
+	verdict inferenceVerdict,
 	duration time.Duration,
 ) routing.Classification {
 	attempt.KeyID = keyID
 	outcome := classifyEgressOutcome(ctx, resp, attemptErr, attempt.ProxyURL == nil, g.honorRetryAfter())
+	outcome.ValidInference = verdict.Valid
+	outcome.ValidKnown = verdict.Known
+	if resp != nil {
+		outcome.HeadersReceived = true
+	}
 	if resp != nil && resp.StatusCode == http.StatusForbidden && attempt.ProxyURL != nil && geoBlockedResponse(resp) {
 		// A country rejection is not a dead exit: rotate to another region and
 		// hide this country for the target instead of cooling the node.
