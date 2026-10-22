@@ -2,7 +2,7 @@
 
 本仓库是一个自包含的单一产品仓库：仓库根目录即 Go 模块根，包含完整源码、前端、测试与发布配置，没有任何子模块。
 
-- 根目录：Go 模块（`github.com/Swcmb/AIProxyMesh/mesh`，Go 1.25.5），提供 OpenCode API 网关、统一代理出口池、模型排名与轮转。单二进制、单 Docker 镜像、内嵌 React WebUI。
+- 根目录：Go 模块（`github.com/Swcmb/AIProxyMesh/mesh`，Go 1.26.10），提供 OpenCode API 网关、统一代理出口池、模型排名与轮转。单二进制、单 Docker 镜像、内嵌 React WebUI。
 
 ## 构建与测试（在仓库根目录执行）
 

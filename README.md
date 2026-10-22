@@ -41,7 +41,7 @@ go install github.com/Swcmb/AIProxyMesh/mesh/cmd/mesh@latest
 
 ### 源码构建
 
-需要 Go 1.25.5+；修改前端时需要 Node.js 24+。
+需要 Go 1.26.10+；修改前端时需要 Node.js 24+。
 
 ```bash
 cd webui && npm ci && npm run build   # 产物写入 internal/webui/dist 并嵌入 Go
@@ -123,7 +123,7 @@ G ∈ {0,1}                          # 硬性准入
 
 ## CI 与自动更新
 
-- `.github/workflows/checks.yml`：Ubuntu/Windows × Go 1.25.x/stable 的 vet/build 矩阵、gofmt、WebUI 构建、test/race、Chromium + Firefox E2E。
+- `.github/workflows/checks.yml`：Ubuntu/Windows × Go 1.26.x/stable 的 vet/build 矩阵、gofmt、WebUI 构建、test/race、Chromium + Firefox E2E。
 - `.github/workflows/release.yml`：`v*` 标签构建六平台产物、GHCR 多架构镜像、GitHub Release，并发布 `@swcmb/mesh` 及平台二进制包到 npm（OIDC provenance）。
 - `.github/workflows/update-dependencies.yml`：每天更新 Go 补丁依赖与前端依赖，验证后推送 `main` 并显式触发 checks。
 - `.github/workflows/upstream-sync.yml`：每天同步上游 opencode2api / Resin 变更，干净改动开草稿 PR，冲突记 Issue。

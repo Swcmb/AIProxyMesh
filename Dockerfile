@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 ARG NODE_IMAGE=node:24-alpine
-ARG GO_IMAGE=golang:1.25.5-alpine
+ARG GO_IMAGE=golang:1.26.10-alpine
 ARG RUNTIME_IMAGE=alpine:3.21
 
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS webui
