@@ -5,10 +5,10 @@ ARG GO_IMAGE=golang:1.26.10-alpine
 ARG RUNTIME_IMAGE=alpine:3.21
 
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS webui
-ARG NPM_REGISTRY=https://registry.npmmirror.com
+ARG NPM_REGISTRY=https://registry.npmjs.org
 WORKDIR /src
 COPY webui/package.json webui/package-lock.json ./webui/
-RUN cd webui && npm ci --no-audit --no-fund --registry=${NPM_REGISTRY}
+RUN cd webui && npm ci --no-audit --no-fund --fetch-retries=5 --fetch-retry-mintimeout=1000 --registry=${NPM_REGISTRY}
 COPY webui/ ./webui/
 RUN cd webui && npm run build
 
