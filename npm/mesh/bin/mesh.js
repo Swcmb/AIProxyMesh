@@ -8,12 +8,12 @@ const binaryName = process.platform === "win32" ? "mesh.exe" : "mesh";
 let target = process.env.MESH_BIN;
 
 if (!target) {
-  const pkg = `@swcmb/mesh-${process.platform}-${process.arch}`;
+  const pkg = `@ianwusb/mesh-${process.platform}-${process.arch}`;
   try {
     target = require.resolve(`${pkg}/bin/${binaryName}`);
   } catch {
     console.error(`mesh: 未找到 ${process.platform}-${process.arch} 的平台包 ${pkg}。`);
-    console.error("请重新安装 @swcmb/mesh，或用环境变量 MESH_BIN 指定 mesh 可执行文件路径。");
+    console.error("请重新安装 @ianwusb/mesh，或用环境变量 MESH_BIN 指定 mesh 可执行文件路径。");
     process.exit(1);
   }
 }

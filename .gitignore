@@ -17,6 +17,7 @@
 /mesh.exe
 /bin/
 /coverage.out
+/npm/out/
 
 # 前端依赖与本地构建输出（内嵌产物 internal/webui/dist 必须入库，供 go build 使用）
 webui/node_modules/

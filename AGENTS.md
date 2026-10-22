@@ -49,7 +49,7 @@ docker build -t mesh:local .
 
 ## CI 与自动化
 
-- `.github/workflows/checks.yml`、`release.yml`：Go 矩阵、test/race、WebUI 构建（checks 还包含 Chromium + Firefox 的 Playwright E2E）；`v*` 标签发布六平台二进制、GHCR 镜像与 npm 包（`@swcmb/mesh` 主包 + 六平台二进制包，OIDC provenance 或 `NPM_TOKEN`）。
+- `.github/workflows/checks.yml`、`release.yml`：Go 矩阵、test/race、WebUI 构建（checks 还包含 Chromium + Firefox 的 Playwright E2E）；`v*` 标签发布六平台二进制、GHCR 镜像与 npm 包（`@ianwusb/mesh` 主包 + 六平台二进制包，npm 个人 scope `@ianwusb`，OIDC provenance 或 `NPM_TOKEN`）。
 - `.github/workflows/update-dependencies.yml`：每天更新 Go 补丁依赖与前端依赖；有变化时推送 `main` 并显式触发 checks。
 - `.github/workflows/upstream-sync.yml` + `.github/scripts/upstream-sync.sh`：每天拉取 opencode2api / Resin，逐文件尝试 `git apply --3way`，干净的改动开草稿 PR，冲突写带 `upstream-sync` 标签的 Issue；状态在 `project-context/upstream-state.json`。
 - `.github/workflows/version-bump.yml`：带 `upstream-sync` 标签的 PR 合入后按保守规则升版、打 `v*` 标签，并显式分发 release 与 checks（`GITHUB_TOKEN` 推送不会触发工作流）。

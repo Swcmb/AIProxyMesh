@@ -14,7 +14,7 @@
 ### npm
 
 ```bash
-npm install -g @swcmb/mesh
+npm install -g @ianwusb/mesh
 mesh -config config.json
 ```
 
@@ -124,7 +124,7 @@ G ∈ {0,1}                          # 硬性准入
 ## CI 与自动更新
 
 - `.github/workflows/checks.yml`：Ubuntu/Windows × Go 1.26.x/stable 的 vet/build 矩阵、gofmt、WebUI 构建、test/race、Chromium + Firefox E2E。
-- `.github/workflows/release.yml`：`v*` 标签构建六平台产物、GHCR 多架构镜像、GitHub Release，并发布 `@swcmb/mesh` 及平台二进制包到 npm（OIDC provenance）。
+- `.github/workflows/release.yml`：`v*` 标签构建六平台产物、GHCR 多架构镜像、GitHub Release，并发布 `@ianwusb/mesh` 及平台二进制包到 npm（OIDC provenance）。
 - `.github/workflows/update-dependencies.yml`：每天更新 Go 补丁依赖与前端依赖，验证后推送 `main` 并显式触发 checks。
 - `.github/workflows/upstream-sync.yml`：每天同步上游 opencode2api / Resin 变更，干净改动开草稿 PR，冲突记 Issue。
 - 失败邮件：仓库 Secrets 配置 `SMTP_SERVER`、`SMTP_USERNAME`、`SMTP_PASSWORD`、`NOTIFY_EMAIL`（可选 `SMTP_PORT`、`SMTP_SECURE`、`SMTP_FROM`）。npm 发布可配置 `NPM_TOKEN`，未配置时使用 npm 平台的 GitHub Actions 可信发布。
