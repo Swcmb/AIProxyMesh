@@ -104,7 +104,7 @@ func New(opts Options) (*Engine, error) {
 	}
 	outboundManager.SetFactory(factory)
 	router := routing.New(nodePool, outboundManager, routerConfig(cfg), logger)
-	environment := health.NewEnvironment(cfg.Bootstrap.EnvironmentConfig(), time.Now())
+	environment := health.NewEnvironment(environmentConfig(cfg), time.Now())
 	router.SetEnvironment(environment)
 	prober := probe.New(nodePool, outboundManager, probeConfig(cfg, opts.Upstream), logger)
 	scheduler := probe.NewScheduler(nodePool, schedulerConfig(cfg, opts.Upstream), logger)
@@ -193,6 +193,21 @@ func (e *Engine) Start(parent context.Context) {
 	e.wg.Add(1)
 	go func() {
 		defer e.wg.Done()
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-e.ctx.Done():
+				return
+			case now := <-ticker.C:
+				e.router.SweepPending(now)
+			}
+		}
+	}()
+
+	e.wg.Add(1)
+	go func() {
+		defer e.wg.Done()
 		for {
 			select {
 			case <-e.ctx.Done():
@@ -247,7 +262,11 @@ func (e *Engine) Close() error {
 			e.cancel()
 		}
 		e.wg.Wait()
-		saveCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if dropped := e.router.DropPending(); dropped > 0 && e.logger != nil {
+			e.logger.Info("egress pending observations dropped on shutdown",
+				"component", "egress", "event", "health_observations_dropped", "count", dropped)
+		}
+		saveCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		if saveErr := e.save(saveCtx); saveErr != nil {
 			err = saveErr
 		}
@@ -285,7 +304,7 @@ func (e *Engine) Apply(egress *config.EgressConfig, upstream config.UpstreamConf
 		}
 	}
 	if e.environment != nil {
-		e.environment.Configure(egress.Bootstrap.EnvironmentConfig())
+		e.environment.Configure(environmentConfig(egress))
 	}
 	e.router.Configure(routerConfig(egress))
 	e.probe.Configure(probeConfig(egress, upstream))
@@ -354,13 +373,17 @@ func (e *Engine) ProbeNodes(ctx context.Context, ids []string) int {
 
 // BatchProbeView is the management view of one asynchronous probe job.
 type BatchProbeView struct {
-	ID         string     `json:"id"`
-	Total      int        `json:"total"`
-	Done       int        `json:"done"`
-	Running    bool       `json:"running"`
-	Cancelled  bool       `json:"cancelled"`
-	StartedAt  time.Time  `json:"started_at"`
-	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	ID            string     `json:"id"`
+	Total         int        `json:"total"`
+	Done          int        `json:"done"`
+	Running       bool       `json:"running"`
+	Cancelled     bool       `json:"cancelled"`
+	TCPChecked    int        `json:"tcp_checked"`
+	TCPReachable  int        `json:"tcp_reachable"`
+	HTTPProbed    int        `json:"http_probed"`
+	HTTPReachable int        `json:"http_reachable"`
+	StartedAt     time.Time  `json:"started_at"`
+	FinishedAt    *time.Time `json:"finished_at,omitempty"`
 }
 
 type batchProbeState struct {
@@ -380,6 +403,15 @@ func (s *batchProbeState) finish() {
 	s.view.Running = false
 	now := time.Now()
 	s.view.FinishedAt = &now
+	s.mu.Unlock()
+}
+
+func (s *batchProbeState) setStats(stats probe.FastProbeStats) {
+	s.mu.Lock()
+	s.view.TCPChecked = stats.TCPChecked
+	s.view.TCPReachable = stats.TCPReachable
+	s.view.HTTPProbed = stats.HTTPProbed
+	s.view.HTTPReachable = stats.HTTPReachable
 	s.mu.Unlock()
 }
 
@@ -439,7 +471,8 @@ func (e *Engine) startBatchProbe(ids []string) (BatchProbeView, bool) {
 	e.probeMu.Unlock()
 	go func() {
 		defer cancel()
-		e.probe.ProbeBatchFast(ctx, ids, func(done, _ int) { job.setDone(done) })
+		stats := e.probe.ProbeBatchFastStats(ctx, ids, func(done, _ int) { job.setDone(done) })
+		job.setStats(stats)
 		job.finish()
 	}()
 	return job.snapshot(), true
@@ -696,9 +729,15 @@ func (e *Engine) restoreHealth(ctx context.Context) error {
 	}
 	cfg := current.egress.Health.HealthKeyConfig()
 	now := time.Now()
-	records, err := e.store.LoadHealthKeys(ctx)
+	records, loadStats, err := e.store.LoadHealthKeys(ctx, cfg)
 	if err != nil {
 		return err
+	}
+	if loadStats.Skipped > 0 && e.logger != nil {
+		e.logger.Warn("egress health keys skipped during restore",
+			"component", "egress", "event", "health_keys_skipped",
+			"loaded", loadStats.Loaded, "skipped", loadStats.Skipped,
+			"payload", loadStats.Payload, "columns", loadStats.Columns)
 	}
 	rebuild := make(map[health.HealthKey][]routing.RebuildEntry)
 	for _, record := range records {
@@ -733,7 +772,7 @@ func (e *Engine) restoreHealth(ctx context.Context) error {
 		return err
 	}
 	if ok {
-		environment := health.RestoreEnvironment(snapshot, current.egress.Bootstrap.EnvironmentConfig())
+		environment := health.RestoreEnvironment(snapshot, environmentConfig(current.egress))
 		e.environment = environment
 		e.router.SetEnvironment(environment)
 	}
@@ -859,6 +898,16 @@ func (e *Engine) saveHealth(ctx context.Context) error {
 	return e.store.SaveRegionBlocks(ctx, blockRecords)
 }
 
+// environmentConfig applies probe.target_pause_seconds to the environment
+// classifier so scheduling and 404 pauses share one duration.
+func environmentConfig(cfg *config.EgressConfig) health.EnvironmentConfig {
+	result := cfg.Bootstrap.EnvironmentConfig()
+	if cfg.Probe.TargetPauseSeconds > 0 {
+		result.TargetPause = time.Duration(cfg.Probe.TargetPauseSeconds) * time.Second
+	}
+	return result
+}
+
 func schedulerConfig(cfg *config.EgressConfig, upstream config.UpstreamConfig) probe.ScheduleConfig {
 	healthCfg := cfg.Health.HealthKeyConfig()
 	return probe.ScheduleConfig{
@@ -922,6 +971,9 @@ func routerConfig(cfg *config.EgressConfig) routing.Config {
 	result.MaxKeysPerNode = cfg.Health.MaxKeysPerNode
 	result.MaxPendingKeys = cfg.Health.MaxPendingKeys
 	result.RouteSampleSize = cfg.Health.RouteSampleSize
+	result.FailureGrace = cfg.Bootstrap.FailureGrace()
+	result.MaxPendingObservations = cfg.Health.MaxPendingObservations
+	result.TargetPause = time.Duration(cfg.Probe.TargetPauseSeconds) * time.Second
 	if cfg.Health.ColdStartFallback != nil {
 		result.ColdStartFallback = *cfg.Health.ColdStartFallback
 	}

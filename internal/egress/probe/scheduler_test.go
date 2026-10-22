@@ -3,6 +3,7 @@ package probe
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -98,5 +99,50 @@ func TestSchedulerRespectsFrozenEnvironment(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Fatalf("executor ran while frozen: %d", calls)
+	}
+}
+
+func TestSchedulerFirstEnqueueGuarantee(t *testing.T) {
+	poolInstance := pool.New(16)
+	keys := make([]health.HealthKey, 0, 4)
+	for i := 0; i < 4; i++ {
+		key, _ := health.NewKey("https://opencode.ai/zen", fmt.Sprintf("m%d", i), health.ProtocolChat, health.ModeStream)
+		keys = append(keys, key)
+	}
+	cfg := health.DefaultConfig()
+	for n := 0; n < 10; n++ {
+		options := node.Options{Type: node.HTTP, Server: "127.0.0.1", Port: uint16(19000 + n), Tag: fmt.Sprintf("n%d", n)}
+		raw, _ := json.Marshal(options)
+		entry := node.NewEntry(node.HashOptions(options), raw, options, time.Now(), 0)
+		poolInstance.Restore(entry, []string{"sub"}, true)
+		table := entry.HealthTable(4, 100)
+		for i, key := range keys {
+			stats := health.NewKeyStats(key, cfg, time.Now())
+			stats.Acquire()
+			if i == 3 {
+				stats.State = health.Open
+			} else {
+				stats.State = health.Candidate
+			}
+			stats.LastReachableAt = time.Now()
+			stats.Release()
+			table.Upsert(stats)
+		}
+	}
+	scheduler := NewScheduler(poolInstance, ScheduleConfig{
+		Enabled: true, BudgetPerSecond: 1000, Burst: 100, MaxPerScan: 10, MaxKeys: 5,
+		MaxInflight: 8, Health: cfg, MaxKeysPerNode: 4,
+		VerifyingRecheck: time.Second, ActiveRecheck: time.Hour, DeadRecheck: time.Hour,
+	}, nil)
+	scheduler.SetExecutor(func(context.Context, CanaryRequest) CanaryResult { return CanaryResult{} })
+	seen := map[string]struct{}{}
+	scheduler.SetEnqueueHook(func(id string) { seen[id] = struct{}{} })
+	now := time.Now()
+	for i := 0; i < 30; i++ {
+		now = now.Add(15 * time.Second)
+		scheduler.ScanOnce(now)
+	}
+	if len(seen) != 40 {
+		t.Fatalf("first-enqueue coverage = %d/40", len(seen))
 	}
 }

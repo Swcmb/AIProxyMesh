@@ -137,7 +137,7 @@ type EgressBootstrap struct {
 	ProbeIntervalSeconds      int     `json:"probe_interval_seconds,omitempty"`
 	ProbeFailureThreshold     int     `json:"probe_failure_threshold,omitempty"`
 	BootstrapLatencyBudgetMS  int     `json:"bootstrap_latency_budget_ms,omitempty"`
-	FailureGraceSeconds       int     `json:"failure_grace_seconds,omitempty"`
+	FailureGraceSeconds       *int    `json:"failure_grace_seconds,omitempty"`
 	LocalFailureThreshold     float64 `json:"local_failure_threshold,omitempty"`
 	LocalFailureWindowSeconds int     `json:"local_failure_window_seconds,omitempty"`
 }
@@ -421,6 +421,10 @@ func cloneEgress(in *EgressConfig) *EgressConfig {
 		out.Subscriptions[i].Protocols = append([]string(nil), in.Subscriptions[i].Protocols...)
 	}
 	out.Probe.Targets = append([]string(nil), in.Probe.Targets...)
+	if in.Bootstrap.FailureGraceSeconds != nil {
+		value := *in.Bootstrap.FailureGraceSeconds
+		out.Bootstrap.FailureGraceSeconds = &value
+	}
 	if in.Probe.CanaryEnabled != nil {
 		value := *in.Probe.CanaryEnabled
 		out.Probe.CanaryEnabled = &value

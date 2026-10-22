@@ -22,7 +22,10 @@ func testRouter(t *testing.T) (*Router, *pool.Pool) {
 	p := pool.New(16)
 	manager := outbound.NewManager(outbound.DefaultConfig())
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return New(p, manager, DefaultConfig(), logger), p
+	cfg := DefaultConfig()
+	// Legacy tests assert immediate cooldown; staging has dedicated tests.
+	cfg.FailureGrace = 0
+	return New(p, manager, cfg, logger), p
 }
 
 func addNode(p *pool.Pool, sub string, opts node.Options) *node.Entry {

@@ -111,6 +111,8 @@ func classifyEgressOutcome(ctx context.Context, resp *http.Response, err error, 
 		return routing.Outcome{Kind: routing.Success, StatusCode: status}
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
 		return routing.Outcome{Kind: routing.KeyFailure, StatusCode: status}
+	case status == http.StatusNotFound:
+		return routing.Outcome{Kind: routing.NotFound, StatusCode: status}
 	case status == http.StatusTooManyRequests:
 		outcome := routing.Outcome{Kind: routing.ExitFailure, StatusCode: status}
 		if honorRetryAfter {

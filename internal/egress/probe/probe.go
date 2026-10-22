@@ -429,10 +429,23 @@ func (m *Manager) runBatch(ctx context.Context, entries []*node.Entry, progress 
 	return int(done.Load())
 }
 
+// FastProbeStats reports the two discovery stages.
+type FastProbeStats struct {
+	TCPChecked    int
+	TCPReachable  int
+	HTTPProbed    int
+	HTTPReachable int
+}
+
 // ProbeBatchFast validates a batch with a cheap TCP pre-check and sends only
 // reachable endpoints through the full HTTP probe. Progress covers every
 // requested id, including skipped and unreachable ones.
 func (m *Manager) ProbeBatchFast(ctx context.Context, ids []string, progress func(done, total int)) int {
+	return m.ProbeBatchFastStats(ctx, ids, progress).HTTPProbed
+}
+
+// ProbeBatchFastStats runs the fast discovery batch and reports both stages.
+func (m *Manager) ProbeBatchFastStats(ctx context.Context, ids []string, progress func(done, total int)) FastProbeStats {
 	cfg := *m.cfg.Load()
 	total := len(ids)
 	entries := make([]*node.Entry, 0, len(ids))
@@ -455,10 +468,11 @@ func (m *Manager) ProbeBatchFast(ctx context.Context, ids []string, progress fun
 		if progress != nil {
 			progress(total, total)
 		}
-		return 0
+		return FastProbeStats{}
 	}
 
 	reachable := make([]*node.Entry, 0, len(entries))
+	var tcpChecked, tcpReachable atomic.Int64
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, fastPrecheckConcurrency)
@@ -466,22 +480,26 @@ func (m *Manager) ProbeBatchFast(ctx context.Context, ids []string, progress fun
 		select {
 		case <-ctx.Done():
 			wg.Wait()
-			return 0
+			return FastProbeStats{TCPChecked: int(tcpChecked.Load()), TCPReachable: int(tcpReachable.Load())}
 		case sem <- struct{}{}:
 		}
 		wg.Add(1)
 		go func(entry *node.Entry) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			if entry.Options.Type != node.Direct && !m.tcpReachable(ctx, entry) {
-				entry.RecordProbeResult(false, time.Now())
-				entry.SetLastError("tcp connect failed")
-				current := int(atomic.AddInt64(&done, 1))
-				if progress != nil {
-					progress(current, total)
+			if entry.Options.Type != node.Direct {
+				tcpChecked.Add(1)
+				if !m.tcpReachable(ctx, entry) {
+					entry.RecordProbeResult(false, time.Now())
+					entry.SetLastError("tcp connect failed")
+					current := int(atomic.AddInt64(&done, 1))
+					if progress != nil {
+						progress(current, total)
+					}
+					return
 				}
-				return
 			}
+			tcpReachable.Add(1)
 			mu.Lock()
 			reachable = append(reachable, entry)
 			mu.Unlock()
@@ -492,19 +510,21 @@ func (m *Manager) ProbeBatchFast(ctx context.Context, ids []string, progress fun
 	probeConc := max(cfg.Concurrency*16, 128)
 	psem := make(chan struct{}, probeConc)
 	var pwg sync.WaitGroup
-	var probed atomic.Int64
+	var probed, httpReachable atomic.Int64
 	for _, entry := range reachable {
 		select {
 		case <-ctx.Done():
 			pwg.Wait()
-			return int(probed.Load())
+			return FastProbeStats{TCPChecked: int(tcpChecked.Load()), TCPReachable: int(tcpReachable.Load()), HTTPProbed: int(probed.Load()), HTTPReachable: int(httpReachable.Load())}
 		case psem <- struct{}{}:
 		}
 		pwg.Add(1)
 		go func(entry *node.Entry) {
 			defer pwg.Done()
 			defer func() { <-psem }()
-			m.ProbeEntryFast(ctx, entry)
+			if m.ProbeEntryFast(ctx, entry) {
+				httpReachable.Add(1)
+			}
 			probed.Add(1)
 			current := int(atomic.AddInt64(&done, 1))
 			if progress != nil {
@@ -513,25 +533,28 @@ func (m *Manager) ProbeBatchFast(ctx context.Context, ids []string, progress fun
 		}(entry)
 	}
 	pwg.Wait()
-	return int(probed.Load())
+	return FastProbeStats{
+		TCPChecked: int(tcpChecked.Load()), TCPReachable: int(tcpReachable.Load()),
+		HTTPProbed: int(probed.Load()), HTTPReachable: int(httpReachable.Load()),
+	}
 }
 
 // ProbeEntryFast is the discovery path: it probes the primary target only, so
 // a full-pool sweep stays bounded. Regular scheduled probes cover every target
 // once a node is admitted.
-func (m *Manager) ProbeEntryFast(ctx context.Context, entry *node.Entry) {
+func (m *Manager) ProbeEntryFast(ctx context.Context, entry *node.Entry) bool {
 	if entry == nil || !entry.Options.Supported() {
-		return
+		return false
 	}
 	cfg := *m.cfg.Load()
 	if len(cfg.Targets) == 0 {
-		return
+		return false
 	}
 	client, err := m.outbound.Client(entry)
 	if err != nil {
 		entry.RecordProbeResult(false, time.Now())
 		entry.SetLastError(err.Error())
-		return
+		return false
 	}
 	timeout := cfg.Timeout
 	if timeout > fastProbeTimeout {
@@ -542,7 +565,7 @@ func (m *Manager) ProbeEntryFast(ctx context.Context, entry *node.Entry) {
 	entry.RecordProbeResult(ok, time.Now())
 	if !ok {
 		entry.SetLastError(err.Error())
-		return
+		return false
 	}
 	if table := entry.Latency(); table != nil {
 		if parsed, parseErr := url.Parse(target); parseErr == nil {
@@ -550,6 +573,7 @@ func (m *Manager) ProbeEntryFast(ctx context.Context, entry *node.Entry) {
 		}
 	}
 	entry.SetLastError("")
+	return true
 }
 
 // tcpReachable is a cheap liveness check on the proxy endpoint.

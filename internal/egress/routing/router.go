@@ -52,15 +52,21 @@ type Config struct {
 	MaxKeysPerNode            int
 	MaxPendingKeys            int
 	RouteSampleSize           int
+	FailureGrace              time.Duration
+	MaxPendingObservations    int
+	TargetPause               time.Duration
 }
 
 // DefaultConfig returns the approved initial parameters.
 func DefaultConfig() Config {
 	return Config{
-		Weights:        DefaultWeights(),
-		CooldownBase:   30 * time.Second,
-		CooldownMax:    15 * time.Minute,
-		UpstreamWindow: time.Minute,
+		Weights:                DefaultWeights(),
+		CooldownBase:           30 * time.Second,
+		CooldownMax:            15 * time.Minute,
+		UpstreamWindow:         time.Minute,
+		FailureGrace:           60 * time.Second,
+		MaxPendingObservations: 10000,
+		TargetPause:            60 * time.Second,
 	}
 }
 
@@ -113,6 +119,12 @@ func (c Config) normalized() Config {
 	if c.RouteSampleSize <= 0 {
 		c.RouteSampleSize = 64
 	}
+	if c.MaxPendingObservations <= 0 {
+		c.MaxPendingObservations = 10000
+	}
+	if c.TargetPause <= 0 {
+		c.TargetPause = 60 * time.Second
+	}
 	return c
 }
 
@@ -134,6 +146,7 @@ type Router struct {
 
 	environment atomic.Pointer[health.Environment]
 	index       *Index
+	pending     *pendingQueue
 	seedMu      sync.Mutex
 	lastSeed    map[health.HealthKey]time.Time
 }
@@ -155,6 +168,7 @@ func New(p *pool.Pool, manager *outbound.Manager, cfg Config, logger *slog.Logge
 		inflight:     make(map[node.Hash]int),
 		regionBlocks: make(map[string]map[string]time.Time),
 		index:        NewIndex(),
+		pending:      newPendingQueue(cfg.MaxPendingObservations),
 		lastSeed:     make(map[health.HealthKey]time.Time),
 		now:          time.Now,
 	}
@@ -167,6 +181,7 @@ func (r *Router) Configure(cfg Config) {
 	cfg = cfg.normalized()
 	r.cfg.Store(&cfg)
 	r.tracker.SetWindow(cfg.UpstreamWindow)
+	r.pending.setMax(cfg.MaxPendingObservations)
 }
 
 // Config returns the active configuration.
@@ -536,6 +551,7 @@ const (
 	EnvironmentFailure OutcomeKind = "environment_failure"
 	EnvironmentSlow    OutcomeKind = "environment_degraded"
 	InferenceTimeout   OutcomeKind = "inference_timeout"
+	NotFound           OutcomeKind = "not_found"
 )
 
 // Outcome is the raw attempt result reported by the gateway.
@@ -585,6 +601,7 @@ func (r *Router) report(attempt *Attempt, outcome Outcome) Classification {
 	}
 
 	result := Classification{Kind: outcome.Kind}
+	staged := false
 outcomeSwitch:
 	switch outcome.Kind {
 	case Success:
@@ -600,6 +617,19 @@ outcomeSwitch:
 		result.Reason = "ok"
 
 	case ProxyFailure:
+		if !outcome.Direct && !outcome.Bootstrap && attempt.Key.Valid() && cfg.FailureGrace > 0 {
+			if env := r.environment.Load(); env != nil {
+				env.ReportTransportFailure(attempt.NodeID, attempt.Key.Target, now)
+			}
+			r.pending.add(&pendingObservation{
+				attempt: attempt, outcome: outcome,
+				deadline: now.Add(cfg.FailureGrace), id: pendingID(attempt),
+			})
+			result.Retryable = true
+			result.Reason = "transport_failure_pending"
+			staged = true
+			break outcomeSwitch
+		}
 		entry.RecordNetworkResult(false)
 		until := r.cooldown(entry, 0, cfg, now, "proxy_failure")
 		result.NodeCooldown = &until
@@ -668,6 +698,11 @@ outcomeSwitch:
 		result.Retryable = true
 		result.Reason = "inference_timeout"
 
+	case NotFound:
+		entry.RecordNetworkResult(true)
+		result.Retryable = true
+		result.Reason = "not_found"
+
 	case ClientCancel:
 		result.Reason = "client_cancel"
 
@@ -689,8 +724,142 @@ outcomeSwitch:
 	}
 	outcome.Kind = result.Kind
 	outcome.UpstreamWide = result.UpstreamWide
-	r.applyHealth(attempt, outcome, now)
+	if !staged {
+		r.applyHealth(attempt, outcome, now)
+	}
+	if result.Kind == NotFound {
+		r.handleNotFound(attempt, now)
+	}
 	return result
+}
+
+// handleNotFound promotes a key to DEAD only with cross-exit proof; otherwise
+// it pauses probing for that target so a bad path cannot keep burning budget.
+func (r *Router) handleNotFound(attempt *Attempt, now time.Time) {
+	if attempt == nil || attempt.entry == nil || !attempt.Key.Valid() {
+		return
+	}
+	cfg := *r.cfg.Load()
+	table := attempt.entry.ExistingHealthTable()
+	if table == nil {
+		return
+	}
+	stats := table.Get(attempt.Key)
+	if stats == nil {
+		return
+	}
+	otherSuccess := r.otherExitSucceeded(attempt.Key, attempt.entry.Hash, cfg.RouteSampleSize)
+	if stats.MarkNotFound(otherSuccess, cfg.Health) {
+		snapshot := stats.Snapshot()
+		r.index.Upsert(attempt.Key, attempt.entry.Hash, snapshot.State, snapshot.LastReachableAt)
+		if r.logger != nil {
+			r.logger.Info("egress health key marked dead",
+				"component", "egress", "event", "health_state_changed",
+				"node_id", attempt.NodeID, "target", attempt.Key.Target,
+				"model", attempt.Key.Model, "protocol", attempt.Key.Protocol, "reason", "configuration_error")
+		}
+		return
+	}
+	if env := r.environment.Load(); env != nil && cfg.TargetPause > 0 {
+		env.PauseTarget(attempt.Key.Target, now.Add(cfg.TargetPause))
+	}
+}
+
+// otherExitSucceeded samples the index for another exit that already served
+// this exact key.
+func (r *Router) otherExitSucceeded(key health.HealthKey, exclude node.Hash, sampleSize int) bool {
+	if sampleSize <= 0 {
+		sampleSize = 64
+	}
+	for _, state := range []string{"active", "verifying"} {
+		for _, hash := range r.index.Sample(key, state, sampleSize) {
+			if hash == exclude {
+				continue
+			}
+			entry := r.pool.Get(hash)
+			if entry == nil {
+				continue
+			}
+			table := entry.ExistingHealthTable()
+			if table == nil {
+				continue
+			}
+			stats := table.Get(key)
+			if stats == nil {
+				continue
+			}
+			snapshot := stats.Snapshot()
+			if snapshot.HTTP200Success > 0 || snapshot.PrimarySuccess > 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func pendingID(attempt *Attempt) string {
+	return attempt.NodeID + "|" + attempt.Key.Target + "|" + attempt.Key.Model + "|" +
+		attempt.Key.Protocol + "|" + attempt.Key.Mode
+}
+
+// SweepPending commits expired transport failures unless the local link or the
+// target is unhealthy, in which case they become environment failures.
+func (r *Router) SweepPending(now time.Time) (committed, dropped int) {
+	if r.pending == nil {
+		return 0, 0
+	}
+	items := r.pending.due(now)
+	if len(items) == 0 {
+		return 0, 0
+	}
+	cfg := *r.cfg.Load()
+	env := r.environment.Load()
+	for _, item := range items {
+		if item.attempt == nil || item.attempt.entry == nil {
+			dropped++
+			continue
+		}
+		if env != nil {
+			if state, _ := env.State(); state != health.EnvHealthy {
+				dropped++
+				continue
+			}
+			if env.TargetPaused(item.attempt.Key.Target, now) {
+				dropped++
+				continue
+			}
+		}
+		entry := item.attempt.entry
+		entry.RecordNetworkResult(false)
+		r.cooldown(entry, 0, cfg, now, "proxy_failure")
+		entry.SetLastError(errorText(item.outcome.Err))
+		r.applyHealthOnly(item.attempt, item.outcome, now)
+		committed++
+	}
+	if dropped > 0 {
+		r.pending.markDropped(dropped)
+	}
+	return committed, dropped
+}
+
+// DropPending discards every unexpired staged observation (shutdown).
+func (r *Router) DropPending() int {
+	if r.pending == nil {
+		return 0
+	}
+	count := r.pending.drain()
+	if count > 0 {
+		r.pending.markDropped(count)
+	}
+	return count
+}
+
+// ObservationStats reports the staging queue depth and cumulative drops.
+func (r *Router) ObservationStats() (pending int, dropped uint64) {
+	if r.pending == nil {
+		return 0, 0
+	}
+	return r.pending.stats()
 }
 
 func (r *Router) clearExitCooldowns(nodeIDs []string, class int) {

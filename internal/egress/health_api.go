@@ -48,11 +48,18 @@ type HealthProbeView struct {
 	LastProbeAt       *time.Time `json:"last_probe_at,omitempty"`
 }
 
+// HealthObservationView reports the staged transport-failure queue.
+type HealthObservationView struct {
+	Pending      int    `json:"pending"`
+	DroppedTotal uint64 `json:"dropped_total"`
+}
+
 // HealthSummary backs GET /api/egress/health.
 type HealthSummary struct {
 	Mode              string                `json:"mode"`
 	Counts            HealthCounts          `json:"counts"`
 	Environment       HealthEnvironmentView `json:"environment"`
+	Observations      HealthObservationView `json:"observations"`
 	StablePool        int                   `json:"stable_pool"`
 	StableMinCapacity int                   `json:"stable_min_capacity"`
 	Targets           []HealthTargetView    `json:"targets"`
@@ -69,6 +76,7 @@ func (e *Engine) HealthSummary() HealthSummary {
 	cfg := current.egress
 	summary.Mode = cfg.Health.Mode
 	summary.StableMinCapacity = cfg.Health.StableMinCapacity
+	summary.Observations.Pending, summary.Observations.DroppedTotal = e.router.ObservationStats()
 	summary.Probe.BudgetPerSecond = cfg.Probe.BudgetPerSecond
 	summary.Probe.CanaryDailyBudget = cfg.Probe.CanaryDailyBudget
 	targets := map[string]*HealthTargetView{}

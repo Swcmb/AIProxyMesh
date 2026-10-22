@@ -80,12 +80,12 @@ WebUI 监听器同源提供。认证使用 HttpOnly Session Cookie `mesh_session
 | 方法 | 路径 | 说明 |
 | :--- | :--- | :--- |
 | GET | `/api/egress` | 快照：计数、节点、订阅状态；未启用时 `{enabled:false}` |
-| GET | `/api/egress/health` | 健康汇总：七态计数、环境状态与 epoch、稳定池覆盖、目标分布、探测预算 |
+| GET | `/api/egress/health` | 健康汇总：七态计数、环境状态与 epoch、传输失败暂存 `observations`、稳定池覆盖、目标分布、探测预算 |
 | GET | `/api/egress/nodes` | 节点池分页查询；参数 `keyword`、`status`、`subscription`、`protocol`、`region`、`sort_by`、`sort_order`、`offset`、`limit`（默认 50，上限 5000）。响应含 `nodes`、`total`（筛选后条数）、`pool`（池内总数）、`counts`、`facets`、`subscription_names` |
 | GET | `/api/egress/nodes/{id}` | 单节点详情，含 `status`、`score`（H/L/R/U）、`eligible`、`health_state`、准入下界与 `health_keys` |
 | POST | `/api/egress/nodes/{id}/enabled` | `{enabled:bool}` 手动启停 |
 | POST | `/api/egress/nodes/{id}/probe` | 立即探测并返回刷新后的节点 |
-| POST | `/api/egress/nodes/probe` | 批量探测 `{ids:[...]}` 或全池刷新 `{all:true}`（上限 20000 个显式 ID）：≤200 个同步返回 `{mode:"sync",probed,requested}`；更大规模或 `all` 转后台任务返回 `{mode:"async",started,job}`，同一时间只运行一个任务 |
+| POST | `/api/egress/nodes/probe` | 批量探测 `{ids:[...]}` 或全池刷新 `{all:true}`（上限 20000 个显式 ID）：≤200 个同步返回 `{mode:"sync",probed,requested}`；更大规模或 `all` 转后台任务返回 `{mode:"async",started,job}`，同一时间只运行一个任务；`job` 含 `tcp_checked/tcp_reachable/http_probed/http_reachable` |
 | POST | `/api/egress/nodes/probe/cancel` | 取消当前后台刷新任务，返回 `{cancelled:bool}`；已完成的节点结果保留 |
 | GET | `/api/egress/nodes/probe/status` | 后台探测进度 `{job:{id,total,done,running,started_at,finished_at}}`；无任务时 `job` 为零值 |
 | GET | `/api/egress/subscription-presets` | 内置订阅预设（api-proxy-pool 的 hproxy CSV 与 proxifly 清单，HTTP/HTTPS/SOCKS5，不含 SOCKS4）；只读，需用户显式添加 |
