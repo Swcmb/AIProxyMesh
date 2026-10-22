@@ -683,6 +683,7 @@ func (e *Engine) restoreHealth(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	rebuild := make(map[health.HealthKey][]routing.RebuildEntry)
 	for _, record := range records {
 		hash, err := node.ParseHex(record.NodeHash)
 		if err != nil {
@@ -694,6 +695,21 @@ func (e *Engine) restoreHealth(ctx context.Context) error {
 		}
 		table := entry.HealthTable(current.egress.Health.MaxKeysPerNode, current.egress.Health.MaxPendingKeys)
 		table.Upsert(health.FromSnapshot(record.Stats, cfg, now))
+		rebuild[record.Stats.Key] = append(rebuild[record.Stats.Key], routing.RebuildEntry{
+			Hash: hash, State: record.Stats.State, ReachableAt: record.Stats.LastReachableAt,
+		})
+	}
+	if len(rebuild) > 0 {
+		e.router.Index().Rebuild(rebuild)
+	}
+	if blocks, err := e.store.LoadRegionBlocks(ctx, now); err != nil {
+		return err
+	} else if len(blocks) > 0 {
+		restored := make([]routing.RegionBlock, 0, len(blocks))
+		for _, block := range blocks {
+			restored = append(restored, routing.RegionBlock{Target: block.Target, Country: block.Country, Until: block.Until})
+		}
+		e.router.RestoreRegionBlocks(restored)
 	}
 	snapshot, ok, err := e.store.LoadEnvironment(ctx)
 	if err != nil {
@@ -813,9 +829,16 @@ func (e *Engine) saveHealth(ctx context.Context) error {
 		return err
 	}
 	if e.environment != nil {
-		return e.store.SaveEnvironment(ctx, e.environment.Snapshot())
+		if err := e.store.SaveEnvironment(ctx, e.environment.Snapshot()); err != nil {
+			return err
+		}
 	}
-	return nil
+	blocks := e.router.RegionBlocks()
+	blockRecords := make([]state.RegionBlockRecord, 0, len(blocks))
+	for _, block := range blocks {
+		blockRecords = append(blockRecords, state.RegionBlockRecord{Target: block.Target, Country: block.Country, Until: block.Until})
+	}
+	return e.store.SaveRegionBlocks(ctx, blockRecords)
 }
 
 func schedulerConfig(cfg *config.EgressConfig) probe.ScheduleConfig {
@@ -878,6 +901,7 @@ func routerConfig(cfg *config.EgressConfig) routing.Config {
 	result.ReachableWindow = time.Duration(cfg.Health.ReachableWindowSeconds) * time.Second
 	result.MaxKeysPerNode = cfg.Health.MaxKeysPerNode
 	result.MaxPendingKeys = cfg.Health.MaxPendingKeys
+	result.RouteSampleSize = cfg.Health.RouteSampleSize
 	if cfg.Health.ColdStartFallback != nil {
 		result.ColdStartFallback = *cfg.Health.ColdStartFallback
 	}

@@ -52,37 +52,61 @@ func (r *Router) SelectKey(ctx context.Context, target *url.URL, key health.Heal
 	if reachableWindow <= 0 {
 		reachableWindow = 10 * time.Minute
 	}
-	healthCfg := cfg.Health
-	for _, entry := range r.pool.List() {
-		if !r.eligible(entry, host, now, exclude, cfg) {
+	sampleSize := cfg.RouteSampleSize
+	if sampleSize <= 0 {
+		sampleSize = 64
+	}
+	activeHashes := r.index.Sample(key, "active", sampleSize)
+	verifyHashes := r.index.Sample(key, "verifying", sampleSize)
+	reachHashes := r.index.ReachableSample(key.Target, reachableWindow, sampleSize, now)
+	if len(activeHashes)+len(verifyHashes)+len(reachHashes) == 0 {
+		// Unknown key: seed the index at most once per 30 seconds. Later
+		// requests are served from the index without scanning the pool.
+		if r.shouldSeed(key, now) {
+			activeHashes, verifyHashes, reachHashes = r.seedKey(key, host, exclude, cfg, now, blocked)
+		}
+	}
+	for _, hash := range activeHashes {
+		entry := r.pool.Get(hash)
+		if entry == nil || !r.eligible(entry, host, now, exclude, cfg) || blockedCountry(entry, blocked) {
 			continue
 		}
-		if blockedCountry(entry, blocked) {
+		if entry.Options.Type == node.Direct {
+			// The direct exit is local and has no key-level evidence; the spec
+			// injects it as an independent candidate in both prefer and strict.
+			buckets.active = append(buckets.active, pick{entry: entry, score: computeScore(entry, host, r.inflightFor(entry.Hash), weights).Total})
 			continue
 		}
-		table := entry.HealthTable(cfg.MaxKeysPerNode, cfg.MaxPendingKeys)
-		stats := table.Get(key)
-		state := health.Candidate
-		if stats != nil {
-			transition := stats.Tick(now, healthCfg)
-			_ = transition
-			state = stats.StateOf()
+		stats := entry.HealthTable(cfg.MaxKeysPerNode, cfg.MaxPendingKeys).Get(key)
+		if stats == nil {
+			continue
 		}
+		stats.Tick(now, cfg.Health)
 		score := computeScore(entry, host, r.inflightFor(entry.Hash), weights).Total
-		switch state {
+		switch stats.StateOf() {
 		case health.Active:
-			buckets.active = append(buckets.active, pick{entry: entry, score: score})
-		case health.Suspect:
-			buckets.active = append(buckets.active, pick{entry: entry, score: score * 0.3})
-		case health.HalfOpen:
-			buckets.active = append(buckets.active, pick{entry: entry, score: score * 0.3})
-		case health.Verifying:
-			buckets.verifying = append(buckets.verifying, pick{entry: entry, score: recentScore(stats, cfg)})
-		case health.Candidate:
-			if last := entry.LastSuccessAt(); last > 0 && now.Sub(time.Unix(0, last)) <= reachableWindow {
-				buckets.reachable = append(buckets.reachable, pick{entry: entry, score: 0})
+			if snapshot := stats.Snapshot(); snapshot.PendingReverify {
+				score *= 0.5
 			}
+			buckets.active = append(buckets.active, pick{entry: entry, score: score})
+		case health.Suspect, health.HalfOpen:
+			buckets.active = append(buckets.active, pick{entry: entry, score: score * 0.3})
 		}
+	}
+	for _, hash := range verifyHashes {
+		entry := r.pool.Get(hash)
+		if entry == nil || !r.eligible(entry, host, now, exclude, cfg) || blockedCountry(entry, blocked) {
+			continue
+		}
+		stats := entry.HealthTable(cfg.MaxKeysPerNode, cfg.MaxPendingKeys).Get(key)
+		buckets.verifying = append(buckets.verifying, pick{entry: entry, score: recentScore(stats, cfg)})
+	}
+	for _, hash := range reachHashes {
+		entry := r.pool.Get(hash)
+		if entry == nil || !r.eligible(entry, host, now, exclude, cfg) || blockedCountry(entry, blocked) {
+			continue
+		}
+		buckets.reachable = append(buckets.reachable, pick{entry: entry, score: 0})
 	}
 
 	strict := cfg.HealthMode == "strict"
@@ -126,6 +150,57 @@ func (r *Router) SelectKey(ctx context.Context, target *url.URL, key health.Heal
 	}, nil
 }
 
+// shouldSeed rate-limits cold-start scans for an unknown key.
+func (r *Router) shouldSeed(key health.HealthKey, now time.Time) bool {
+	r.seedMu.Lock()
+	defer r.seedMu.Unlock()
+	last := r.lastSeed[key]
+	if !last.IsZero() && now.Sub(last) < 30*time.Second {
+		return false
+	}
+	r.lastSeed[key] = now
+	return true
+}
+
+// seedKey is the only full pool scan on a request path; it runs once per key
+// per 30 seconds and then the index serves every subsequent request.
+func (r *Router) seedKey(key health.HealthKey, host string, exclude map[string]struct{}, cfg Config, now time.Time, blocked map[string]struct{}) ([]node.Hash, []node.Hash, []node.Hash) {
+	var active, verifying, reachable []node.Hash
+	for _, entry := range r.pool.List() {
+		if !r.eligible(entry, host, now, exclude, cfg) || blockedCountry(entry, blocked) {
+			continue
+		}
+		if entry.Options.Type == node.Direct {
+			active = append(active, entry.Hash)
+			r.index.Upsert(key, entry.Hash, health.Active, now)
+			continue
+		}
+		table := entry.HealthTable(cfg.MaxKeysPerNode, cfg.MaxPendingKeys)
+		stats := table.Get(key)
+		if stats != nil {
+			stats.Tick(now, cfg.Health)
+			switch stats.StateOf() {
+			case health.Active, health.Suspect, health.HalfOpen:
+				active = append(active, entry.Hash)
+			case health.Verifying:
+				verifying = append(verifying, entry.Hash)
+			}
+			if last := stats.Snapshot().LastReachableAt; !last.IsZero() {
+				r.index.Upsert(key, entry.Hash, stats.StateOf(), last)
+			}
+			continue
+		}
+		if last := entry.LastSuccessAt(); last > 0 {
+			at := time.Unix(0, last)
+			if cfg.ReachableWindow <= 0 || now.Sub(at) <= cfg.ReachableWindow {
+				reachable = append(reachable, entry.Hash)
+				r.index.MarkReachable(key.Target, entry.Hash, at)
+			}
+		}
+	}
+	return active, verifying, reachable
+}
+
 func blockedCountry(entry *node.Entry, blocked map[string]struct{}) bool {
 	if len(blocked) == 0 || entry == nil {
 		return false
@@ -141,6 +216,10 @@ func blockedCountry(entry *node.Entry, blocked map[string]struct{}) bool {
 func filterActiveOnly(picks []pick, key health.HealthKey, cfg Config) []pick {
 	out := picks[:0]
 	for _, candidate := range picks {
+		if candidate.entry.Options.Type == node.Direct {
+			out = append(out, candidate)
+			continue
+		}
 		table := candidate.entry.HealthTable(cfg.MaxKeysPerNode, cfg.MaxPendingKeys)
 		stats := table.Get(key)
 		if stats != nil && stats.StateOf() == health.Active {
@@ -330,9 +409,13 @@ func (r *Router) applyHealth(attempt *Attempt, outcome Outcome, now time.Time) {
 	}
 	table := attempt.entry.HealthTable(cfg.MaxKeysPerNode, cfg.MaxPendingKeys)
 	obs := healthObservation(attempt.Key, outcome)
-	transition, _, ok := table.Apply(attempt.Key, obs, cfg.Health, now)
+	transition, stats, ok := table.Apply(attempt.Key, obs, cfg.Health, now)
 	if !ok {
 		return
+	}
+	if stats != nil {
+		snapshot := stats.Snapshot()
+		r.index.Upsert(attempt.Key, attempt.entry.Hash, snapshot.State, snapshot.LastReachableAt)
 	}
 	if transition.Changed {
 		r.recordHealthTransition(attempt, transition)

@@ -51,6 +51,7 @@ type Config struct {
 	ReachableWindow           time.Duration
 	MaxKeysPerNode            int
 	MaxPendingKeys            int
+	RouteSampleSize           int
 }
 
 // DefaultConfig returns the approved initial parameters.
@@ -109,6 +110,9 @@ func (c Config) normalized() Config {
 	if c.MaxPendingKeys <= 0 {
 		c.MaxPendingKeys = 10000
 	}
+	if c.RouteSampleSize <= 0 {
+		c.RouteSampleSize = 64
+	}
 	return c
 }
 
@@ -129,6 +133,9 @@ type Router struct {
 	regionOf     func(*node.Entry) string
 
 	environment atomic.Pointer[health.Environment]
+	index       *Index
+	seedMu      sync.Mutex
+	lastSeed    map[health.HealthKey]time.Time
 }
 
 // New creates a router.
@@ -147,6 +154,8 @@ func New(p *pool.Pool, manager *outbound.Manager, cfg Config, logger *slog.Logge
 		tracker:      NewUpstreamTracker(cfg.UpstreamWindow),
 		inflight:     make(map[node.Hash]int),
 		regionBlocks: make(map[string]map[string]time.Time),
+		index:        NewIndex(),
+		lastSeed:     make(map[health.HealthKey]time.Time),
 		now:          time.Now,
 	}
 	r.cfg.Store(&cfg)
@@ -192,6 +201,49 @@ type Attempt struct {
 	streamOnce   sync.Once
 	completeOnce sync.Once
 }
+
+// RegionBlock is one persisted hard region block.
+type RegionBlock struct {
+	Target  string
+	Country string
+	Until   time.Time
+}
+
+// RegionBlocks snapshots the live hard blocks for persistence.
+func (r *Router) RegionBlocks() []RegionBlock {
+	r.regionMu.Lock()
+	defer r.regionMu.Unlock()
+	now := r.clock()
+	out := make([]RegionBlock, 0)
+	for target, countries := range r.regionBlocks {
+		for country, until := range countries {
+			if now.Before(until) {
+				out = append(out, RegionBlock{Target: target, Country: country, Until: until})
+			}
+		}
+	}
+	return out
+}
+
+// RestoreRegionBlocks reloads blocks that have not expired.
+func (r *Router) RestoreRegionBlocks(blocks []RegionBlock) {
+	r.regionMu.Lock()
+	defer r.regionMu.Unlock()
+	for _, block := range blocks {
+		if block.Target == "" || block.Country == "" {
+			continue
+		}
+		countries := r.regionBlocks[block.Target]
+		if countries == nil {
+			countries = make(map[string]time.Time)
+			r.regionBlocks[block.Target] = countries
+		}
+		countries[block.Country] = block.Until
+	}
+}
+
+// Index exposes the stable-pool index.
+func (r *Router) Index() *Index { return r.index }
 
 // SetEnvironment installs the local-link environment classifier.
 func (r *Router) SetEnvironment(env *health.Environment) {

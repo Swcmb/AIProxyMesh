@@ -216,3 +216,53 @@ func unixNano(value int64) time.Time {
 	}
 	return time.Unix(0, value).UTC()
 }
+
+// RegionBlockRecord is one persisted hard region block.
+type RegionBlockRecord struct {
+	Target  string
+	Country string
+	Until   time.Time
+}
+
+// SaveRegionBlocks replaces the block table with the live snapshot.
+func (s *Store) SaveRegionBlocks(ctx context.Context, blocks []RegionBlockRecord) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("egress state: begin region tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM egress_region_blocks`); err != nil {
+		return fmt.Errorf("egress state: clear region blocks: %w", err)
+	}
+	for _, block := range blocks {
+		if block.Target == "" || block.Country == "" {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO egress_region_blocks (target, country, until) VALUES (?,?,?)
+			ON CONFLICT(target, country) DO UPDATE SET until = excluded.until`,
+			block.Target, block.Country, block.Until.UnixNano()); err != nil {
+			return fmt.Errorf("egress state: save region block: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+// LoadRegionBlocks returns unexpired blocks.
+func (s *Store) LoadRegionBlocks(ctx context.Context, now time.Time) ([]RegionBlockRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT target, country, until FROM egress_region_blocks WHERE until > ?`, now.UnixNano())
+	if err != nil {
+		return nil, fmt.Errorf("egress state: load region blocks: %w", err)
+	}
+	defer rows.Close()
+	var out []RegionBlockRecord
+	for rows.Next() {
+		var target, country string
+		var until int64
+		if err := rows.Scan(&target, &country, &until); err != nil {
+			return nil, err
+		}
+		out = append(out, RegionBlockRecord{Target: target, Country: country, Until: unixNano(until)})
+	}
+	return out, rows.Err()
+}
