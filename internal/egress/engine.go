@@ -107,7 +107,7 @@ func New(opts Options) (*Engine, error) {
 	environment := health.NewEnvironment(cfg.Bootstrap.EnvironmentConfig(), time.Now())
 	router.SetEnvironment(environment)
 	prober := probe.New(nodePool, outboundManager, probeConfig(cfg, opts.Upstream), logger)
-	scheduler := probe.NewScheduler(nodePool, schedulerConfig(cfg), logger)
+	scheduler := probe.NewScheduler(nodePool, schedulerConfig(cfg, opts.Upstream), logger)
 	scheduler.SetEnvironment(environment)
 
 	e := &Engine{
@@ -289,7 +289,7 @@ func (e *Engine) Apply(egress *config.EgressConfig, upstream config.UpstreamConf
 	}
 	e.router.Configure(routerConfig(egress))
 	e.probe.Configure(probeConfig(egress, upstream))
-	e.scheduler.Configure(schedulerConfig(egress))
+	e.scheduler.Configure(schedulerConfig(egress, upstream))
 	e.scheduler.SetEnvironment(e.environment)
 	e.subs.Reconcile()
 	e.pruneOrphanedReferences()
@@ -859,7 +859,7 @@ func (e *Engine) saveHealth(ctx context.Context) error {
 	return e.store.SaveRegionBlocks(ctx, blockRecords)
 }
 
-func schedulerConfig(cfg *config.EgressConfig) probe.ScheduleConfig {
+func schedulerConfig(cfg *config.EgressConfig, upstream config.UpstreamConfig) probe.ScheduleConfig {
 	healthCfg := cfg.Health.HealthKeyConfig()
 	return probe.ScheduleConfig{
 		Enabled:          cfg.Probe.CanaryEnabled == nil || *cfg.Probe.CanaryEnabled,
@@ -871,6 +871,8 @@ func schedulerConfig(cfg *config.EgressConfig) probe.ScheduleConfig {
 		MaxInflight:      cfg.Probe.CanaryMaxInflight,
 		CanaryMaxTokens:  cfg.Probe.CanaryMaxTokens,
 		DefaultMode:      cfg.Probe.CanaryDefaultMode,
+		CanaryModel:      cfg.Probe.CanaryModel,
+		CanaryTarget:     upstream.Anonymous,
 		VerifyingRecheck: time.Duration(cfg.Probe.VerifyingRecheckSeconds) * time.Second,
 		ActiveRecheck:    time.Duration(cfg.Probe.ActiveRecheckSeconds) * time.Second,
 		DeadRecheck:      time.Duration(cfg.Health.DeadRecheckSeconds) * time.Second,

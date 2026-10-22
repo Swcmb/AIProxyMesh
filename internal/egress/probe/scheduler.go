@@ -46,6 +46,8 @@ type ScheduleConfig struct {
 	MaxInflight      int
 	CanaryMaxTokens  int
 	DefaultMode      string
+	CanaryModel      string
+	CanaryTarget     string
 	VerifyingRecheck time.Duration
 	ActiveRecheck    time.Duration
 	DeadRecheck      time.Duration
@@ -228,7 +230,9 @@ func (s *Scheduler) scan(now time.Time) {
 		if table == nil {
 			continue
 		}
+		tracked := 0
 		for _, record := range table.Snapshot() {
+			tracked++
 			if budget <= 0 {
 				break
 			}
@@ -238,6 +242,19 @@ func (s *Scheduler) scan(now time.Time) {
 			}
 			if s.enqueue(entry, record.Key, next, priority, now) {
 				budget--
+			}
+		}
+		if tracked == 0 && cfg.CanaryModel != "" && cfg.CanaryTarget != "" {
+			// A reachable node without any key gets one synthetic candidate key,
+			// so a configured canary model can discover exits before real traffic.
+			if last := entry.LastSuccessAt(); last > 0 {
+				if key, err := health.NewKey(cfg.CanaryTarget, cfg.CanaryModel, health.ProtocolChat, health.ModeStream); err == nil {
+					record := health.KeyStats{Key: key, State: health.Candidate, LastReachableAt: time.Unix(0, last)}
+					next, priority, due := s.dueTime(entry, record, cfg, now)
+					if due && s.enqueue(entry, key, next, priority, now) {
+						budget--
+					}
+				}
 			}
 		}
 		s.scanCursor = entry.ID()
