@@ -185,6 +185,12 @@ func (g *Gateway) reportEgressAttempt(
 		Reason:    classification.Reason,
 		Detail:    errorText(attemptErr),
 	})
+	if g.egress != nil && attempt.Key.Valid() && !outcome.Diagnostic && !outcome.Direct {
+		switch classification.Kind {
+		case routing.Success, routing.ExitFailure, routing.ProxyFailure, routing.InferenceTimeout:
+			g.egress.RecordAccuracy(attempt, classification.Kind == routing.Success, ids.Request)
+		}
+	}
 	if classification.UpstreamWide {
 		g.logger.Warn("upstream failure consensus reached; stopping failover",
 			"component", "egress", "event", "upstream_wide", "request_id", ids.Request,

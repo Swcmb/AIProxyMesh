@@ -266,3 +266,28 @@ func (s *Store) LoadRegionBlocks(ctx context.Context, now time.Time) ([]RegionBl
 	}
 	return out, rows.Err()
 }
+
+// AccuracySample is one ACTIVE-cohort first countable request.
+type AccuracySample struct {
+	NodeHash    string
+	Key         health.HealthKey
+	ActiveEpoch uint32
+	RequestID   string
+	Success     bool
+	At          time.Time
+}
+
+// RecordAccuracySample keeps the first countable request per ACTIVE epoch.
+func (s *Store) RecordAccuracySample(ctx context.Context, sample AccuracySample) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO egress_accuracy_samples
+			(node_hash, target, model, protocol, mode, active_epoch, request_id, success, recorded_at)
+		VALUES (?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(node_hash, target, model, protocol, mode, active_epoch) DO NOTHING`,
+		sample.NodeHash, sample.Key.Target, sample.Key.Model, sample.Key.Protocol, sample.Key.Mode,
+		sample.ActiveEpoch, sample.RequestID, boolInt(sample.Success), sample.At.UnixNano())
+	if err != nil {
+		return fmt.Errorf("egress state: record accuracy sample: %w", err)
+	}
+	return nil
+}

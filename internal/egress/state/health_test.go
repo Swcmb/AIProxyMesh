@@ -80,6 +80,39 @@ func TestHealthKeysAndEnvironmentRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAccuracySampleIsUniquePerEpoch(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "egress.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	options := node.Options{Type: node.Direct, Tag: "direct"}
+	raw, _ := json.Marshal(options)
+	hash := node.HashOptions(options)
+	if err := store.Save(ctx, Snapshot{Nodes: []NodeRecord{{Hash: hash.String(), Raw: raw, Enabled: true, CreatedAt: time.Now()}}}); err != nil {
+		t.Fatal(err)
+	}
+	key, _ := health.NewKey("https://opencode.ai/zen", "m", health.ProtocolChat, health.ModeStream)
+	sample := AccuracySample{NodeHash: hash.String(), Key: key, ActiveEpoch: 3, RequestID: "r1", Success: true, At: time.Now()}
+	if err := store.RecordAccuracySample(ctx, sample); err != nil {
+		t.Fatal(err)
+	}
+	sample.RequestID = "r2"
+	sample.Success = false
+	if err := store.RecordAccuracySample(ctx, sample); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	var success int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*), MAX(success) FROM egress_accuracy_samples`).Scan(&count, &success); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || success != 1 {
+		t.Fatalf("accuracy cohort must keep the first request only: count=%d success=%d", count, success)
+	}
+}
+
 func TestSaveHealthKeysKeepsNewerState(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "egress.db"))
 	if err != nil {

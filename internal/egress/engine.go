@@ -64,6 +64,7 @@ type Engine struct {
 
 	transportFactory atomic.Pointer[transport.Factory]
 	environment      *health.Environment
+	accuracy         chan state.AccuracySample
 
 	events    chan state.Event
 	ctx       context.Context
@@ -118,6 +119,7 @@ func New(opts Options) (*Engine, error) {
 		store:       store,
 		logger:      logger,
 		environment: environment,
+		accuracy:    make(chan state.AccuracySample, 1024),
 		events:      make(chan state.Event, 1024),
 	}
 	e.transportFactory.Store(factory)
@@ -186,6 +188,21 @@ func (e *Engine) Start(parent context.Context) {
 	go func() {
 		defer e.wg.Done()
 		e.scheduler.Run(e.ctx)
+	}()
+
+	e.wg.Add(1)
+	go func() {
+		defer e.wg.Done()
+		for {
+			select {
+			case <-e.ctx.Done():
+				return
+			case sample := <-e.accuracy:
+				if err := e.store.RecordAccuracySample(e.ctx, sample); err != nil && e.logger != nil {
+					e.logger.Debug("egress accuracy sample failed", "component", "egress", "error", err)
+				}
+			}
+		}
 	}()
 
 	e.StartGeoIP(e.ctx)
@@ -946,6 +963,41 @@ func (e *Engine) PrimaryTarget() *url.URL {
 		return nil
 	}
 	return parsed
+}
+
+// RecordAccuracy queues the first countable request of an ACTIVE cohort. The
+// unique constraint makes concurrent duplicates harmless.
+func (e *Engine) RecordAccuracy(attempt *routing.Attempt, success bool, requestID string) {
+	if attempt == nil || attempt.Direct || !attempt.Key.Valid() {
+		return
+	}
+	hash, err := node.ParseHex(attempt.NodeID)
+	if err != nil {
+		return
+	}
+	entry := e.pool.Get(hash)
+	if entry == nil {
+		return
+	}
+	table := entry.ExistingHealthTable()
+	if table == nil {
+		return
+	}
+	stats := table.Get(attempt.Key)
+	if stats == nil {
+		return
+	}
+	snapshot := stats.Snapshot()
+	if snapshot.State != health.Active || snapshot.ActiveEpoch == 0 {
+		return
+	}
+	select {
+	case e.accuracy <- state.AccuracySample{
+		NodeHash: attempt.NodeID, Key: attempt.Key, ActiveEpoch: snapshot.ActiveEpoch,
+		RequestID: requestID, Success: success, At: time.Now().UTC(),
+	}:
+	default:
+	}
 }
 
 // SetCanaryExecutor installs the gateway-side canary implementation.
