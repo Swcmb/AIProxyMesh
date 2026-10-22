@@ -8,14 +8,14 @@
       "blocked_sha": "",
       "blocked_issue": 0,
       "last_release": "v1.4.3",
-      "last_checked": "2026-10-21T09:23:25Z"
+      "last_checked": "2026-10-22T04:55:13Z"
     },
     "resin": {
       "repo": "Resinat/Resin",
       "branch": "master",
       "synced_sha": "1a6954e71b0f25058d14f18d31a7a82276243f2f",
-      "blocked_sha": "",
-      "blocked_issue": 0,
+      "blocked_sha": "5473c7ee495b78e4d7441fb5342b8e8127484de5",
+      "blocked_issue": 40,
       "last_release": "v1.2.0",
       "last_checked": "2026-10-21T09:23:27Z"
     }
