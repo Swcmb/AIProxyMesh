@@ -774,6 +774,7 @@ func (e *Engine) save(ctx context.Context) error {
 		}
 		if at := entry.LastSuccessAt(); at > 0 {
 			record.LastSuccess = time.Unix(0, at).UTC()
+			record.LastReachable = time.Unix(0, at).UTC()
 		}
 		if latency := entry.Latency(); latency != nil {
 			for host, stats := range latency.Snapshot() {

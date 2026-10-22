@@ -303,6 +303,20 @@ func (s *Scheduler) enqueue(entry *node.Entry, key health.HealthKey, next time.T
 	if _, exists := s.inflight[id]; exists {
 		return false
 	}
+	if maxKeys := s.cfg.load().MaxKeys; maxKeys > 0 && s.tasks.Len() >= maxKeys {
+		// Drop the lowest-priority pending task; the scan will reconsider it.
+		lowest := -1
+		for i, task := range s.tasks {
+			if lowest < 0 || task.priority < s.tasks[lowest].priority {
+				lowest = i
+			}
+		}
+		if lowest >= 0 && s.tasks[lowest].priority < priority {
+			evicted := s.tasks[lowest]
+			heap.Remove(&s.tasks, lowest)
+			delete(s.queued, taskID(evicted.entry, evicted.key))
+		}
+	}
 	heap.Push(&s.tasks, &scheduleTask{entry: entry, key: key, nextAt: next, priority: priority, enqueuedAt: now})
 	s.queued[id] = struct{}{}
 	return true
