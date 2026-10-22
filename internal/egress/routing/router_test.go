@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/health"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/node"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/outbound"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/pool"
@@ -106,6 +107,37 @@ func TestSelectSkipsBlockedRegion(t *testing.T) {
 	r.RecordRegionBlock(u.Hostname(), "us")
 	if _, err := r.Select(context.Background(), u, nil); !errors.Is(err, ErrNoEligible) {
 		t.Fatalf("all regions blocked must return ErrNoEligible, got %v", err)
+	}
+}
+
+func TestFrozenEnvironmentDoesNotCoolNodes(t *testing.T) {
+	r, p := testRouter(t)
+	u := mustURL(t, "https://api.example.com/v1")
+	opts := httpExit("127.0.0.1", 18083, "frozen")
+	raw, _ := json.Marshal(opts)
+	entry, _ := p.Add("sub", pool.Input{Options: opts, Raw: raw})
+	entry.MarkHealthy()
+
+	env := health.NewEnvironment(health.EnvironmentConfig{FailureGrace: 0}, time.Now())
+	env.SetActiveKeys(1)
+	env.ReportTransportFailure("a", "https://t-a", time.Now())
+	env.ReportTransportFailure("b", "https://t-a", time.Now())
+	env.ReportTransportFailure("c", "https://t-b", time.Now())
+	if !env.Frozen() {
+		t.Fatal("environment must be frozen for this test")
+	}
+	r.SetEnvironment(env)
+
+	attempt, err := r.Select(context.Background(), u, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	classification := attempt.Report(Outcome{Kind: ProxyFailure, Err: errors.New("dial failed")})
+	if classification.Reason != "environment_frozen" {
+		t.Fatalf("reason = %s", classification.Reason)
+	}
+	if entry.Cooling(time.Now()) {
+		t.Fatal("a frozen environment must not cool exits")
 	}
 }
 

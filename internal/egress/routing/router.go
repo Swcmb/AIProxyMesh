@@ -578,6 +578,11 @@ func (r *Router) report(attempt *Attempt, outcome Outcome) Classification {
 	if attempt.Direct {
 		outcome.Direct = true
 	}
+	if env := r.environment.Load(); env != nil && env.Frozen() {
+		// The local link is broken: cooling exits or moving health states
+		// would blame the pool for an environment fault.
+		return Classification{Kind: outcome.Kind, Retryable: true, Reason: "environment_frozen"}
+	}
 
 	result := Classification{Kind: outcome.Kind}
 outcomeSwitch:
