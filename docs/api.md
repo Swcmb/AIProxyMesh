@@ -97,7 +97,7 @@ WebUI 监听器同源提供。认证使用 HttpOnly Session Cookie `mesh_session
 | POST | `/api/egress/subscriptions/{id}/refresh` | 立即刷新订阅 |
 | POST | `/api/egress/subscriptions/{id}/cleanup` | 清理该订阅处于冷却中的出口并立即刷新，返回 `{removed_nodes:n}` |
 | GET | `/api/egress/events` | 出口切换事件（`limit`，默认 200） |
-| GET | `/api/egress/diagnose` | `target=` 指定上游 URL；返回每个节点的资格、原因与 H/L/R/U 分数 |
+| GET | `/api/egress/diagnose` | `target=` 指定上游 URL，`limit=` 上限 2000（默认 200）；返回 `{target,total,eligible,reasons,candidates}`，`candidates` 是按总分降序的可调度出口（含 H/L/R/U 分数），`reasons` 是其余节点的资格原因计数 |
 
 `status` 取值：`healthy`、`cooling`、`error`、`unprobed`、`disabled`、`unsupported`；`sort_by` 取值：`score`（默认）、`name`、`latency`、`health`、`failures`、`last_probe_at`、`created_at`。
 

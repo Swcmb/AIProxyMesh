@@ -209,7 +209,30 @@ func TestEgressDiagnose(t *testing.T) {
 	}
 	body := decodeBody(t, recorder)
 	candidates := body["candidates"].([]any)
-	if len(candidates) != 2 {
-		t.Fatalf("candidates = %v", candidates)
+	if body["total"].(float64) != 2 {
+		t.Fatalf("total = %v, want the whole pool counted", body["total"])
+	}
+	if body["eligible"].(float64) != 1 || len(candidates) != 1 {
+		t.Fatalf("eligible = %v candidates = %v", body["eligible"], candidates)
+	}
+	reasons := body["reasons"].(map[string]any)
+	if reasons["unprobed"].(float64) != 1 {
+		t.Fatalf("reasons = %v, want the ineligible node counted by reason", reasons)
+	}
+	if candidates[0].(map[string]any)["protocol"] != "direct" {
+		t.Fatalf("candidates = %v, want the eligible direct exit", candidates)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/egress/diagnose?target=https://api.example.com/v1&limit=1", nil)
+	recorder = httptest.NewRecorder()
+	server.handleEgressDiagnose(recorder, request)
+	if decodeBody(t, recorder)["limit"].(float64) != 1 {
+		t.Fatalf("limit was not applied: %s", recorder.Body.String())
+	}
+	request = httptest.NewRequest(http.MethodGet, "/api/egress/diagnose?target=https://api.example.com/v1&limit=0", nil)
+	recorder = httptest.NewRecorder()
+	server.handleEgressDiagnose(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("limit=0 status = %d, want 400", recorder.Code)
 	}
 }

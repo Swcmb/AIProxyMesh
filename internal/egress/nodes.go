@@ -359,13 +359,9 @@ func (e *Engine) NodeDetail(id string) (NodeView, bool) {
 		view.RegionName = result.Name
 	}
 	if target != nil {
-		for _, candidate := range e.router.Diagnose(target, nil) {
-			if candidate.ID == view.ID {
-				view.Score = candidate.Score
-				view.Eligible = candidate.Eligible
-				break
-			}
-		}
+		candidate := e.router.DiagnoseEntry(target, entry)
+		view.Score = candidate.Score
+		view.Eligible = candidate.Eligible
 	}
 	return view, true
 }
