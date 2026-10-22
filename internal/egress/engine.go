@@ -1009,6 +1009,9 @@ func (e *Engine) SetCanaryExecutor(executor probe.CanaryFunc) {
 	}
 }
 
+// PoolEntry returns one entry by hash for diagnostics and tests.
+func (e *Engine) PoolEntry(hash node.Hash) *node.Entry { return e.pool.Get(hash) }
+
 // OutboundClient returns the node-bound HTTP client for canary execution.
 func (e *Engine) OutboundClient(entry *node.Entry) (*http.Client, error) {
 	return e.outbound.Client(entry)

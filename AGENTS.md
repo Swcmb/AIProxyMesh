@@ -21,6 +21,9 @@ go build -o mesh ./cmd/mesh            # Windows: -o mesh.exe
 cd webui && npx playwright install chromium firefox   # 首次
 npx playwright test
 
+# 真实订阅烟测（需要公网；默认跳过）
+MESH_LIVE_PRESETS=1 go test -tags live ./internal/egress ./internal/egress/subscription   -run 'Preset|EngineWithPreset' -v -timeout 15m
+
 # 单镜像
 docker build -t mesh:local .
 ```
