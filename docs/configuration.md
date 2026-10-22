@@ -90,6 +90,8 @@
 | `probe.egress_ip_interval_seconds` | 出口 IP 探测周期（60–604800，默认 21600）；每 13–17 秒抖动扫描，每轮最多入队 250 个 |
 | `probe.egress_ip_target` | 出口 IP 探测地址；默认 `https://cloudflare.com/cdn-cgi/trace`，解析响应中的 `ip=` 行 |
 | `probe.canary_enabled` | 是否启用推理金丝雀（默认 true）；关闭后只依赖真实流量积累证据 |
+| `probe.canary_model` | 新可达节点没有健康键时用于生成候选键的模型；留空则只靠真实流量建立键 |
+| `probe.canary_default_mode` | 金丝雀请求模式（`stream`/`json`，默认 stream） |
 | `probe.budget_per_second` / `budget_burst` | 金丝雀全局令牌桶（默认 2/s，突发 4） |
 | `probe.canary_daily_budget` | 金丝雀每日上限（默认 20000），按 UTC 零点重置 |
 | `probe.canary_max_inflight` | 全局在途金丝雀上限（默认 8）；同一键另有单飞约束 |
