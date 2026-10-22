@@ -245,42 +245,9 @@ jobs:
             gh release create "$RELEASE_TAG" release-files/* "${release_type[@]}" --verify-tag --generate-notes --title "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
           fi
 
-  publish-npm:
-    name: Publish npm packages
-    needs: [prepare, release]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.release_tag }}
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          registry-url: "https://registry.npmjs.org"
-
-      - name: Download release files
-        uses: actions/download-artifact@v4
-        with:
-          pattern: mesh_*
-          path: release-files
-          merge-multiple: true
-
-      - name: Generate and publish packages
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: node npm/scripts/publish-npm.mjs --tag "$RELEASE_TAG" --dist release-files --publish
-
   notify:
     name: Notify on failure
-    needs: [prepare, verify, build, container, release, publish-npm]
+    needs: [prepare, verify, build, container, release]
     if: failure()
     uses: ./.github/workflows/notify-failure.yml
     with:
