@@ -84,7 +84,8 @@ WebUI 监听器同源提供。认证使用 HttpOnly Session Cookie `mesh_session
 | GET | `/api/egress/nodes/{id}` | 单节点详情，含 `status`、`score`（H/L/R/U）与 `eligible` |
 | POST | `/api/egress/nodes/{id}/enabled` | `{enabled:bool}` 手动启停 |
 | POST | `/api/egress/nodes/{id}/probe` | 立即探测并返回刷新后的节点 |
-| POST | `/api/egress/nodes/probe` | 批量探测 `{ids:[...]}`（上限 20000）：≤200 个同步返回 `{mode:"sync",probed,requested}`；更大规模转后台任务返回 `{mode:"async",started,job}`，同一时间只运行一个任务 |
+| POST | `/api/egress/nodes/probe` | 批量探测 `{ids:[...]}` 或全池刷新 `{all:true}`（上限 20000 个显式 ID）：≤200 个同步返回 `{mode:"sync",probed,requested}`；更大规模或 `all` 转后台任务返回 `{mode:"async",started,job}`，同一时间只运行一个任务 |
+| POST | `/api/egress/nodes/probe/cancel` | 取消当前后台刷新任务，返回 `{cancelled:bool}`；已完成的节点结果保留 |
 | GET | `/api/egress/nodes/probe/status` | 后台探测进度 `{job:{id,total,done,running,started_at,finished_at}}`；无任务时 `job` 为零值 |
 | GET | `/api/egress/subscription-presets` | 内置订阅预设（api-proxy-pool 的 hproxy CSV 与 proxifly 清单，HTTP/HTTPS/SOCKS5，不含 SOCKS4）；只读，需用户显式添加 |
 | GET | `/api/egress/subscriptions` | 订阅状态（节点数、格式、错误、下次刷新）；URL 仅显示 origin |
@@ -109,7 +110,7 @@ WebUI 监听器同源提供。认证使用 HttpOnly Session Cookie `mesh_session
 
 节点视图在有库时附带 `region`（ISO 3166-1 国家码）与 `region_name`（中文名），`facets.regions` 列出当前筛选可选的国家，`facets.geoip_enabled` 表示是否启用。
 
-节点 ID 为 32 位十六进制配置哈希；同一出口出现在多个订阅时共享同一 ID 与健康状态，并在 `aliases` 中列出每个订阅给它的名字。节点快照含 `ever_healthy`（首次连通前不参与调度）、`cooldown_since`（连续熔断起点）、`egress_ip`（最近一次出口 IP 探测结果）。
+节点 ID 为 32 位十六进制配置哈希；同一出口出现在多个订阅时共享同一 ID 与健康状态，并在 `aliases` 中列出每个订阅给它的名字。节点快照含 `ever_healthy`（首次连通前不参与调度）、`last_success_at`（最近成功时间，路由优先选择近期验证节点）、`cooldown_since`（连续熔断起点）、`egress_ip`（最近一次出口 IP 探测结果）。
 
 ### 请求日志 `/api/logs/requests`
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/url"
@@ -70,6 +71,100 @@ func TestUnprobedNodeIsNotEligible(t *testing.T) {
 	entry.MarkHealthy()
 	if _, err := r.Select(context.Background(), u, nil); err != nil {
 		t.Fatalf("a healthy signal must make the node routable: %v", err)
+	}
+}
+
+func TestSelectSkipsBlockedRegion(t *testing.T) {
+	r, p := testRouter(t)
+	u := mustURL(t, "https://api.example.com/v1")
+	cnOpts := httpExit("127.0.0.1", 18081, "cn")
+	cnRaw, _ := json.Marshal(cnOpts)
+	cn, _ := p.Add("sub", pool.Input{Options: cnOpts, Raw: cnRaw})
+	cn.MarkHealthy()
+	cn.SetRegion("cn")
+	usOpts := httpExit("127.0.0.1", 18082, "us")
+	usRaw, _ := json.Marshal(usOpts)
+	us, _ := p.Add("sub", pool.Input{Options: usOpts, Raw: usRaw})
+	us.MarkHealthy()
+	us.SetRegion("us")
+	r.SetRegionResolver(func(entry *node.Entry) string { return entry.Region() })
+
+	r.RecordRegionBlock(u.Hostname(), "cn")
+	for i := 0; i < 10; i++ {
+		attempt, err := r.Select(context.Background(), u, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if attempt.NodeID != us.ID() {
+			t.Fatalf("selected blocked region node %s", attempt.NodeName)
+		}
+		attempt.Report(Outcome{Kind: Success})
+	}
+
+	// Blocking every region must fall back instead of locking routing out.
+	r.RecordRegionBlock(u.Hostname(), "us")
+	attempt, err := r.Select(context.Background(), u, nil)
+	if err != nil {
+		t.Fatalf("fallback with all regions blocked: %v", err)
+	}
+	attempt.Release()
+}
+
+func TestRegionBlockedOutcomeHidesRegion(t *testing.T) {
+	r, p := testRouter(t)
+	u := mustURL(t, "https://api.example.com/v1")
+	cnOpts := httpExit("127.0.0.1", 18081, "cn")
+	cnRaw, _ := json.Marshal(cnOpts)
+	cn, _ := p.Add("sub", pool.Input{Options: cnOpts, Raw: cnRaw})
+	cn.MarkHealthy()
+	cn.SetRegion("cn")
+	usOpts := httpExit("127.0.0.1", 18082, "us")
+	usRaw, _ := json.Marshal(usOpts)
+	us, _ := p.Add("sub", pool.Input{Options: usOpts, Raw: usRaw})
+	us.MarkHealthy()
+	us.SetRegion("us")
+	r.SetRegionResolver(func(entry *node.Entry) string { return entry.Region() })
+
+	blocked := &Attempt{Router: r, entry: cn, Target: u.Hostname()}
+	classification := blocked.Report(Outcome{Kind: RegionBlocked, StatusCode: 403, Region: "cn"})
+	if !classification.Retryable || classification.Reason != "region_blocked" {
+		t.Fatalf("classification = %+v", classification)
+	}
+	for i := 0; i < 5; i++ {
+		attempt, err := r.Select(context.Background(), u, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if attempt.NodeID != us.ID() {
+			t.Fatalf("region block was not applied, selected %s", attempt.NodeName)
+		}
+		attempt.Report(Outcome{Kind: Success})
+	}
+}
+
+func TestSelectPrefersRecentlyVerified(t *testing.T) {
+	r, p := testRouter(t)
+	u := mustURL(t, "https://api.example.com/v1")
+	verifiedOpts := httpExit("127.0.0.1", 18081, "verified")
+	verifiedRaw, _ := json.Marshal(verifiedOpts)
+	verified, _ := p.Add("sub", pool.Input{Options: verifiedOpts, Raw: verifiedRaw})
+	verified.MarkHealthy()
+	for i := 0; i < 20; i++ {
+		opts := httpExit("127.0.0.1", uint16(20000+i), fmt.Sprintf("raw-%d", i))
+		raw, _ := json.Marshal(opts)
+		entry, _ := p.Add("sub", pool.Input{Options: opts, Raw: raw})
+		// Eligible from a legacy restore, but never verified in this process.
+		entry.RestoreHealth(true, 0, "", 0)
+	}
+	for i := 0; i < 20; i++ {
+		attempt, err := r.Select(context.Background(), u, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if attempt.NodeID != verified.ID() {
+			t.Fatalf("selected %s, want recently verified %s", attempt.NodeName, verified.Name())
+		}
+		attempt.Report(Outcome{Kind: Success})
 	}
 }
 

@@ -194,6 +194,9 @@ func TestCooldownSinceHealthAndEgressIP(t *testing.T) {
 	if !entry.EverHealthy() {
 		t.Fatal("a successful probe must admit the node")
 	}
+	if entry.LastSuccessAt() == 0 {
+		t.Fatal("a successful probe must stamp the last success time")
+	}
 	entry.RecordSuccess()
 	if entry.CooldownSince() != 0 {
 		t.Fatal("success must clear the cooldown start")
@@ -203,7 +206,7 @@ func TestCooldownSinceHealthAndEgressIP(t *testing.T) {
 		t.Fatal("egress attempt must persist the address and timestamp")
 	}
 	snap := entry.Snapshot("", time.Now())
-	if snap.EgressIP != "203.0.113.9" || !snap.EverHealthy || snap.CooldownSince != nil {
+	if snap.EgressIP != "203.0.113.9" || !snap.EverHealthy || snap.CooldownSince != nil || snap.LastSuccessAt == nil {
 		t.Fatalf("snapshot = %+v", snap)
 	}
 }

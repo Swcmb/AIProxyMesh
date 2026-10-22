@@ -105,6 +105,7 @@ func New(opts Options) (*Engine, error) {
 	e.settings.Store(&settings{egress: cfg, upstream: opts.Upstream, performance: opts.Performance, legacy: opts.Legacy})
 	e.subs = subscription.New(nodePool, nil, e.sources, logger)
 	e.geoip = newGeoIPService(cfg, logger)
+	e.router.SetRegionResolver(e.nodeRegionFor)
 	if e.geoip != nil {
 		geo := *cfg.GeoIP
 		e.geoipConfig = &geo
@@ -255,6 +256,33 @@ func (e *Engine) Subscriptions() *subscription.Manager { return e.subs }
 // RefreshAll synchronously refreshes every configured subscription.
 func (e *Engine) RefreshAll(ctx context.Context) { e.subs.RefreshAll(ctx) }
 
+// NodeRegion resolves one node's GeoIP country, caching it on the entry.
+func (e *Engine) NodeRegion(id string) string {
+	hash, err := node.ParseHex(id)
+	if err != nil {
+		return ""
+	}
+	entry := e.pool.Get(hash)
+	if entry == nil {
+		return ""
+	}
+	return e.nodeRegionFor(entry)
+}
+
+func (e *Engine) nodeRegionFor(entry *node.Entry) string {
+	if entry == nil {
+		return ""
+	}
+	if region := entry.Region(); region != "" {
+		return region
+	}
+	if result, ok := e.regionFor(entryRegionAddress(entry)); ok {
+		entry.SetRegion(result.Country)
+		return result.Country
+	}
+	return ""
+}
+
 // ProbeAll synchronously probes every supported node.
 func (e *Engine) ProbeAll(ctx context.Context) { e.probe.ProbeAll(ctx) }
 
@@ -262,7 +290,7 @@ func (e *Engine) ProbeAll(ctx context.Context) { e.probe.ProbeAll(ctx) }
 // actually probed; unknown or unsupported IDs are skipped. The caller bounds
 // the batch so a manual refresh stays bounded even with a very large pool.
 func (e *Engine) ProbeNodes(ctx context.Context, ids []string) int {
-	return e.probe.ProbeBatch(ctx, ids, nil)
+	return e.probe.ProbeBatchFast(ctx, ids, nil)
 }
 
 // BatchProbeView is the management view of one asynchronous probe job.
@@ -271,13 +299,15 @@ type BatchProbeView struct {
 	Total      int        `json:"total"`
 	Done       int        `json:"done"`
 	Running    bool       `json:"running"`
+	Cancelled  bool       `json:"cancelled"`
 	StartedAt  time.Time  `json:"started_at"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
 }
 
 type batchProbeState struct {
-	mu   sync.Mutex
-	view BatchProbeView
+	mu     sync.Mutex
+	view   BatchProbeView
+	cancel context.CancelFunc
 }
 
 func (s *batchProbeState) setDone(done int) {
@@ -294,6 +324,12 @@ func (s *batchProbeState) finish() {
 	s.mu.Unlock()
 }
 
+func (s *batchProbeState) markCancelled() {
+	s.mu.Lock()
+	s.view.Cancelled = true
+	s.mu.Unlock()
+}
+
 func (s *batchProbeState) snapshot() BatchProbeView {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -304,29 +340,63 @@ func (s *batchProbeState) snapshot() BatchProbeView {
 // Only one job runs at a time; the caller gets the running job back with
 // started=false instead of stacking another sweep.
 func (e *Engine) StartBatchProbe(ids []string) (BatchProbeView, bool) {
+	return e.startBatchProbe(ids)
+}
+
+// StartBatchProbeAll queues every enabled, supported node in the pool.
+func (e *Engine) StartBatchProbeAll() (BatchProbeView, bool) {
+	entries := e.pool.List()
+	ids := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Enabled() && entry.Options.Supported() {
+			ids = append(ids, entry.ID())
+		}
+	}
+	return e.startBatchProbe(ids)
+}
+
+func (e *Engine) startBatchProbe(ids []string) (BatchProbeView, bool) {
 	e.probeMu.Lock()
 	if e.probeJob != nil && e.probeJob.snapshot().Running {
 		view := e.probeJob.snapshot()
 		e.probeMu.Unlock()
 		return view, false
 	}
-	ctx := e.ctx
-	if ctx == nil {
-		ctx = context.Background()
+	base := e.ctx
+	if base == nil {
+		base = context.Background()
 	}
-	job := &batchProbeState{view: BatchProbeView{
-		ID:        fmt.Sprintf("probe-%d", time.Now().UnixNano()),
-		Total:     len(ids),
-		Running:   true,
-		StartedAt: time.Now(),
-	}}
+	ctx, cancel := context.WithCancel(base)
+	job := &batchProbeState{
+		view: BatchProbeView{
+			ID:        fmt.Sprintf("probe-%d", time.Now().UnixNano()),
+			Total:     len(ids),
+			Running:   true,
+			StartedAt: time.Now(),
+		},
+		cancel: cancel,
+	}
 	e.probeJob = job
 	e.probeMu.Unlock()
 	go func() {
-		e.probe.ProbeBatch(ctx, ids, func(done, _ int) { job.setDone(done) })
+		defer cancel()
+		e.probe.ProbeBatchFast(ctx, ids, func(done, _ int) { job.setDone(done) })
 		job.finish()
 	}()
 	return job.snapshot(), true
+}
+
+// CancelBatchProbe stops the running job; finished nodes keep their results.
+func (e *Engine) CancelBatchProbe() bool {
+	e.probeMu.Lock()
+	job := e.probeJob
+	e.probeMu.Unlock()
+	if job == nil || !job.snapshot().Running {
+		return false
+	}
+	job.markCancelled()
+	job.cancel()
+	return true
 }
 
 // BatchProbeStatus returns the current asynchronous probe job, if any.
@@ -539,6 +609,9 @@ func (e *Engine) restore(ctx context.Context) error {
 		// Legacy records carry no ever_healthy column and get its default (1),
 		// so an upgrade keeps routing until the first probe sweep finishes.
 		entry.RestoreHealth(record.EverHealthy, cooldownSince, record.EgressIP, lastEgress)
+		if !record.LastSuccess.IsZero() {
+			entry.RestoreLastSuccess(record.LastSuccess.UnixNano())
+		}
 		if latency := entry.Latency(); latency != nil {
 			for host, sample := range record.Latency {
 				latency.Load(host, node.DomainStats{EWMA: sample.EWMA, LastUpdated: sample.UpdatedAt})
@@ -575,6 +648,9 @@ func (e *Engine) save(ctx context.Context) error {
 		}
 		if at := entry.LastEgressAttempt(); at > 0 {
 			record.LastEgressUpdate = time.Unix(0, at).UTC()
+		}
+		if at := entry.LastSuccessAt(); at > 0 {
+			record.LastSuccess = time.Unix(0, at).UTC()
 		}
 		if latency := entry.Latency(); latency != nil {
 			for host, stats := range latency.Snapshot() {

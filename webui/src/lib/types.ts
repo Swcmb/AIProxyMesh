@@ -459,6 +459,7 @@ export interface EgressNode {
   has_latency: boolean;
   last_error?: string;
   last_probe_at?: string;
+  last_success_at?: string;
   created_at: string;
   status: string;
   region?: string;
@@ -542,6 +543,7 @@ export interface BatchProbeJob {
   total: number;
   done: number;
   running: boolean;
+  cancelled?: boolean;
   started_at: string;
   finished_at?: string;
 }

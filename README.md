@@ -78,7 +78,7 @@ cd .. && go build -trimpath -ldflags "-s -w" -o mesh ./cmd/mesh
 
 - **认证**：管理端统一 session + CSRF；`/api/egress/*` 与 `/api/rankings` 沿用同一认证。
 - **冷却分层**：节点层 `egress.cooldown`（指数退避，`Retry-After` 可延长）与通道层 Key 冷却独立，同一失败只触一层。
-- **探测体系**：主动探测采用双优先级固定 worker 池与 13–17 秒抖动扫描；真实流量被动上报连通性与 TLS 握手延迟；出口 IP 低频探测并优先用于地区解析；`ephemeral` 订阅会驱逐长期熔断的节点。
+- **探测体系**：主动探测采用双优先级固定 worker 池与 13–17 秒抖动扫描；真实流量被动上报连通性与 TLS 握手延迟；出口 IP 低频探测并优先用于地区解析；`ephemeral` 订阅会驱逐长期熔断的节点。网络层 403 地区限制会按出口国家临时隔离该地区并自动换出口。
 - **状态分离**：业务配置在 `config.json`；节点、订阅、健康、冷却、延迟与事件在 `egress.state_path` 的 SQLite 中独立更新；请求日志在 `logging.requests.state_path` 的独立 SQLite，缓冲写入不阻塞请求。
 
 模型排名引擎独立于出口调度：按「模型 + 任务类型」计算综合分，模型管理页列表顺序、路由诊断与轮转顺序都由它提供依据。

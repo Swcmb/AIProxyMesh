@@ -154,9 +154,15 @@ func (a *Server) handleEgressBatchProbe(w http.ResponseWriter, r *http.Request) 
 	}
 	var input struct {
 		IDs []string `json:"ids"`
+		All bool     `json:"all"`
 	}
 	if err := decodeAdminJSON(w, r, &input); err != nil {
 		writeAdminError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if input.All {
+		job, started := engine.StartBatchProbeAll()
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"mode": "async", "started": started, "job": job})
 		return
 	}
 	if len(input.IDs) == 0 {
@@ -178,6 +184,15 @@ func (a *Server) handleEgressBatchProbe(w http.ResponseWriter, r *http.Request) 
 	}
 	job, started := engine.StartBatchProbe(input.IDs)
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"mode": "async", "started": started, "job": job})
+}
+
+func (a *Server) handleEgressBatchProbeCancel(w http.ResponseWriter, _ *http.Request) {
+	engine := a.egressEngine()
+	if engine == nil {
+		writeEgressDisabled(w)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"cancelled": engine.CancelBatchProbe()})
 }
 
 func (a *Server) handleEgressBatchProbeStatus(w http.ResponseWriter, _ *http.Request) {

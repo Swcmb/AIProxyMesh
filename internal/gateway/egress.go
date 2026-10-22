@@ -102,6 +102,14 @@ func (g *Gateway) reportEgressAttempt(
 ) routing.Classification {
 	attempt.KeyID = keyID
 	outcome := classifyEgressOutcome(ctx, resp, attemptErr, attempt.ProxyURL == nil, g.honorRetryAfter())
+	if resp != nil && resp.StatusCode == http.StatusForbidden && attempt.ProxyURL != nil && geoBlockedResponse(resp) {
+		// A country rejection is not a dead exit: rotate to another region and
+		// hide this country for the target instead of cooling the node.
+		outcome = routing.Outcome{Kind: routing.RegionBlocked, StatusCode: http.StatusForbidden}
+		if g.egress != nil {
+			outcome.Region = g.egress.NodeRegion(attempt.NodeID)
+		}
+	}
 	outcome.Latency = duration
 	classification := attempt.Report(outcome)
 
