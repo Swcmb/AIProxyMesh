@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import type { DebugModelsResponse, EgressCandidate } from "../lib/types";
@@ -9,17 +9,42 @@ import { Select } from "../components/ui/Select";
 import { formatPercent } from "../lib/time";
 import { formatApiErrorMessage } from "../lib/error-message";
 
+interface DiagnoseResponse {
+  target: string;
+  total: number;
+  eligible: number;
+  reasons: Record<string, number>;
+  limit: number;
+  candidates: EgressCandidate[];
+}
+
+const reasonLabels: Record<string, string> = {
+  disabled: "手动停用",
+  unsupported_protocol: "协议不支持",
+  protocol_disabled: "协议未启用",
+  subscription_disabled: "订阅停用",
+  unprobed: "未探测",
+  cooling_down: "冷却中",
+  already_attempted: "本轮已试过",
+};
+
 export function DiagnosticsPage() {
   const [model, setModel] = useState("");
   const [target, setTarget] = useState("https://opencode.ai/zen");
+  // Every keystroke would otherwise re-score the whole pool server side.
+  const [debouncedTarget, setDebouncedTarget] = useState(target);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedTarget(target), 300);
+    return () => clearTimeout(timer);
+  }, [target]);
   const debug = useQuery({ queryKey: ["debug-models"], queryFn: () => api.get<DebugModelsResponse>("/api/debug/models") });
   const diagnose = useQuery({
-    queryKey: ["egress", "diagnose", target],
+    queryKey: ["egress", "diagnose", debouncedTarget],
     queryFn: () =>
-      api.get<{ target: string; candidates: EgressCandidate[] }>(
-        `/api/egress/diagnose?target=${encodeURIComponent(target)}`,
+      api.get<DiagnoseResponse>(
+        `/api/egress/diagnose?target=${encodeURIComponent(debouncedTarget)}&limit=200`,
       ),
-    enabled: target.startsWith("http"),
+    enabled: debouncedTarget.startsWith("http"),
   });
 
   const models = debug.data?.models ?? [];
@@ -138,7 +163,9 @@ export function DiagnosticsPage() {
         <div className="card panel">
           <div className="panel-head">
             <h3>出口候选</h3>
-            <span className="badge badge-neutral">评分目标</span>
+            <span className="badge badge-neutral">
+              {diagnose.data ? `${diagnose.data.eligible} / ${diagnose.data.total} 可调度` : "评分目标"}
+            </span>
           </div>
           <label className="field-group">
             <span className="field-label">上游目标</span>
@@ -149,19 +176,39 @@ export function DiagnosticsPage() {
             />
           </label>
           {diagnose.isError ? <ErrorNotice message={formatApiErrorMessage(diagnose.error)} /> : null}
+          {diagnose.data && Object.keys(diagnose.data.reasons).length > 0 ? (
+            <div className="timeline">
+              {Object.entries(diagnose.data.reasons)
+                .sort((a, b) => b[1] - a[1])
+                .map(([reason, count]) => (
+                  <div className="timeline-item" key={reason}>
+                    <span className="muted">{reasonLabels[reason] ?? reason}</span>
+                    <span className="mono">{reason}</span>
+                    <span className="badge badge-muted">{count}</span>
+                  </div>
+                ))}
+            </div>
+          ) : null}
           {!diagnose.data ? (
             <EmptyState title="等待诊断" hint="输入上游 URL 后按目标评估出口" />
-          ) : diagnose.data.candidates.length === 0 ? (
+          ) : diagnose.data.total === 0 ? (
             <EmptyState title="出口池未启用或无节点" />
+          ) : diagnose.data.candidates.length === 0 ? (
+            <EmptyState title="无可用出口" hint="全部节点都被上面的原因挡住" />
           ) : (
-            <DataTable
-              columns={candidateColumns}
-              rows={diagnose.data.candidates.slice().sort((a, b) => b.score.total - a.score.total)}
-              rowKey={(item) => item.id}
-              caption="出口候选评分"
-              minWidth={640}
-              maxHeight={260}
-            />
+            <>
+              <p className="muted">
+                按总分排序，最多展示 {diagnose.data.limit} 个可调度出口。
+              </p>
+              <DataTable
+                columns={candidateColumns}
+                rows={diagnose.data.candidates}
+                rowKey={(item) => item.id}
+                caption="出口候选评分"
+                minWidth={640}
+                maxHeight={260}
+              />
+            </>
           )}
         </div>
       </div>

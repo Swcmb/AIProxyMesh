@@ -578,6 +578,12 @@ func (e *Engine) Diagnose(target *url.URL, exclude map[string]struct{}) []routin
 	return e.router.Diagnose(target, exclude)
 }
 
+// DiagnoseSummary is the bounded form of Diagnose: pool-wide verdict counts and
+// the top-ranked eligible candidates for one target.
+func (e *Engine) DiagnoseSummary(target *url.URL, limit int) routing.DiagnoseSummary {
+	return e.router.DiagnoseSummary(target, nil, limit)
+}
+
 // Counts summarizes pool health for the overview page.
 type Counts struct {
 	Total       int `json:"total"`

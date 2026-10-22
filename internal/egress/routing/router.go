@@ -11,6 +11,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,6 +33,10 @@ const verifiedWindow = 10 * time.Minute
 // regionBlockTTL is how long an upstream's country rejection hides that
 // country's exits from routing.
 const regionBlockTTL = 30 * time.Minute
+
+// DefaultDiagnoseLimit bounds how many ranked candidates a diagnostic response
+// carries, so an operator page never serialises the whole pool.
+const DefaultDiagnoseLimit = 200
 
 // Config controls scoring, cooldown and attribution behaviour.
 type Config struct {
@@ -933,41 +938,136 @@ func (r *Router) Diagnose(target *url.URL, exclude map[string]struct{}) []Candid
 	host := node.NormalizeHost(target.Hostname())
 	now := r.clock()
 	cfg := *r.cfg.Load()
+	inflight := r.inflightSnapshot()
 	entries := r.pool.List()
 	out := make([]Candidate, 0, len(entries))
 	for _, entry := range entries {
-		candidate := Candidate{
-			ID:       entry.ID(),
-			Name:     entry.Name(),
-			Protocol: string(entry.Options.Type),
-			Score:    computeScore(entry, host, r.inflightFor(entry.Hash), cfg.Weights),
-		}
-		switch {
-		case !entry.Enabled():
-			candidate.Reason = "disabled"
-		case !entry.Options.Supported():
-			candidate.Reason = "unsupported_protocol"
-		case !cfg.Allows(entry.Options.Type):
-			candidate.Reason = "protocol_disabled"
-		case !r.pool.Active(entry):
-			candidate.Reason = "subscription_disabled"
-		case !entry.EverHealthy():
-			candidate.Reason = "unprobed"
-		case entry.Cooling(now):
-			candidate.Reason = "cooling_down"
-			until := time.Unix(0, entry.CooldownUntil()).UTC()
-			candidate.CooldownUntil = &until
-		default:
-			if _, blocked := exclude[entry.ID()]; blocked {
-				candidate.Reason = "already_attempted"
-			} else {
-				candidate.Eligible = true
-				candidate.Reason = "eligible"
-			}
-		}
-		out = append(out, candidate)
+		out = append(out, r.evaluateCandidate(entry, host, now, cfg, exclude, inflight))
 	}
 	return out
+}
+
+// DiagnoseSummary is a bounded diagnostic response: pool-wide verdict counts
+// plus the highest scoring eligible candidates, so an operator page never has
+// to carry the whole pool.
+type DiagnoseSummary struct {
+	Candidates []Candidate    `json:"candidates"`
+	Total      int            `json:"total"`
+	Eligible   int            `json:"eligible"`
+	Reasons    map[string]int `json:"reasons"`
+}
+
+// DiagnoseSummary scores the pool once and keeps only the top `limit` eligible
+// candidates. A limit below one falls back to the default page size.
+func (r *Router) DiagnoseSummary(target *url.URL, exclude map[string]struct{}, limit int) DiagnoseSummary {
+	summary := DiagnoseSummary{Candidates: []Candidate{}, Reasons: map[string]int{}}
+	if target == nil {
+		return summary
+	}
+	if limit < 1 {
+		limit = DefaultDiagnoseLimit
+	}
+	host := node.NormalizeHost(target.Hostname())
+	now := r.clock()
+	cfg := *r.cfg.Load()
+	inflight := r.inflightSnapshot()
+	entries := r.pool.List()
+	summary.Total = len(entries)
+	eligible := make([]Candidate, 0, len(entries))
+	for _, entry := range entries {
+		candidate := r.evaluateCandidate(entry, host, now, cfg, exclude, inflight)
+		if candidate.Eligible {
+			summary.Eligible++
+			eligible = append(eligible, candidate)
+			continue
+		}
+		summary.Reasons[candidate.Reason]++
+	}
+	slices.SortFunc(eligible, func(a, b Candidate) int {
+		return compareFloat(b.Score.Total, a.Score.Total)
+	})
+	if len(eligible) > limit {
+		eligible = eligible[:limit]
+	}
+	summary.Candidates = eligible
+	return summary
+}
+
+// DiagnoseEntry is the single-node form of Diagnose, used by the node detail
+// view so one row does not pay for a full pool scan.
+func (r *Router) DiagnoseEntry(target *url.URL, entry *node.Entry) Candidate {
+	if target == nil || entry == nil {
+		return Candidate{}
+	}
+	return r.evaluateCandidate(entry, node.NormalizeHost(target.Hostname()), r.clock(), *r.cfg.Load(), nil, nil)
+}
+
+// evaluateCandidate applies the eligibility switch and the score for one entry.
+// A nil inflight map reads the live counter under one lock, which is what the
+// single-node path wants; bulk callers pass a snapshot instead.
+func (r *Router) evaluateCandidate(entry *node.Entry, host string, now time.Time, cfg Config, exclude map[string]struct{}, inflight map[node.Hash]int) Candidate {
+	candidate := Candidate{
+		ID:       entry.ID(),
+		Name:     entry.Name(),
+		Protocol: string(entry.Options.Type),
+	}
+	load := 0
+	if inflight != nil {
+		load = inflight[entry.Hash]
+	} else {
+		load = r.inflightFor(entry.Hash)
+	}
+	candidate.Score = computeScore(entry, host, load, cfg.Weights)
+	switch {
+	case !entry.Enabled():
+		candidate.Reason = "disabled"
+	case !entry.Options.Supported():
+		candidate.Reason = "unsupported_protocol"
+	case !cfg.Allows(entry.Options.Type):
+		candidate.Reason = "protocol_disabled"
+	case !r.pool.Active(entry):
+		candidate.Reason = "subscription_disabled"
+	case !entry.EverHealthy():
+		candidate.Reason = "unprobed"
+	case entry.Cooling(now):
+		candidate.Reason = "cooling_down"
+		until := time.Unix(0, entry.CooldownUntil()).UTC()
+		candidate.CooldownUntil = &until
+	default:
+		if _, blocked := exclude[entry.ID()]; blocked {
+			candidate.Reason = "already_attempted"
+		} else {
+			candidate.Eligible = true
+			candidate.Reason = "eligible"
+		}
+	}
+	return candidate
+}
+
+// inflightSnapshot copies the in-flight counters under one lock. Bulk scans use
+// it so a diagnostic pass does not take the routing mutex once per node.
+func (r *Router) inflightSnapshot() map[node.Hash]int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.inflight) == 0 {
+		return map[node.Hash]int{}
+	}
+	out := make(map[node.Hash]int, len(r.inflight))
+	for hash, count := range r.inflight {
+		out[hash] = count
+	}
+	return out
+}
+
+func compareFloat(a, b float64) int {
+	switch {
+	case a < b:
+		return -1
+	case a > b:
+		return 1
+	default:
+		return 0
+	}
 }
 
 // TargetHost extracts the canonical host from a target URL or raw host.

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress"
+	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/routing"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/httpx"
 )
 
@@ -228,11 +229,24 @@ func (a *Server) handleEgressEvents(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"events": events})
 }
 
+// maxDiagnoseLimit caps how many ranked candidates one diagnostic response
+// carries; the pool itself is reported through total and the reason histogram.
+const maxDiagnoseLimit = 2000
+
 func (a *Server) handleEgressDiagnose(w http.ResponseWriter, r *http.Request) {
 	engine := a.egressEngine()
 	if engine == nil {
 		writeEgressDisabled(w)
 		return
+	}
+	limit := routing.DefaultDiagnoseLimit
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 {
+			writeAdminError(w, http.StatusBadRequest, "invalid_limit", "limit must be a positive integer")
+			return
+		}
+		limit = min(parsed, maxDiagnoseLimit)
 	}
 	var target *url.URL
 	if raw := r.URL.Query().Get("target"); raw != "" {
@@ -249,8 +263,13 @@ func (a *Server) handleEgressDiagnose(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusBadRequest, "invalid_target", "no upstream target is configured")
 		return
 	}
+	summary := engine.DiagnoseSummary(target, limit)
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"target":     target.String(),
-		"candidates": engine.Diagnose(target, nil),
+		"total":      summary.Total,
+		"eligible":   summary.Eligible,
+		"reasons":    summary.Reasons,
+		"limit":      limit,
+		"candidates": summary.Candidates,
 	})
 }
