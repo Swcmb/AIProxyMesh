@@ -94,6 +94,7 @@ type Config struct {
 	MinSamples             int
 	ValidMinSamples        int
 	EvidenceBucketSeconds  int
+	QuotaBucketSeconds     int
 	MaxSamplesPerBucket    int
 	MinEvidenceBuckets     int
 	HTTP200Target          float64
@@ -128,6 +129,7 @@ func DefaultConfig() Config {
 		MinSamples:             96,
 		ValidMinSamples:        46,
 		EvidenceBucketSeconds:  60,
+		QuotaBucketSeconds:     60,
 		MaxSamplesPerBucket:    10,
 		MinEvidenceBuckets:     5,
 		HTTP200Target:          0.95,
@@ -175,6 +177,9 @@ func (c Config) Normalize() Config {
 	}
 	if c.EvidenceBucketSeconds <= 0 {
 		c.EvidenceBucketSeconds = def.EvidenceBucketSeconds
+	}
+	if c.QuotaBucketSeconds <= 0 {
+		c.QuotaBucketSeconds = def.QuotaBucketSeconds
 	}
 	if c.MaxSamplesPerBucket <= 0 {
 		c.MaxSamplesPerBucket = def.MaxSamplesPerBucket
@@ -302,7 +307,11 @@ type KeyStats struct {
 	HTTPCheckRound          uint8
 	ValidCheckRound         uint8
 
-	Window                Window
+	Window Window
+	// RateWindow tracks how often this key's upstream answered at all versus
+	// answering with 429. It is the quota-freshness evidence used for ranking;
+	// the primary metrics stay neutral about rate limiting.
+	RateWindow            Window
 	LastCheckSamples      uint32
 	LastCheckValidSamples uint32
 
@@ -356,6 +365,7 @@ func NewKeyStats(key HealthKey, cfg Config, now time.Time) *KeyStats {
 		Beta200:        EmptyBeta(now),
 		BetaValid:      EmptyBeta(now),
 		Window:         NewWindow(cfg.EvidenceBucketSeconds),
+		RateWindow:     NewWindow(cfg.QuotaBucketSeconds),
 		BucketStart:    now.Truncate(time.Duration(cfg.EvidenceBucketSeconds) * time.Second),
 	}
 }
@@ -374,6 +384,9 @@ func FromSnapshot(snapshot KeyStats, cfg Config, now time.Time) *KeyStats {
 	}
 	if out.Window.BucketSeconds == 0 {
 		out.Window = NewWindow(cfg.EvidenceBucketSeconds)
+	}
+	if out.RateWindow.BucketSeconds == 0 {
+		out.RateWindow = NewWindow(cfg.QuotaBucketSeconds)
 	}
 	out.Beta200.DecayTo(now, cfg.DecayHalfLife)
 	out.BetaValid.DecayTo(now, cfg.DecayHalfLife)
@@ -411,6 +424,7 @@ type ProbeSnapshot struct {
 	Key             HealthKey
 	State           State
 	LastProbeAt     time.Time
+	NextProbeAt     time.Time
 	LastReachableAt time.Time
 	OpenUntil       time.Time
 	PrimarySuccess  uint32
@@ -427,7 +441,8 @@ func (s *KeyStats) ProbeSnapshot(now time.Time) ProbeSnapshot {
 	rate, _ := s.Window.FailureRate(now)
 	return ProbeSnapshot{
 		Key: s.Key, State: s.State,
-		LastProbeAt: s.LastProbeAt, LastReachableAt: s.LastReachableAt, OpenUntil: s.OpenUntil,
+		LastProbeAt: s.LastProbeAt, NextProbeAt: s.NextProbeAt,
+		LastReachableAt: s.LastReachableAt, OpenUntil: s.OpenUntil,
 		PrimarySuccess: s.PrimarySuccess, PrimaryFailure: s.PrimaryFailure, ProbeEnqueued: s.ProbeEnqueued,
 		BetaWeight: s.Beta200.RecentWeight(), FailureRate: rate,
 	}
@@ -442,6 +457,17 @@ func (s *KeyStats) Snapshot() KeyStats {
 	out.HTTPReservoir = Reservoir{K: s.HTTPReservoir.K, Seen: s.HTTPReservoir.Seen, Samples: s.HTTPReservoir.Snapshot()}
 	out.ValidReservoir = Reservoir{K: s.ValidReservoir.K, Seen: s.ValidReservoir.Seen, Samples: s.ValidReservoir.Snapshot()}
 	return out
+}
+
+// QuotaFreshness reports the share of recently answered requests on this key
+// that were not rate limited. A key nobody has answered yet counts as fresh, so
+// an unprobed exit is never penalised for evidence it could not have produced.
+func QuotaFreshness(window Window, now time.Time) float64 {
+	rate, samples := window.FailureRate(now)
+	if samples == 0 {
+		return 1
+	}
+	return 1 - rate
 }
 
 // Rate returns the raw HTTP 200 success ratio for diagnostics.
@@ -570,6 +596,12 @@ func (s *KeyStats) applyEvidence(obs Observation, cfg Config, now time.Time) {
 	case OutcomeNotFound:
 		s.NotFoundCount++
 		s.LastNotFoundAt = now
+	}
+	// Any answered request proves the exit's source IP still reaches the
+	// upstream; a 429 proves it has spent its quota. Transport failures carry
+	// no quota information and stay out of this window.
+	if obs.Status > 0 {
+		s.RateWindow.Add(obs.Kind != OutcomeRateLimited, now)
 	}
 }
 

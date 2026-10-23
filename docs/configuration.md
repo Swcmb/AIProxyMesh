@@ -51,7 +51,8 @@
       "health_weight": 0.30,
       "latency_weight": 0.15,
       "routing_weight": 0.15,
-      "upstream_success_weight": 0.40
+      "upstream_success_weight": 0.40,
+      "quota_weight": 0.15
     },
     "protocols": { "http": true, "https": true, "socks5": true, "socks5h": true },
     "cooldown": { "base_seconds": 30, "max_seconds": 900, "recovery_probe": true },
@@ -95,6 +96,7 @@
 | `probe.budget_per_second` / `budget_burst` | 金丝雀全局令牌桶（默认 2/s，突发 4） |
 | `probe.canary_daily_budget` | 金丝雀每日上限（默认 20000），按 UTC 零点重置 |
 | `probe.canary_max_inflight` | 全局在途金丝雀上限（默认 8）；同一键另有单飞约束 |
+| `probe.canary_timeout_seconds` | 单次金丝雀超时（1–120，默认 8）；死出口不能占满在途名额 |
 | `probe.active_recheck_seconds` / `verifying_recheck_seconds` | 稳定键与验证键的主动复验下限（预算允许时才执行） |
 | `bootstrap.mode` | `direct`（默认）或 `http_connect`；Mesh 到节点端点始终显式拨号，不读系统代理 |
 | `bootstrap.url` | `http_connect` 模式的 HTTP CONNECT 代理；必填 |
@@ -105,6 +107,9 @@
 | `health.exploration_ratio` / `candidate_exploration_ratio` | `prefer` 模式的探索配额（默认 10%，其中 2% 给候选） |
 | `health.max_keys_per_node` | 每节点健康键上限（1–32，默认 4）；稳定态不参与淘汰 |
 | `health.max_pending_observations` | 传输失败暂存队列上限（默认 10000）；溢出丢弃最旧观测并计数 |
+| `health.quota_stale_seconds` | 上游未给 `Retry-After` 时，429 让出口退出 verified 集的时长（0–86400，默认 300） |
+| `schedule.quota_weight` | 配额新鲜度在总分中的权重（默认 0.15，与其他权重一起归一化）；只影响排序，不改主健康指标 |
+| `probe.cluster_recheck_seconds` | 同网段（IPv4 /24、IPv6 /48）只先测一个代表的窗口（0–86400，默认 600）；该代表成功后放开整个网段 |
 | `probe.target_pause_seconds` | 404 未达跨出口共识或上游共识时暂停该 target 探测的时长（0–3600，默认 60） |
 | `state_path` | SQLite 路径；默认 `config.json.egress.db` |
 | `max_latency_entries` | 每节点延迟表上限（1–4096） |

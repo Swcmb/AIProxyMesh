@@ -487,7 +487,7 @@ func TestScoreComponents(t *testing.T) {
 	_, p := testRouter(t)
 	entry := addNode(p, "sub", httpExit("1.1.1.1", 8080, "a"))
 	weights := DefaultWeights().Normalize()
-	score := computeScore(entry, "api.example.com", 0, weights)
+	score := computeScore(entry, "api.example.com", 0, weights, 1)
 	if score.Health != 0.5 || score.Latency != 0.5 || score.Upstream != 0.5 {
 		t.Fatalf("priors = %+v", score)
 	}
@@ -500,11 +500,11 @@ func TestScoreComponents(t *testing.T) {
 
 	entry.RecordUpstreamResult("api.example.com", true)
 	entry.Latency().Update("api.example.com", 50*time.Millisecond, time.Minute)
-	better := computeScore(entry, "api.example.com", 0, weights)
+	better := computeScore(entry, "api.example.com", 0, weights, 1)
 	if better.Upstream <= score.Upstream || better.Latency <= score.Latency || better.Total <= score.Total {
 		t.Fatalf("good signals must raise the score: before=%+v after=%+v", score, better)
 	}
-	worse := computeScore(entry, "api.example.com", 5, weights)
+	worse := computeScore(entry, "api.example.com", 5, weights, 1)
 	if worse.Routing >= better.Routing {
 		t.Fatalf("load must lower the routing score: %+v", worse)
 	}

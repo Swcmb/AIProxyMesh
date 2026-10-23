@@ -21,15 +21,17 @@ func openTestStore(t *testing.T) (*Store, string) {
 func testSnapshot() Snapshot {
 	created := time.Unix(1_700_000_000, 0).UTC()
 	cooldown := created.Add(2 * time.Minute)
+	quotaStale := created.Add(5 * time.Minute)
 	return Snapshot{Nodes: []NodeRecord{
 		{
-			Hash:          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-			Raw:           []byte(`{"type":"http","server":"1.1.1.1","server_port":8080}`),
-			Enabled:       true,
-			Failures:      2,
-			CooldownUntil: cooldown,
-			CreatedAt:     created,
-			Subscriptions: []string{"sub-a", "legacy"},
+			Hash:            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			Raw:             []byte(`{"type":"http","server":"1.1.1.1","server_port":8080}`),
+			Enabled:         true,
+			Failures:        2,
+			CooldownUntil:   cooldown,
+			QuotaStaleUntil: quotaStale,
+			CreatedAt:       created,
+			Subscriptions:   []string{"sub-a", "legacy"},
 			Latency: map[string]LatencyRecord{
 				"api.example.com": {EWMA: 120 * time.Millisecond, UpdatedAt: created},
 			},
@@ -73,6 +75,9 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 	if !first.CooldownUntil.Equal(want.Nodes[0].CooldownUntil) {
 		t.Fatalf("cooldown = %v", first.CooldownUntil)
+	}
+	if !first.QuotaStaleUntil.Equal(want.Nodes[0].QuotaStaleUntil) {
+		t.Fatalf("quota stale = %v, want %v", first.QuotaStaleUntil, want.Nodes[0].QuotaStaleUntil)
 	}
 	if len(first.Subscriptions) != 2 {
 		t.Fatalf("subscriptions = %v", first.Subscriptions)

@@ -48,6 +48,7 @@ type NodeRecord struct {
 	LastEgressUpdate time.Time
 	LastSuccess      time.Time
 	LastReachable    time.Time
+	QuotaStaleUntil  time.Time
 	CreatedAt        time.Time
 	Subscriptions    []string
 	Latency          map[string]LatencyRecord
@@ -174,13 +175,17 @@ func (s *Store) Save(ctx context.Context, snapshot Snapshot) error {
 		if !record.LastReachable.IsZero() {
 			lastReachable = record.LastReachable.UnixNano()
 		}
+		quotaStale := int64(0)
+		if !record.QuotaStaleUntil.IsZero() {
+			quotaStale = record.QuotaStaleUntil.UnixNano()
+		}
 		created := record.CreatedAt
 		if created.IsZero() {
 			created = time.Now()
 		}
 		_, err = tx.ExecContext(ctx, `
-			INSERT INTO egress_nodes (hash, raw, enabled, failures, cooldown_until, created_at, cooldown_since, ever_healthy, egress_ip, last_egress_update, last_success, last_reachable)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO egress_nodes (hash, raw, enabled, failures, cooldown_until, created_at, cooldown_since, ever_healthy, egress_ip, last_egress_update, last_success, last_reachable, quota_stale_until)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(hash) DO UPDATE SET
 				raw = excluded.raw,
 				enabled = excluded.enabled,
@@ -192,9 +197,10 @@ func (s *Store) Save(ctx context.Context, snapshot Snapshot) error {
 				egress_ip = excluded.egress_ip,
 				last_egress_update = excluded.last_egress_update,
 				last_success = excluded.last_success,
-				last_reachable = excluded.last_reachable`,
+				last_reachable = excluded.last_reachable,
+				quota_stale_until = excluded.quota_stale_until`,
 			record.Hash, record.Raw, boolInt(record.Enabled), record.Failures, cooldown, created.UnixNano(),
-			cooldownSince, boolInt(record.EverHealthy), record.EgressIP, lastEgress, lastSuccess, lastReachable)
+			cooldownSince, boolInt(record.EverHealthy), record.EgressIP, lastEgress, lastSuccess, lastReachable, quotaStale)
 		if err != nil {
 			return fmt.Errorf("egress state: upsert node: %w", err)
 		}
@@ -254,7 +260,7 @@ func (s *Store) Save(ctx context.Context, snapshot Snapshot) error {
 // Load reads the persisted pool snapshot.
 func (s *Store) Load(ctx context.Context) (Snapshot, error) {
 	snapshot := Snapshot{}
-	rows, err := s.db.QueryContext(ctx, `SELECT hash, raw, enabled, failures, cooldown_until, created_at, cooldown_since, ever_healthy, egress_ip, last_egress_update, last_success, last_reachable FROM egress_nodes`)
+	rows, err := s.db.QueryContext(ctx, `SELECT hash, raw, enabled, failures, cooldown_until, created_at, cooldown_since, ever_healthy, egress_ip, last_egress_update, last_success, last_reachable, quota_stale_until FROM egress_nodes`)
 	if err != nil {
 		return snapshot, fmt.Errorf("egress state: load nodes: %w", err)
 	}
@@ -263,10 +269,10 @@ func (s *Store) Load(ctx context.Context) (Snapshot, error) {
 	for rows.Next() {
 		record := &NodeRecord{}
 		var enabled, everHealthy int
-		var cooldown, created, cooldownSince, lastEgress, lastSuccess, lastReachable int64
+		var cooldown, created, cooldownSince, lastEgress, lastSuccess, lastReachable, quotaStale int64
 		var egressIP string
 		if err := rows.Scan(&record.Hash, &record.Raw, &enabled, &record.Failures, &cooldown, &created,
-			&cooldownSince, &everHealthy, &egressIP, &lastEgress, &lastSuccess, &lastReachable); err != nil {
+			&cooldownSince, &everHealthy, &egressIP, &lastEgress, &lastSuccess, &lastReachable, &quotaStale); err != nil {
 			return snapshot, fmt.Errorf("egress state: scan node: %w", err)
 		}
 		record.Enabled = enabled != 0
@@ -286,6 +292,9 @@ func (s *Store) Load(ctx context.Context) (Snapshot, error) {
 		}
 		if lastReachable != 0 {
 			record.LastReachable = time.Unix(0, lastReachable).UTC()
+		}
+		if quotaStale != 0 {
+			record.QuotaStaleUntil = time.Unix(0, quotaStale).UTC()
 		}
 		record.CreatedAt = time.Unix(0, created).UTC()
 		record.Latency = make(map[string]LatencyRecord)

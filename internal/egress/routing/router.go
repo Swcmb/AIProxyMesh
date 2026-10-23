@@ -60,6 +60,9 @@ type Config struct {
 	FailureGrace              time.Duration
 	MaxPendingObservations    int
 	TargetPause               time.Duration
+	// QuotaStaleWindow is how long a 429 keeps an exit out of the verified set
+	// when the upstream sent no Retry-After.
+	QuotaStaleWindow time.Duration
 }
 
 // DefaultConfig returns the approved initial parameters.
@@ -72,6 +75,7 @@ func DefaultConfig() Config {
 		FailureGrace:           60 * time.Second,
 		MaxPendingObservations: 10000,
 		TargetPause:            60 * time.Second,
+		QuotaStaleWindow:       5 * time.Minute,
 	}
 }
 
@@ -114,6 +118,9 @@ func (c Config) normalized() Config {
 	}
 	if c.ReachableWindow <= 0 {
 		c.ReachableWindow = 10 * time.Minute
+	}
+	if c.QuotaStaleWindow <= 0 {
+		c.QuotaStaleWindow = 5 * time.Minute
 	}
 	if c.MaxKeysPerNode <= 0 {
 		c.MaxKeysPerNode = 4
@@ -395,10 +402,13 @@ func (r *Router) SelectAffinity(ctx context.Context, target *url.URL, exclude ma
 		if !r.eligible(entry, host, now, exclude, cfg) {
 			continue
 		}
-		score := computeScore(entry, host, r.inflightFor(entry.Hash), weights).Total
+		score := computeScore(entry, host, r.inflightFor(entry.Hash), weights, nodeQuotaFreshness(entry, now)).Total
 		candidate := pick{entry: entry, score: score}
 		picks = append(picks, candidate)
-		if last := entry.LastSuccessAt(); last > 0 && now.Sub(time.Unix(0, last)) <= verifiedWindow {
+		// A 429 proves the exit reached the upstream with a spent source IP, so
+		// its earlier success no longer predicts the next request: it leaves the
+		// verified set immediately instead of holding the slot for the window.
+		if last := entry.LastSuccessAt(); last > 0 && now.Sub(time.Unix(0, last)) <= verifiedWindow && !entry.QuotaStale(now) {
 			verified = append(verified, candidate)
 		}
 	}
@@ -657,6 +667,12 @@ outcomeSwitch:
 		}
 		until := r.cooldown(entry, outcome.RetryAfter, cfg, now, fmt.Sprintf("exit_class_%d", class))
 		result.NodeCooldown = &until
+		if outcome.StatusCode == http.StatusTooManyRequests {
+			// The request reached the upstream, so this is the exit's own source
+			// IP spending its quota. Hold it out of the verified set for at least
+			// the window the upstream asked for.
+			entry.MarkQuotaStale(now.Add(quotaStaleDelay(outcome.RetryAfter, cfg)))
+		}
 		result.Retryable = true
 		result.Reason = fmt.Sprintf("exit_status_%d", outcome.StatusCode)
 		entry.SetLastError(fmt.Sprintf("upstream status %d", outcome.StatusCode))
@@ -901,6 +917,17 @@ func (r *Router) cooldown(entry *node.Entry, retryAfter time.Duration, cfg Confi
 	return until
 }
 
+// quotaStaleDelay is how long a 429 holds an exit out of the verified set. A
+// server-side Retry-After wins, capped like an inferred cooldown request.
+func quotaStaleDelay(retryAfter time.Duration, cfg Config) time.Duration {
+	const hardCap = 24 * time.Hour
+	delay := cfg.QuotaStaleWindow
+	if retryAfter > delay {
+		delay = min(retryAfter, hardCap)
+	}
+	return delay
+}
+
 func statusClass(status int) int {
 	if status <= 0 {
 		return 0
@@ -1017,7 +1044,7 @@ func (r *Router) evaluateCandidate(entry *node.Entry, host string, now time.Time
 	} else {
 		load = r.inflightFor(entry.Hash)
 	}
-	candidate.Score = computeScore(entry, host, load, cfg.Weights)
+	candidate.Score = computeScore(entry, host, load, cfg.Weights, nodeQuotaFreshness(entry, now))
 	switch {
 	case !entry.Enabled():
 		candidate.Reason = "disabled"

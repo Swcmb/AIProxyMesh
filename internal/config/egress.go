@@ -69,6 +69,10 @@ type EgressSchedule struct {
 	LatencyWeight         float64 `json:"latency_weight,omitempty"`
 	RoutingWeight         float64 `json:"routing_weight,omitempty"`
 	UpstreamSuccessWeight float64 `json:"upstream_success_weight,omitempty"`
+	// QuotaWeight ranks exits by how recently their source IP was told the
+	// upstream quota is spent. It is separate from the primary health metrics
+	// because a 429 says nothing about the exit's own quality.
+	QuotaWeight float64 `json:"quota_weight,omitempty"`
 }
 
 // EgressProtocols switches Tier A outbound protocols. Nil means enabled.
@@ -116,16 +120,23 @@ type EgressProbe struct {
 	CanaryMaxTokens            int     `json:"canary_max_tokens,omitempty"`
 	CanaryMaxInflight          int     `json:"canary_max_inflight,omitempty"`
 	CanaryDailyBudget          int     `json:"canary_daily_budget,omitempty"`
-	CanaryAllowKeyTiers        *bool   `json:"canary_allow_key_tiers,omitempty"`
-	CanaryKeyDailyBudget       int     `json:"canary_key_daily_budget,omitempty"`
-	ActiveRecheckSeconds       int     `json:"active_recheck_seconds,omitempty"`
-	VerifyingRecheckSeconds    int     `json:"verifying_recheck_seconds,omitempty"`
-	BackoffBaseSeconds         int     `json:"backoff_base_seconds,omitempty"`
-	BackoffMaxSeconds          int     `json:"backoff_max_seconds,omitempty"`
-	JitterRatio                float64 `json:"jitter_ratio,omitempty"`
-	TargetPauseSeconds         int     `json:"target_pause_seconds,omitempty"`
-	MaxSchedulePerScan         int     `json:"max_schedule_per_scan,omitempty"`
-	MaxScheduledKeys           int     `json:"max_scheduled_keys,omitempty"`
+	// CanaryTimeoutSeconds bounds one canary probe. It is deliberately much
+	// shorter than a real request: discovery only needs to know whether the
+	// exit answers at all.
+	CanaryTimeoutSeconds    int     `json:"canary_timeout_seconds,omitempty"`
+	CanaryAllowKeyTiers     *bool   `json:"canary_allow_key_tiers,omitempty"`
+	CanaryKeyDailyBudget    int     `json:"canary_key_daily_budget,omitempty"`
+	ActiveRecheckSeconds    int     `json:"active_recheck_seconds,omitempty"`
+	VerifyingRecheckSeconds int     `json:"verifying_recheck_seconds,omitempty"`
+	BackoffBaseSeconds      int     `json:"backoff_base_seconds,omitempty"`
+	BackoffMaxSeconds       int     `json:"backoff_max_seconds,omitempty"`
+	JitterRatio             float64 `json:"jitter_ratio,omitempty"`
+	TargetPauseSeconds      int     `json:"target_pause_seconds,omitempty"`
+	MaxSchedulePerScan      int     `json:"max_schedule_per_scan,omitempty"`
+	MaxScheduledKeys        int     `json:"max_scheduled_keys,omitempty"`
+	// ClusterRecheckSeconds keeps exploration to one representative per source
+	// network (IPv4 /24, IPv6 /48) until it answers.
+	ClusterRecheckSeconds int `json:"cluster_recheck_seconds,omitempty"`
 }
 
 // EgressBootstrap selects the explicit Mesh-to-node link. Environment proxy
@@ -178,12 +189,15 @@ type EgressHealth struct {
 	MaxPendingKeys               int     `json:"max_pending_keys,omitempty"`
 	MaxPendingObservations       int     `json:"max_pending_observations,omitempty"`
 	StableMinCapacity            int     `json:"stable_min_capacity,omitempty"`
-	ExplorationRatio             float64 `json:"exploration_ratio,omitempty"`
-	CandidateExplorationRatio    float64 `json:"candidate_exploration_ratio,omitempty"`
-	RouteSampleSize              int     `json:"route_sample_size,omitempty"`
-	ColdStartFallback            *bool   `json:"cold_start_fallback,omitempty"`
-	ReachableWindowSeconds       int     `json:"reachable_window_seconds,omitempty"`
-	MaxDirtyRows                 int     `json:"max_dirty_rows,omitempty"`
+	// QuotaStaleSeconds is how long a 429 keeps an exit out of the verified
+	// set when the upstream sent no Retry-After.
+	QuotaStaleSeconds         int     `json:"quota_stale_seconds,omitempty"`
+	ExplorationRatio          float64 `json:"exploration_ratio,omitempty"`
+	CandidateExplorationRatio float64 `json:"candidate_exploration_ratio,omitempty"`
+	RouteSampleSize           int     `json:"route_sample_size,omitempty"`
+	ColdStartFallback         *bool   `json:"cold_start_fallback,omitempty"`
+	ReachableWindowSeconds    int     `json:"reachable_window_seconds,omitempty"`
+	MaxDirtyRows              int     `json:"max_dirty_rows,omitempty"`
 }
 
 // EgressEnabled reports whether the unified pool is active.
@@ -212,6 +226,11 @@ func (e *EgressConfig) applyDefaults(configPath string) {
 		e.Schedule.LatencyWeight = 0.15
 		e.Schedule.RoutingWeight = 0.15
 		e.Schedule.UpstreamSuccessWeight = 0.40
+	}
+	// Quota freshness is appended to whatever the operator set: without it a
+	// spent source IP keeps outranking a fresh one on the anonymous channel.
+	if e.Schedule.QuotaWeight == 0 {
+		e.Schedule.QuotaWeight = 0.15
 	}
 	setBoolDefault(&e.Protocols.HTTP, true)
 	setBoolDefault(&e.Protocols.HTTPS, true)
@@ -334,10 +353,12 @@ func (e *EgressConfig) normalize(configPath string) error {
 		seen[sub.ID] = struct{}{}
 	}
 	if e.Schedule.HealthWeight < 0 || e.Schedule.LatencyWeight < 0 ||
-		e.Schedule.RoutingWeight < 0 || e.Schedule.UpstreamSuccessWeight < 0 {
+		e.Schedule.RoutingWeight < 0 || e.Schedule.UpstreamSuccessWeight < 0 ||
+		e.Schedule.QuotaWeight < 0 {
 		return errors.New("egress.schedule weights must not be negative")
 	}
-	if e.Schedule.HealthWeight+e.Schedule.LatencyWeight+e.Schedule.RoutingWeight+e.Schedule.UpstreamSuccessWeight <= 0 {
+	if e.Schedule.HealthWeight+e.Schedule.LatencyWeight+e.Schedule.RoutingWeight+
+		e.Schedule.UpstreamSuccessWeight+e.Schedule.QuotaWeight <= 0 {
 		return errors.New("egress.schedule weights must not all be zero")
 	}
 	if e.Cooldown.BaseSeconds < 1 || e.Cooldown.BaseSeconds > 86400 {
