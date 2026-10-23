@@ -257,3 +257,38 @@ func TestSchedulerMarksQuotaStaleOnRateLimit(t *testing.T) {
 		t.Fatal("a successful answer must clear the suppression")
 	}
 }
+
+func TestSchedulerBacksOffAfterTransportFailure(t *testing.T) {
+	poolInstance := pool.New(16)
+	options := node.Options{Type: node.HTTP, Server: "10.8.4.1", Port: 18086}
+	raw, _ := json.Marshal(options)
+	entry := node.NewEntry(node.HashOptions(options), raw, options, time.Now(), 0)
+	poolInstance.Restore(entry, []string{"sub"}, true)
+	key, _ := health.NewKey("https://opencode.ai/zen", "model", health.ProtocolChat, health.ModeStream)
+	scheduler := NewScheduler(poolInstance, ScheduleConfig{
+		Enabled: true, BudgetPerSecond: 1000, Burst: 100, MaxPerScan: 100, MaxKeys: 100,
+		MaxInflight: 4, Health: health.DefaultConfig(), MaxKeysPerNode: 4,
+		BackoffBase: 30 * time.Second, BackoffMax: 30 * time.Minute,
+		ActiveRecheck: 10 * time.Minute,
+	}, nil)
+	scheduler.SetExecutor(func(context.Context, CanaryRequest) CanaryResult {
+		return CanaryResult{Err: context.DeadlineExceeded}
+	})
+	now := time.Now()
+	scheduler.enqueue(entry, key, now, 0, now, true)
+	scheduler.dispatchOne(context.Background(), now)
+	stats := entry.ExistingHealthTable().Get(key)
+	if stats == nil {
+		t.Fatal("the probe result must create the key row")
+	}
+	first := stats.Snapshot().NextProbeAt
+	if wait := first.Sub(time.Now()); wait < 25*time.Second || wait > 40*time.Second {
+		t.Fatalf("first failure backoff = %v, want about 30s", wait)
+	}
+	scheduler.enqueue(entry, key, time.Now(), 0, time.Now(), true)
+	scheduler.dispatchOne(context.Background(), time.Now())
+	second := entry.ExistingHealthTable().Get(key).Snapshot().NextProbeAt
+	if wait := second.Sub(time.Now()); wait < 55*time.Second {
+		t.Fatalf("second failure backoff = %v, want at least 60s", wait)
+	}
+}

@@ -424,6 +424,7 @@ type ProbeSnapshot struct {
 	Key             HealthKey
 	State           State
 	LastProbeAt     time.Time
+	NextProbeAt     time.Time
 	LastReachableAt time.Time
 	OpenUntil       time.Time
 	PrimarySuccess  uint32
@@ -440,7 +441,8 @@ func (s *KeyStats) ProbeSnapshot(now time.Time) ProbeSnapshot {
 	rate, _ := s.Window.FailureRate(now)
 	return ProbeSnapshot{
 		Key: s.Key, State: s.State,
-		LastProbeAt: s.LastProbeAt, LastReachableAt: s.LastReachableAt, OpenUntil: s.OpenUntil,
+		LastProbeAt: s.LastProbeAt, NextProbeAt: s.NextProbeAt,
+		LastReachableAt: s.LastReachableAt, OpenUntil: s.OpenUntil,
 		PrimarySuccess: s.PrimarySuccess, PrimaryFailure: s.PrimaryFailure, ProbeEnqueued: s.ProbeEnqueued,
 		BetaWeight: s.Beta200.RecentWeight(), FailureRate: rate,
 	}

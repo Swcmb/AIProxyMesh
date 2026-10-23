@@ -369,10 +369,16 @@ func (s *Scheduler) dueTime(entry *node.Entry, record health.ProbeSnapshot, cfg 
 		if record.LastReachableAt.IsZero() {
 			return time.Time{}, 0, false
 		}
+		if !record.NextProbeAt.IsZero() && now.Before(record.NextProbeAt) {
+			return time.Time{}, 0, false
+		}
 		if !lastProbe.IsZero() && now.Sub(lastProbe) < cfg.VerifyingRecheck {
 			return time.Time{}, 0, false
 		}
 	case health.Verifying:
+		if !record.NextProbeAt.IsZero() && now.Before(record.NextProbeAt) {
+			return time.Time{}, 0, false
+		}
 		interval := cfg.VerifyingRecheck
 		if interval <= 0 {
 			interval = 30 * time.Second
@@ -546,7 +552,24 @@ func (s *Scheduler) dispatch(ctx context.Context, now time.Time, async bool) boo
 		if stats := table.Get(task.key); stats != nil {
 			stats.Acquire()
 			stats.LastProbeAt = finished
-			stats.NextProbeAt = finished.Add(cfg.ActiveRecheck)
+			// A dead exit backs off exponentially; re-probing it every
+			// verifying_recheck would crowd out exits nobody has tried yet.
+			next := finished.Add(cfg.ActiveRecheck)
+			if result.Err != nil {
+				backoff := cfg.BackoffBase
+				// ConsecutiveFails already counts this failure; the base delay
+				// covers the first one.
+				for i := uint8(1); i < stats.ConsecutiveFails && backoff < cfg.BackoffMax; i++ {
+					backoff *= 2
+				}
+				if backoff > cfg.BackoffMax {
+					backoff = cfg.BackoffMax
+				}
+				if backoff > 0 {
+					next = finished.Add(backoff)
+				}
+			}
+			stats.NextProbeAt = next
 			stats.Release()
 		}
 	}
