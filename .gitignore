@@ -37,3 +37,6 @@ project-context/artifacts/redesign-test/
 .vscode/
 .DS_Store
 /upstream-sync-reports/
+
+# Go 在 Windows 上替换运行中二进制留下的残留
+/mesh.exe~
