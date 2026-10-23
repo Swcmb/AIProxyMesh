@@ -232,7 +232,9 @@ func (e *Engine) Start(parent context.Context) {
 			case <-e.ctx.Done():
 				return
 			case <-ticker.C:
-				e.save(e.ctx)
+				if err := e.flushState(e.ctx); err != nil && e.logger != nil {
+					e.logger.Warn("egress state save failed", "component", "egress", "error", err)
+				}
 			}
 		}
 	}()
@@ -267,7 +269,7 @@ func (e *Engine) Close() error {
 				"component", "egress", "event", "health_observations_dropped", "count", dropped)
 		}
 		saveCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		if saveErr := e.save(saveCtx); saveErr != nil {
+		if saveErr := e.flushState(saveCtx); saveErr != nil {
 			err = saveErr
 		}
 		cancel()
@@ -811,6 +813,15 @@ func (e *Engine) applyEnvironmentEpoch(epoch uint64) {
 			}
 		}
 	}
+}
+
+// flushState persists node state and health evidence together; the periodic
+// loop and Close both use it so neither path can silently skip half the state.
+func (e *Engine) flushState(ctx context.Context) error {
+	if err := e.save(ctx); err != nil {
+		return err
+	}
+	return e.saveHealth(ctx)
 }
 
 func (e *Engine) save(ctx context.Context) error {

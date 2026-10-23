@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/config"
+	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/health"
+	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/node"
 	"github.com/Swcmb/AIProxyMesh/mesh/internal/egress/routing"
 )
 
@@ -278,4 +280,60 @@ func TestEngineImportDedupProbeSmoke(t *testing.T) {
 	if len(snapshot.Subscriptions) != 1 || snapshot.Subscriptions[0].ID != "remote" {
 		t.Fatalf("only the remote source is visible, subscriptions = %+v", snapshot.Subscriptions)
 	}
+}
+
+func TestEngineFlushPersistsHealthEvidence(t *testing.T) {
+	cfg := testEgressConfig(t)
+	engine, err := New(testOptions(t, cfg, "http://1.1.1.1:8080#a\ndirect"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine.RefreshAll(context.Background())
+	key, err := health.NewKey("https://api.example.com/zen", "model-a", health.ProtocolChat, health.ModeStream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var probed *node.Entry
+	for _, entry := range engine.Pool().List() {
+		if entry.Options.Type == "http" {
+			probed = entry
+			break
+		}
+	}
+	if probed == nil {
+		t.Fatal("setup: http node missing")
+	}
+	table := probed.HealthTable(4, 100)
+	table.Apply(key, health.Observation{Key: key, Kind: health.OutcomeSuccess, Status: 200}, health.DefaultConfig(), time.Now())
+	if err := engine.flushState(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := New(testOptions(t, cfg, "http://1.1.1.1:8080#a\ndirect"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	for _, entry := range reopened.Pool().List() {
+		if entry.Options.Type != "http" {
+			continue
+		}
+		restored := entry.ExistingHealthTable()
+		if restored == nil {
+			t.Fatal("health evidence was not persisted by the flush")
+		}
+		stats := restored.Get(key)
+		if stats == nil {
+			t.Fatal("the key was not restored")
+		}
+		snapshot := stats.Snapshot()
+		if snapshot.HTTP200Success == 0 || snapshot.State != health.Verifying {
+			t.Fatalf("restored key = state %s success %d", snapshot.State, snapshot.HTTP200Success)
+		}
+		return
+	}
+	t.Fatal("http node missing after restore")
 }
