@@ -58,8 +58,17 @@ func (g *Gateway) canaryExecutor(ctx context.Context, request probe.CanaryReques
 	if firstEvent <= 0 {
 		firstEvent = 60 * time.Second
 	}
+	attemptTimeout := g.attemptTimeout
+	if g.cfg.Egress != nil && g.cfg.Egress.Probe.CanaryTimeoutSeconds > 0 {
+		// Discovery only needs to know whether the exit answers; a dead public
+		// proxy must not hold an in-flight slot for a full request timeout.
+		attemptTimeout = time.Duration(g.cfg.Egress.Probe.CanaryTimeoutSeconds) * time.Second
+		if firstEvent > attemptTimeout {
+			firstEvent = attemptTimeout
+		}
+	}
 	started := time.Now()
-	resp, verdict, err := doInferenceAttempt(client, httpRequest, firstEvent, g.attemptTimeout,
+	resp, verdict, err := doInferenceAttempt(client, httpRequest, firstEvent, attemptTimeout,
 		protocol, request.Mode, g.healthMaxPeek(), nil)
 	latency := time.Since(started)
 	result := probe.CanaryResult{Latency: latency, Valid: verdict.Valid, ValidKnown: verdict.Known, Err: err}

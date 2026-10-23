@@ -120,6 +120,10 @@ type EgressProbe struct {
 	CanaryMaxTokens            int     `json:"canary_max_tokens,omitempty"`
 	CanaryMaxInflight          int     `json:"canary_max_inflight,omitempty"`
 	CanaryDailyBudget          int     `json:"canary_daily_budget,omitempty"`
+	// CanaryTimeoutSeconds bounds one canary probe. It is deliberately much
+	// shorter than a real request: discovery only needs to know whether the
+	// exit answers at all.
+	CanaryTimeoutSeconds int `json:"canary_timeout_seconds,omitempty"`
 	CanaryAllowKeyTiers        *bool   `json:"canary_allow_key_tiers,omitempty"`
 	CanaryKeyDailyBudget       int     `json:"canary_key_daily_budget,omitempty"`
 	ActiveRecheckSeconds       int     `json:"active_recheck_seconds,omitempty"`

@@ -35,6 +35,9 @@ func applyProbeDefaults(p *EgressProbe) {
 	if p.CanaryMaxInflight == 0 {
 		p.CanaryMaxInflight = 8
 	}
+	if p.CanaryTimeoutSeconds == 0 {
+		p.CanaryTimeoutSeconds = 8
+	}
 	if p.CanaryDailyBudget == 0 {
 		p.CanaryDailyBudget = 20000
 	}
@@ -233,6 +236,9 @@ func validateProbeScheduling(p *EgressProbe) error {
 	}
 	if p.CanaryMaxInflight < 1 || p.CanaryMaxInflight > 64 {
 		return errors.New("egress.probe.canary_max_inflight must be between 1 and 64")
+	}
+	if p.CanaryTimeoutSeconds < 1 || p.CanaryTimeoutSeconds > 120 {
+		return errors.New("egress.probe.canary_timeout_seconds must be between 1 and 120")
 	}
 	if p.CanaryDailyBudget < 0 || p.CanaryDailyBudget > 1000000 {
 		return errors.New("egress.probe.canary_daily_budget must be 0-1000000")

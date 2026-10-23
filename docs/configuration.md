@@ -96,6 +96,7 @@
 | `probe.budget_per_second` / `budget_burst` | 金丝雀全局令牌桶（默认 2/s，突发 4） |
 | `probe.canary_daily_budget` | 金丝雀每日上限（默认 20000），按 UTC 零点重置 |
 | `probe.canary_max_inflight` | 全局在途金丝雀上限（默认 8）；同一键另有单飞约束 |
+| `probe.canary_timeout_seconds` | 单次金丝雀超时（1–120，默认 8）；死出口不能占满在途名额 |
 | `probe.active_recheck_seconds` / `verifying_recheck_seconds` | 稳定键与验证键的主动复验下限（预算允许时才执行） |
 | `bootstrap.mode` | `direct`（默认）或 `http_connect`；Mesh 到节点端点始终显式拨号，不读系统代理 |
 | `bootstrap.url` | `http_connect` 模式的 HTTP CONNECT 代理；必填 |

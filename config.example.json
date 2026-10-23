@@ -130,6 +130,7 @@
       "canary_default_mode": "stream",
       "canary_max_tokens": 1,
       "canary_max_inflight": 8,
+      "canary_timeout_seconds": 8,
       "canary_daily_budget": 20000,
       "canary_allow_key_tiers": false,
       "canary_key_daily_budget": 0,
