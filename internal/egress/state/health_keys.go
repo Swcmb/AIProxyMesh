@@ -22,7 +22,7 @@ var healthColumns = []string{
 	"alpha200", "beta200", "alpha_valid", "beta_valid", "decayed_at",
 	"ttfb_ewma_ns", "total_ewma_ns", "latency_hist", "ttfb_samples", "last_sample_at",
 	"consecutive_fails", "consecutive_success", "open_count", "open_until", "last_success_at", "last_failure_at",
-	"last_probe_at", "last_reachable_at", "window_buckets", "window_index", "active_epoch", "environment_epoch",
+	"last_probe_at", "last_reachable_at", "window_buckets", "window_index", "rate_window", "active_epoch", "environment_epoch",
 	"pending_reverify", "reverify_success", "last_check_samples", "last_check_valid_samples", "http_check_round",
 	"valid_check_round", "next_probe_at", "recovery_start", "epoch_success", "epoch_failure", "prev_state",
 	"last_status", "not_found_count", "last_not_found_at", "half_open_success", "last_error", "state_version",
@@ -30,7 +30,7 @@ var healthColumns = []string{
 }
 
 var healthBlobColumns = map[string]struct{}{
-	"bucket_http_reservoir": {}, "bucket_valid_reservoir": {}, "window_buckets": {}, "latency_hist": {},
+	"bucket_http_reservoir": {}, "bucket_valid_reservoir": {}, "window_buckets": {}, "rate_window": {}, "latency_hist": {},
 }
 
 var healthInsertSQL = buildHealthInsertSQL()
@@ -63,7 +63,7 @@ func buildHealthSelectSQL() string {
 		pairs = append(pairs, "'"+column+"', "+column)
 	}
 	return fmt.Sprintf(`SELECT node_hash, payload_json, json_object(%s) AS scalars,
-		hex(bucket_http_reservoir), hex(bucket_valid_reservoir), hex(window_buckets), hex(latency_hist)
+		hex(bucket_http_reservoir), hex(bucket_valid_reservoir), hex(window_buckets), hex(rate_window), hex(latency_hist)
 		FROM egress_health_keys`, strings.Join(pairs, ", "))
 }
 
@@ -123,6 +123,7 @@ func healthArgs(nodeHash string, snapshot health.KeyStats, payload []byte, now t
 		timeNanos(snapshot.LastSuccessAt), timeNanos(snapshot.LastFailureAt),
 		timeNanos(snapshot.LastProbeAt), timeNanos(snapshot.LastReachableAt),
 		snapshot.Window.Encode(), int64(snapshot.Window.Index),
+		snapshot.RateWindow.Encode(),
 		int64(snapshot.ActiveEpoch), snapshot.EnvironmentEpoch,
 		boolInt(snapshot.PendingReverify), int64(snapshot.ReverifySuccess),
 		int64(snapshot.LastCheckSamples), int64(snapshot.LastCheckValidSamples),
@@ -151,12 +152,12 @@ func (s *Store) LoadHealthKeys(ctx context.Context, cfg health.Config) ([]Health
 	)
 	for rows.Next() {
 		var (
-			nodeHash, payload, scalars    string
-			httpReservoir, validReservoir *string
-			windowBlob, latencyBlob       *string
+			nodeHash, payload, scalars        string
+			httpReservoir, validReservoir     *string
+			windowBlob, rateBlob, latencyBlob *string
 		)
 		if err := rows.Scan(&nodeHash, &payload, &scalars,
-			&httpReservoir, &validReservoir, &windowBlob, &latencyBlob); err != nil {
+			&httpReservoir, &validReservoir, &windowBlob, &rateBlob, &latencyBlob); err != nil {
 			return nil, stats, fmt.Errorf("egress state: scan health key: %w", err)
 		}
 		if payload != "" {
@@ -168,7 +169,7 @@ func (s *Store) LoadHealthKeys(ctx context.Context, cfg health.Config) ([]Health
 				continue
 			}
 		}
-		snapshot, err := decodeHealthColumns(scalars, httpReservoir, validReservoir, windowBlob, latencyBlob, cfg)
+		snapshot, err := decodeHealthColumns(scalars, httpReservoir, validReservoir, windowBlob, rateBlob, latencyBlob, cfg)
 		if err != nil {
 			stats.Skipped++
 			continue
@@ -247,7 +248,7 @@ type legacyHealthRow struct {
 	StateVersion           int64   `json:"state_version"`
 }
 
-func decodeHealthColumns(scalars string, httpReservoir, validReservoir, windowBlob, latencyBlob *string, cfg health.Config) (health.KeyStats, error) {
+func decodeHealthColumns(scalars string, httpReservoir, validReservoir, windowBlob, rateBlob, latencyBlob *string, cfg health.Config) (health.KeyStats, error) {
 	var row legacyHealthRow
 	if err := json.Unmarshal([]byte(scalars), &row); err != nil {
 		return health.KeyStats{}, err
@@ -281,6 +282,14 @@ func decodeHealthColumns(scalars string, httpReservoir, validReservoir, windowBl
 		return health.KeyStats{}, err
 	}
 	window.Index = uint8(maxInt64(row.WindowIndex))
+	rateRaw, err := decodeHex(rateBlob)
+	if err != nil {
+		return health.KeyStats{}, err
+	}
+	rateWindow, err := health.DecodeWindow(rateRaw, cfg.QuotaBucketSeconds)
+	if err != nil {
+		return health.KeyStats{}, err
+	}
 	histogram, err := health.DecodeLatencyHist(latencyRaw)
 	if err != nil {
 		return health.KeyStats{}, err
@@ -318,6 +327,7 @@ func decodeHealthColumns(scalars string, httpReservoir, validReservoir, windowBl
 		HTTPCheckRound:          uint8(maxInt64(row.HTTPCheckRound)),
 		ValidCheckRound:         uint8(maxInt64(row.ValidCheckRound)),
 		Window:                  window,
+		RateWindow:              rateWindow,
 		LastCheckSamples:        uint32(maxInt64(row.LastCheckSamples)),
 		LastCheckValidSamples:   uint32(maxInt64(row.LastCheckValidSamples)),
 		LastReachableAt:         unixNano(row.LastReachableAt),

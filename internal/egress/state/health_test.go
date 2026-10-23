@@ -207,6 +207,9 @@ func TestHealthKeysBLOBColumnsRoundTrip(t *testing.T) {
 	for i := 0; i < 11; i++ {
 		stats.Window.Add(i%4 != 0, now.Add(time.Duration(i)*time.Minute))
 	}
+	for i := 0; i < 4; i++ {
+		stats.RateWindow.Add(i != 0, now.Add(time.Duration(i)*time.Minute))
+	}
 	stats.Beta200.Observe(true, now, cfg.DecayHalfLife)
 	stats.Beta200.Observe(false, now, cfg.DecayHalfLife)
 	stats.BetaValid.Observe(true, now, cfg.DecayHalfLife)
@@ -269,6 +272,9 @@ func TestHealthKeysBLOBColumnsRoundTrip(t *testing.T) {
 	}
 	if got.Window.Index != stats.Window.Index || got.Window.Buckets != stats.Window.Buckets {
 		t.Fatalf("window: %+v vs %+v", got.Window, stats.Window)
+	}
+	if got.RateWindow.Buckets != stats.RateWindow.Buckets {
+		t.Fatalf("rate window: %+v vs %+v", got.RateWindow, stats.RateWindow)
 	}
 	if got.LatencyHist != stats.LatencyHist {
 		t.Fatalf("histogram: %+v vs %+v", got.LatencyHist, stats.LatencyHist)

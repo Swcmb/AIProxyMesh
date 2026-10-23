@@ -58,6 +58,10 @@ type ScheduleConfig struct {
 	TargetPause      time.Duration
 	Health           health.Config
 	MaxKeysPerNode   int
+	// ClusterRecheck keeps exploration to one representative per source
+	// network until that network proves itself, so a dense proxy list cannot
+	// spend the whole canary budget on one /24.
+	ClusterRecheck time.Duration
 }
 
 type scheduleTask struct {
@@ -149,6 +153,9 @@ type Scheduler struct {
 	dailyDay   string
 	dailyCount int
 
+	clusterMu sync.Mutex
+	clusters  map[string]time.Time
+
 	scanCursor string
 }
 
@@ -177,6 +184,7 @@ func NewScheduler(p *pool.Pool, cfg ScheduleConfig, logger *slog.Logger) *Schedu
 		nowFn:    time.Now,
 		queued:   make(map[string]struct{}),
 		inflight: make(map[string]struct{}),
+		clusters: make(map[string]time.Time),
 	}
 	s.cfg.store(cfg)
 	s.tokens = float64(max(cfg.Burst, 1))
@@ -305,23 +313,24 @@ func (s *Scheduler) scan(now time.Time) {
 	}
 	for offset := 0; offset < len(entries) && budget > 0; offset++ {
 		entry := entries[(start+offset)%len(entries)]
-		table := entry.ExistingHealthTable()
-		if table == nil {
-			continue
-		}
 		tracked := 0
-		for _, record := range table.ProbeSnapshots(now) {
-			tracked++
-			s.examined.Add(1)
-			if budget <= 0 {
-				break
-			}
-			next, priority, due := s.dueTime(entry, record, cfg, now)
-			if !due {
-				continue
-			}
-			if s.enqueue(entry, record.Key, next, priority, now, !record.ProbeEnqueued) {
-				budget--
+		// A fresh exit has no health table yet. It must still reach the
+		// synthetic-candidate branch below, otherwise discovery can never
+		// start for a pool that has not served traffic.
+		if table := entry.ExistingHealthTable(); table != nil {
+			for _, record := range table.ProbeSnapshots(now) {
+				tracked++
+				s.examined.Add(1)
+				if budget <= 0 {
+					break
+				}
+				next, priority, due := s.dueTime(entry, record, cfg, now)
+				if !due {
+					continue
+				}
+				if s.enqueue(entry, record.Key, next, priority, now, !record.ProbeEnqueued) {
+					budget--
+				}
 			}
 		}
 		if tracked == 0 && cfg.CanaryModel != "" && cfg.CanaryTarget != "" {
@@ -329,11 +338,16 @@ func (s *Scheduler) scan(now time.Time) {
 			// A reachable node without any key gets one synthetic candidate key,
 			// so a configured canary model can discover exits before real traffic.
 			if last := entry.LastSuccessAt(); last > 0 {
-				if key, err := health.NewKey(cfg.CanaryTarget, cfg.CanaryModel, health.ProtocolChat, health.ModeStream); err == nil {
-					record := health.ProbeSnapshot{Key: key, State: health.Candidate, LastReachableAt: time.Unix(0, last)}
-					next, priority, due := s.dueTime(entry, record, cfg, now)
-					if due && s.enqueue(entry, key, next, priority, now, true) {
-						budget--
+				cluster := entry.ClusterKeyFor()
+				busy := cluster != "" && s.clusterBusy(cluster, now, cfg.ClusterRecheck)
+				if !busy {
+					if key, err := health.NewKey(cfg.CanaryTarget, cfg.CanaryModel, health.ProtocolChat, health.ModeStream); err == nil {
+						record := health.ProbeSnapshot{Key: key, State: health.Candidate, LastReachableAt: time.Unix(0, last)}
+						next, priority, due := s.dueTime(entry, record, cfg, now)
+						if due && s.enqueue(entry, key, next, priority, now, true) {
+							s.touchCluster(cluster, now)
+							budget--
+						}
 					}
 				}
 			}
@@ -459,7 +473,7 @@ func (s *Scheduler) enqueue(entry *node.Entry, key health.HealthKey, next time.T
 	s.hookMu.RLock()
 	hook := s.enqueueHook
 	s.hookMu.RUnlock()
-	if table := entry.ExistingHealthTable(); table != nil {
+	if table := entry.HealthTable(s.cfg.load().MaxKeysPerNode, 0); table != nil {
 		table.MarkProbeEnqueued(key)
 	}
 	if hook != nil {
@@ -555,11 +569,55 @@ func (s *Scheduler) applyResult(task *scheduleTask, cfg ScheduleConfig, result C
 	}
 	table := task.entry.HealthTable(cfg.MaxKeysPerNode, 10000)
 	table.Apply(task.key, observation, cfg.Health, time.Now())
+	if kind == health.OutcomeSuccess || kind == health.OutcomeNonTarget2xx {
+		// The network answered, so the rest of its ports are worth probing.
+		s.forgetCluster(task.entry.ClusterKeyFor())
+	}
 	if result.Status == 404 {
 		if env := s.env.Load(); env != nil && cfg.TargetPause > 0 {
 			env.PauseTarget(task.key.Target, time.Now().Add(cfg.TargetPause))
 		}
 	}
+}
+
+// clusterBusy reports whether another exit in the same source network was
+// probed recently enough that a second probe would repeat the same signal.
+func (s *Scheduler) clusterBusy(cluster string, now time.Time, window time.Duration) bool {
+	if cluster == "" || window <= 0 {
+		return false
+	}
+	s.clusterMu.Lock()
+	defer s.clusterMu.Unlock()
+	last, ok := s.clusters[cluster]
+	return ok && now.Sub(last) < window
+}
+
+func (s *Scheduler) touchCluster(cluster string, now time.Time) {
+	if cluster == "" {
+		return
+	}
+	s.clusterMu.Lock()
+	s.clusters[cluster] = now
+	if len(s.clusters) > 4096 {
+		// Keep the map bounded by dropping stale entries (4x the window).
+		cutoff := now.Add(-4 * time.Hour)
+		for id, at := range s.clusters {
+			if at.Before(cutoff) {
+				delete(s.clusters, id)
+			}
+		}
+	}
+	s.clusterMu.Unlock()
+}
+
+// forgetCluster lets the remaining ports of a proven network be probed.
+func (s *Scheduler) forgetCluster(cluster string) {
+	if cluster == "" {
+		return
+	}
+	s.clusterMu.Lock()
+	delete(s.clusters, cluster)
+	s.clusterMu.Unlock()
 }
 
 func (s *Scheduler) takeToken(cfg ScheduleConfig, now time.Time) bool {

@@ -35,8 +35,8 @@ docker build -t mesh:local .
 - **上游地址唯一来源**：`upstream.zen/go/anonymous`；禁止新增 `target_domain` 或第二份目标地址。
 - **尝试预算**：唯一总预算 = `retry.max_attempts`；匿名阶段与各 tier 共享，换出口消耗一次。
 - **冷却分层**：节点层 `egress.cooldown`（30–900s，`Retry-After` 可延长至 24h）与通道层 `performance.failure_cooldown_seconds`（Key）独立；同一失败只触一层。
-- **健康键与准入**：准入对象是「出口 × 上游 base path × 模型 × 协议 × 请求模式」；HTTP 200 与有效推理各自使用 Wilson 下界 + alpha-spending 检查点 + 时间桶蓄水池，近期健康使用衰减 Beta 分位。七态状态机 `candidate/verifying/active/suspect/open/half_open/dead` 同时约束节点层冷却与键级熔断；`egress.health.mode` 默认 `shadow`，`prefer`/`strict` 需显式开启。每节点健康键有界（默认 4），稳定态 pin 不淘汰。
-- **探测与金丝雀**：新节点首次连通信号（主动探测或真实流量）之前不进入路由（`direct` 除外）；快速刷新以 TCP 预检 + 并发探测执行并支持取消，只产生可达证据；金丝雀使用匿名免费通道的真实推理请求，受令牌桶、每日预算、单飞与环境暂停约束；主动探测使用双优先级固定 worker 池与 13–17s 抖动扫描，失败节点指数退避（上限 30min）；出口 IP 按 `egress.probe.egress_ip_*` 低频探测并优先用于地区解析；`ephemeral: true` 的订阅会驱逐连续熔断超过 `evict_delay_seconds` 的节点。
+- **健康键与准入**：准入对象是「出口 × 上游 base path × 模型 × 协议 × 请求模式」；HTTP 200 与有效推理各自使用 Wilson 下界 + alpha-spending 检查点 + 时间桶蓄水池，近期健康使用衰减 Beta 分位。429 单独记入配额新鲜度窗口（`rate_window`），只影响排序并立即撤销该出口的 verified 资格，不污染主健康指标。七态状态机 `candidate/verifying/active/suspect/open/half_open/dead` 同时约束节点层冷却与键级熔断；`egress.health.mode` 默认 `shadow`，`prefer`/`strict` 需显式开启。每节点健康键有界（默认 4），稳定态 pin 不淘汰。
+- **探测与金丝雀**：新节点首次连通信号（主动探测或真实流量）之前不进入路由（`direct` 除外）；快速刷新以 TCP 预检 + 并发探测执行并支持取消，只产生可达证据；金丝雀使用匿名免费通道的真实推理请求，受令牌桶、每日预算、单飞与环境暂停约束；探索按网段聚簇，同一 IPv4 /24 或 IPv6 /48 先测一个代表，代表成功后才放开其余端口；主动探测使用双优先级固定 worker 池与 13–17s 抖动扫描，失败节点指数退避（上限 30min）；出口 IP 按 `egress.probe.egress_ip_*` 低频探测并优先用于地区解析；`ephemeral: true` 的订阅会驱逐连续熔断超过 `evict_delay_seconds` 的节点。
 - **链路隔离**：Mesh 到节点端点只经 `internal/egress/transport` 工厂，`direct` 忽略系统代理，`http_connect` 走显式 CONNECT；bootstrap 失败只进入环境状态，不冷却节点、不驱逐候选。bootstrap 延迟不进入节点 TTFB。
 - **归因纪律**：401/403 与上游全网共识只走通道层；连接失败/单出口 429/可归因 5xx 只走节点层；direct 连接失败视为上游不可达。可归因传输失败先暂存 `failure_grace_seconds`，环境异常或 target 暂停时改判丢弃，否则到期提交。403 响应体明确为地区限制时按出口国家硬性隔离 30 分钟并换出口（不冷却节点）；全部候选地区被封锁时返回 `ErrNoEligible`，任何回退层都不得放宽封锁。404 不冷却节点：同键跨出口成功且重复 404 才转 `DEAD`，否则暂停该 target 探测 `target_pause_seconds`。
 - **错误终止**：400/422 的请求级拒绝（上下文超长、参数非法）立即原样返回，不跨出口、Key 或 tier 重试；匿名通道可用 `models.anonymous_backoff` 熔断。

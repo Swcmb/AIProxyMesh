@@ -146,3 +146,46 @@ func TestSchedulerFirstEnqueueGuarantee(t *testing.T) {
 		t.Fatalf("first-enqueue coverage = %d/40", len(seen))
 	}
 }
+
+func TestSchedulerSamplesOneRepresentativePerNetwork(t *testing.T) {
+	poolInstance := pool.New(16)
+	build := func(port uint16) *node.Entry {
+		options := node.Options{Type: node.HTTP, Server: "10.9.9.1", Port: port, Tag: fmt.Sprintf("c%d", port)}
+		options.Server = fmt.Sprintf("10.9.9.%d", port%250+1)
+		raw, _ := json.Marshal(options)
+		entry := node.NewEntry(node.HashOptions(options), raw, options, time.Now(), 0)
+		// A fast-probe success is reachability evidence, never quota evidence.
+		entry.RecordSuccess()
+		poolInstance.Restore(entry, []string{"sub"}, true)
+		return entry
+	}
+	first := build(18081)
+	second := build(18082)
+	if first.ClusterKeyFor() != second.ClusterKeyFor() || first.ClusterKeyFor() == "" {
+		t.Fatalf("fixture must share a network: %q vs %q", first.ClusterKeyFor(), second.ClusterKeyFor())
+	}
+	scheduler := NewScheduler(poolInstance, ScheduleConfig{
+		Enabled: true, BudgetPerSecond: 1000, Burst: 100, MaxPerScan: 100, MaxKeys: 100,
+		MaxInflight: 8, Health: health.DefaultConfig(), MaxKeysPerNode: 4,
+		CanaryModel: "canary-model", CanaryTarget: "https://opencode.ai/zen",
+		VerifyingRecheck: time.Second, ActiveRecheck: time.Hour, DeadRecheck: time.Hour,
+		ClusterRecheck: 10 * time.Minute,
+	}, nil)
+	scheduler.SetExecutor(func(context.Context, CanaryRequest) CanaryResult { return CanaryResult{Status: 200} })
+	now := time.Now()
+	scheduler.SetClock(func() time.Time { return now })
+	seen := map[string]struct{}{}
+	scheduler.SetEnqueueHook(func(id string) { seen[id] = struct{}{} })
+	now = now.Add(time.Second)
+	scheduler.ScanOnce(now)
+	if len(seen) != 1 {
+		t.Fatalf("one network must yield one representative, enqueued %d", len(seen))
+	}
+	// A success on the representative opens the network for its other ports.
+	scheduler.forgetCluster(first.ClusterKeyFor())
+	now = now.Add(2 * time.Second)
+	scheduler.ScanOnce(now)
+	if len(seen) != 2 {
+		t.Fatalf("a proven network must expand to its other exits, enqueued %d", len(seen))
+	}
+}

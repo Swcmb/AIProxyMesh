@@ -88,7 +88,8 @@
       "health_weight": 0.3,
       "latency_weight": 0.15,
       "routing_weight": 0.15,
-      "upstream_success_weight": 0.4
+      "upstream_success_weight": 0.4,
+      "quota_weight": 0.15
     },
     "protocols": {
       "http": true,
@@ -139,6 +140,7 @@
       "jitter_ratio": 0.5,
       "target_pause_seconds": 60,
       "max_schedule_per_scan": 2000,
+      "cluster_recheck_seconds": 600,
       "max_scheduled_keys": 50000
     },
     "bootstrap": {
@@ -186,6 +188,7 @@
       "max_pending_keys": 10000,
       "max_pending_observations": 10000,
       "stable_min_capacity": 50,
+      "quota_stale_seconds": 300,
       "exploration_ratio": 0.1,
       "candidate_exploration_ratio": 0.02,
       "route_sample_size": 64,

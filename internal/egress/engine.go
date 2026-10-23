@@ -710,6 +710,9 @@ func (e *Engine) restore(ctx context.Context) error {
 		if !record.LastSuccess.IsZero() {
 			entry.RestoreLastSuccess(record.LastSuccess.UnixNano())
 		}
+		if !record.QuotaStaleUntil.IsZero() {
+			entry.MarkQuotaStale(record.QuotaStaleUntil)
+		}
 		if latency := entry.Latency(); latency != nil {
 			for host, sample := range record.Latency {
 				latency.Load(host, node.DomainStats{EWMA: sample.EWMA, LastUpdated: sample.UpdatedAt})
@@ -838,6 +841,9 @@ func (e *Engine) save(ctx context.Context) error {
 			record.LastSuccess = time.Unix(0, at).UTC()
 			record.LastReachable = time.Unix(0, at).UTC()
 		}
+		if until := entry.QuotaStaleUntil(); !until.IsZero() {
+			record.QuotaStaleUntil = until
+		}
 		if latency := entry.Latency(); latency != nil {
 			for host, stats := range latency.Snapshot() {
 				record.Latency[host] = state.LatencyRecord{EWMA: stats.EWMA, UpdatedAt: stats.LastUpdated}
@@ -937,6 +943,7 @@ func schedulerConfig(cfg *config.EgressConfig, upstream config.UpstreamConfig) p
 		TargetPause:      time.Duration(cfg.Probe.TargetPauseSeconds) * time.Second,
 		Health:           healthCfg,
 		MaxKeysPerNode:   cfg.Health.MaxKeysPerNode,
+		ClusterRecheck:   time.Duration(cfg.Probe.ClusterRecheckSeconds) * time.Second,
 	}
 }
 
@@ -965,6 +972,10 @@ func routerConfig(cfg *config.EgressConfig) routing.Config {
 		Latency:  cfg.Schedule.LatencyWeight,
 		Routing:  cfg.Schedule.RoutingWeight,
 		Upstream: cfg.Schedule.UpstreamSuccessWeight,
+		Quota:    cfg.Schedule.QuotaWeight,
+	}
+	if cfg.Health.QuotaStaleSeconds > 0 {
+		result.QuotaStaleWindow = time.Duration(cfg.Health.QuotaStaleSeconds) * time.Second
 	}
 	result.CooldownBase = time.Duration(cfg.Cooldown.BaseSeconds) * time.Second
 	result.CooldownMax = time.Duration(cfg.Cooldown.MaxSeconds) * time.Second

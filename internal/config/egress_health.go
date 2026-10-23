@@ -59,6 +59,9 @@ func applyProbeDefaults(p *EgressProbe) {
 	if p.MaxSchedulePerScan == 0 {
 		p.MaxSchedulePerScan = 2000
 	}
+	if p.ClusterRecheckSeconds == 0 {
+		p.ClusterRecheckSeconds = 600
+	}
 	if p.MaxScheduledKeys == 0 {
 		p.MaxScheduledKeys = 50000
 	}
@@ -191,6 +194,9 @@ func applyHealthDefaults(h *EgressHealth) {
 	if h.StableMinCapacity == 0 {
 		h.StableMinCapacity = 50
 	}
+	if h.QuotaStaleSeconds == 0 {
+		h.QuotaStaleSeconds = 300
+	}
 	if h.ExplorationRatio == 0 {
 		h.ExplorationRatio = 0.10
 	}
@@ -260,6 +266,9 @@ func validateProbeScheduling(p *EgressProbe) error {
 	}
 	if p.MaxSchedulePerScan < 1 || p.MaxSchedulePerScan > 100000 {
 		return errors.New("egress.probe.max_schedule_per_scan must be between 1 and 100000")
+	}
+	if p.ClusterRecheckSeconds < 0 || p.ClusterRecheckSeconds > 86400 {
+		return errors.New("egress.probe.cluster_recheck_seconds must be between 0 and 86400")
 	}
 	if p.MaxScheduledKeys < 100 || p.MaxScheduledKeys > 1000000 {
 		return errors.New("egress.probe.max_scheduled_keys must be between 100 and 1000000")
@@ -411,6 +420,9 @@ func validateHealth(h *EgressHealth) error {
 	}
 	if h.StableMinCapacity < 1 || h.StableMinCapacity > 10000 {
 		return errors.New("egress.health.stable_min_capacity must be between 1 and 10000")
+	}
+	if h.QuotaStaleSeconds < 0 || h.QuotaStaleSeconds > 86400 {
+		return errors.New("egress.health.quota_stale_seconds must be between 0 and 86400")
 	}
 	if h.ExplorationRatio < 0 || h.ExplorationRatio > 0.5 {
 		return errors.New("egress.health.exploration_ratio must be between 0 and 0.5")

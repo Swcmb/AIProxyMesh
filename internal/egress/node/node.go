@@ -371,6 +371,15 @@ func (e *Entry) QuotaStale(now time.Time) bool {
 	return until != 0 && now.UnixNano() < until
 }
 
+// QuotaStaleUntil returns the end of the quota-depletion window, zero if none.
+func (e *Entry) QuotaStaleUntil() time.Time {
+	until := e.quotaStaleUntil.Load()
+	if until == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, until).UTC()
+}
+
 // HealthTable returns the node's health table, creating it on first use.
 func (e *Entry) HealthTable(maxKeys, pending int) *health.Table {
 	if table := e.healthTable.Load(); table != nil {
