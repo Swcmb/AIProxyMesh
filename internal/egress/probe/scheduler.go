@@ -62,6 +62,9 @@ type ScheduleConfig struct {
 	// network until that network proves itself, so a dense proxy list cannot
 	// spend the whole canary budget on one /24.
 	ClusterRecheck time.Duration
+	// QuotaStale is how long a canary 429 keeps the exit out of the verified
+	// set when the upstream sent no Retry-After.
+	QuotaStale time.Duration
 }
 
 type scheduleTask struct {
@@ -275,7 +278,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 			s.scan(s.clock())
 		case <-dispatch.C:
 			for i := 0; i < 4; i++ {
-				if !s.dispatchOne(ctx, time.Now()) {
+				if !s.dispatchAsync(ctx, time.Now()) {
 					break
 				}
 			}
@@ -483,6 +486,17 @@ func (s *Scheduler) enqueue(entry *node.Entry, key health.HealthKey, next time.T
 }
 
 func (s *Scheduler) dispatchOne(ctx context.Context, now time.Time) bool {
+	return s.dispatch(ctx, now, false)
+}
+
+// dispatchAsync runs the probe off the scheduling loop. The loop tick is far
+// shorter than one probe, so a synchronous dispatch would cap discovery at one
+// canary at a time and leave MaxInflight unused.
+func (s *Scheduler) dispatchAsync(ctx context.Context, now time.Time) bool {
+	return s.dispatch(ctx, now, true)
+}
+
+func (s *Scheduler) dispatch(ctx context.Context, now time.Time, async bool) bool {
 	cfg := s.cfg.load()
 	if !cfg.Enabled || s.executorFn() == nil {
 		return false
@@ -522,17 +536,25 @@ func (s *Scheduler) dispatchOne(ctx context.Context, now time.Time) bool {
 		return true
 	}
 
-	result := s.executorFn()(ctx, CanaryRequest{Entry: task.entry, Key: task.key, Mode: cfg.DefaultMode})
-	s.applyResult(task, cfg, result)
-	s.finishTask(task, id)
-
-	table := task.entry.HealthTable(cfg.MaxKeysPerNode, 10000)
-	if stats := table.Get(task.key); stats != nil {
-		stats.Acquire()
-		stats.LastProbeAt = now
-		stats.NextProbeAt = now.Add(cfg.ActiveRecheck)
-		stats.Release()
+	executor := s.executorFn()
+	run := func() {
+		defer s.finishTask(task, id)
+		result := executor(ctx, CanaryRequest{Entry: task.entry, Key: task.key, Mode: cfg.DefaultMode})
+		s.applyResult(task, cfg, result)
+		finished := time.Now()
+		table := task.entry.HealthTable(cfg.MaxKeysPerNode, 10000)
+		if stats := table.Get(task.key); stats != nil {
+			stats.Acquire()
+			stats.LastProbeAt = finished
+			stats.NextProbeAt = finished.Add(cfg.ActiveRecheck)
+			stats.Release()
+		}
 	}
+	if async {
+		go run()
+		return true
+	}
+	run()
 	return true
 }
 
@@ -569,9 +591,15 @@ func (s *Scheduler) applyResult(task *scheduleTask, cfg ScheduleConfig, result C
 	}
 	table := task.entry.HealthTable(cfg.MaxKeysPerNode, 10000)
 	table.Apply(task.key, observation, cfg.Health, time.Now())
-	if kind == health.OutcomeSuccess || kind == health.OutcomeNonTarget2xx {
+	switch kind {
+	case health.OutcomeSuccess, health.OutcomeNonTarget2xx:
 		// The network answered, so the rest of its ports are worth probing.
 		s.forgetCluster(task.entry.ClusterKeyFor())
+		task.entry.RecordSuccess()
+	case health.OutcomeRateLimited:
+		if cfg.QuotaStale > 0 {
+			task.entry.MarkQuotaStale(time.Now().Add(cfg.QuotaStale))
+		}
 	}
 	if result.Status == 404 {
 		if env := s.env.Load(); env != nil && cfg.TargetPause > 0 {

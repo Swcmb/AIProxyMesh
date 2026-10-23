@@ -944,6 +944,7 @@ func schedulerConfig(cfg *config.EgressConfig, upstream config.UpstreamConfig) p
 		Health:           healthCfg,
 		MaxKeysPerNode:   cfg.Health.MaxKeysPerNode,
 		ClusterRecheck:   time.Duration(cfg.Probe.ClusterRecheckSeconds) * time.Second,
+		QuotaStale:       time.Duration(cfg.Health.QuotaStaleSeconds) * time.Second,
 	}
 }
 

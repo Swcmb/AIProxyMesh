@@ -123,17 +123,17 @@ type EgressProbe struct {
 	// CanaryTimeoutSeconds bounds one canary probe. It is deliberately much
 	// shorter than a real request: discovery only needs to know whether the
 	// exit answers at all.
-	CanaryTimeoutSeconds int `json:"canary_timeout_seconds,omitempty"`
-	CanaryAllowKeyTiers        *bool   `json:"canary_allow_key_tiers,omitempty"`
-	CanaryKeyDailyBudget       int     `json:"canary_key_daily_budget,omitempty"`
-	ActiveRecheckSeconds       int     `json:"active_recheck_seconds,omitempty"`
-	VerifyingRecheckSeconds    int     `json:"verifying_recheck_seconds,omitempty"`
-	BackoffBaseSeconds         int     `json:"backoff_base_seconds,omitempty"`
-	BackoffMaxSeconds          int     `json:"backoff_max_seconds,omitempty"`
-	JitterRatio                float64 `json:"jitter_ratio,omitempty"`
-	TargetPauseSeconds         int     `json:"target_pause_seconds,omitempty"`
-	MaxSchedulePerScan         int     `json:"max_schedule_per_scan,omitempty"`
-	MaxScheduledKeys           int     `json:"max_scheduled_keys,omitempty"`
+	CanaryTimeoutSeconds    int     `json:"canary_timeout_seconds,omitempty"`
+	CanaryAllowKeyTiers     *bool   `json:"canary_allow_key_tiers,omitempty"`
+	CanaryKeyDailyBudget    int     `json:"canary_key_daily_budget,omitempty"`
+	ActiveRecheckSeconds    int     `json:"active_recheck_seconds,omitempty"`
+	VerifyingRecheckSeconds int     `json:"verifying_recheck_seconds,omitempty"`
+	BackoffBaseSeconds      int     `json:"backoff_base_seconds,omitempty"`
+	BackoffMaxSeconds       int     `json:"backoff_max_seconds,omitempty"`
+	JitterRatio             float64 `json:"jitter_ratio,omitempty"`
+	TargetPauseSeconds      int     `json:"target_pause_seconds,omitempty"`
+	MaxSchedulePerScan      int     `json:"max_schedule_per_scan,omitempty"`
+	MaxScheduledKeys        int     `json:"max_scheduled_keys,omitempty"`
 	// ClusterRecheckSeconds keeps exploration to one representative per source
 	// network (IPv4 /24, IPv6 /48) until it answers.
 	ClusterRecheckSeconds int `json:"cluster_recheck_seconds,omitempty"`

@@ -189,3 +189,71 @@ func TestSchedulerSamplesOneRepresentativePerNetwork(t *testing.T) {
 		t.Fatalf("a proven network must expand to its other exits, enqueued %d", len(seen))
 	}
 }
+
+func TestSchedulerDispatchesCanariesConcurrently(t *testing.T) {
+	poolInstance := pool.New(16)
+	entries := make([]*node.Entry, 0, 2)
+	for i, server := range []string{"10.8.1.1", "10.8.2.1"} {
+		options := node.Options{Type: node.HTTP, Server: server, Port: uint16(18081 + i)}
+		raw, _ := json.Marshal(options)
+		entry := node.NewEntry(node.HashOptions(options), raw, options, time.Now(), 0)
+		entry.RecordSuccess()
+		poolInstance.Restore(entry, []string{"sub"}, true)
+		entries = append(entries, entry)
+	}
+	cfg := health.DefaultConfig()
+	scheduler := NewScheduler(poolInstance, ScheduleConfig{
+		Enabled: true, BudgetPerSecond: 1000, Burst: 100, MaxPerScan: 100, MaxKeys: 100,
+		MaxInflight: 4, Health: cfg, MaxKeysPerNode: 4, DefaultMode: "stream",
+	}, nil)
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{})
+	scheduler.SetExecutor(func(context.Context, CanaryRequest) CanaryResult {
+		entered <- struct{}{}
+		<-release
+		return CanaryResult{Status: 200}
+	})
+	key, _ := health.NewKey("https://opencode.ai/zen", "model", health.ProtocolChat, health.ModeStream)
+	now := time.Now()
+	for _, entry := range entries {
+		scheduler.enqueue(entry, key, now, 0, now, true)
+	}
+	ctx := context.Background()
+	if !scheduler.dispatchAsync(ctx, now) || !scheduler.dispatchAsync(ctx, now) {
+		t.Fatal("both queued canaries must dispatch")
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case <-entered:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("only %d canaries ran concurrently; dispatch is still serial", i)
+		}
+	}
+	close(release)
+}
+
+func TestSchedulerMarksQuotaStaleOnRateLimit(t *testing.T) {
+	poolInstance := pool.New(16)
+	options := node.Options{Type: node.HTTP, Server: "10.8.3.1", Port: 18085}
+	raw, _ := json.Marshal(options)
+	entry := node.NewEntry(node.HashOptions(options), raw, options, time.Now(), 0)
+	poolInstance.Restore(entry, []string{"sub"}, true)
+	key, _ := health.NewKey("https://opencode.ai/zen", "model", health.ProtocolChat, health.ModeStream)
+	scheduler := NewScheduler(poolInstance, ScheduleConfig{
+		Enabled: true, BudgetPerSecond: 1000, Burst: 100, MaxPerScan: 100, MaxKeys: 100,
+		MaxInflight: 4, Health: health.DefaultConfig(), MaxKeysPerNode: 4,
+		QuotaStale: 5 * time.Minute,
+	}, nil)
+	task := &scheduleTask{entry: entry, key: key}
+	scheduler.applyResult(task, scheduler.cfg.load(), CanaryResult{Status: 429})
+	if !entry.QuotaStale(time.Now().Add(time.Minute)) {
+		t.Fatal("a canary 429 must suppress the exit's source IP")
+	}
+	if entry.QuotaStale(time.Now().Add(6 * time.Minute)) {
+		t.Fatal("the suppression must expire with the configured window")
+	}
+	scheduler.applyResult(task, scheduler.cfg.load(), CanaryResult{Status: 200, Valid: true, ValidKnown: true})
+	if entry.QuotaStale(time.Now()) {
+		t.Fatal("a successful answer must clear the suppression")
+	}
+}
