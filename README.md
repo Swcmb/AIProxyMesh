@@ -1,6 +1,10 @@
 # Mesh
 
+<<<<<<< ours
 单体 OpenCode API 网关：统一代理出口池、健康评估、智能调度与模型排名，内置 Web 管理界面。
+=======
+[English](README.md) | [简体中文](README.zh-CN.md) | [Tiếng Việt](README.vi.md) | [Italiano](README.it.md)
+>>>>>>> theirs
 
 - 对外提供 Chat Completions、Responses、Anthropic Messages 与 SystemOne 协议。
 - 管理 Zen / Go Key 池、匿名通道、模型目录、模型排名与轮转顺序。
@@ -88,7 +92,26 @@ F = 0.50M + 0.25Cx + 0.25To        # 模态 / 上下文 / Agent 能力
 G ∈ {0,1}                          # 硬性准入
 ```
 
+<<<<<<< ours
 默认任务预设：`agent-coding`（40/20/25/15）、`general-text`（35/25/25/15）、`vision`（35/15/25/25）。缺失的 Q 指标按其余可用指标重新归一化；实测样本不足时降低置信度。完整定义见 `project-context/specs/model-ranking.md`。
+=======
+The server forces `stream: false`. Use `{"mode":"selected","tier":"zen","id":"KEY_FINGERPRINT"}` to test a specific key from `/api/debug/models`. A selected request makes at most one upstream attempt, without anonymous access, key rotation, tier fallback, or reasoning replay.
+
+**Both automatic and selected diagnostics preserve production key cooldowns, failure counts, proxy health, and bindings.** They still make real upstream requests, can consume provider quota, and appear in monitoring.
+
+After execution, the management endpoint returns HTTP 200 with the actual result in `ok`, `http_status`, `request_id`, `route`, and `response`. Selected-key results also include `selected_key` and `key_test`: `usable`, `rejected`, `rate_limited`, `transport_error`, `upstream_error`, `request_error`, or `unavailable`. Invalid management input, authentication, CSRF, and throttling retain their own HTTP error statuses.
+
+### Interface language
+
+The WebUI loads its translations from `webui/js/i18n.js`. It ships with **简体中文** (default), **English**, **Tiếng Việt**, and **Italiano**. The original Simplified Chinese copy lives in `index.html` and `webui/js/` and stays the fallback for every string without a translation, so adding a language never rewrites the original.
+
+- The selector sits in the topbar, and on the login card.
+- The choice is stored in `localStorage` under `opencode2api.ui.lang`.
+- Switching re-renders both static text (`data-i18n`, `data-i18n-attr`) and JavaScript-generated text without reloading the page.
+- Dates and times follow the selected locale as well.
+
+To add a language, add one block to `DICTIONARY` in `webui/js/i18n.js`, then register its code in `SUPPORTED`, `LABELS`, `FLAGS`, and `DATE_LOCALES`, and add it to the `browserLocale` detection chain.
+>>>>>>> theirs
 
 ## 管理界面
 
