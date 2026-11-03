@@ -193,23 +193,39 @@ func responsesTextFormat(format any) any {
 // reasoningEffort projects a bridge-level reasoning value onto the OpenAI Chat
 // "reasoning_effort" field.
 //
+<<<<<<< ours
 // Precedence matters: a level the client stated explicitly (the "effort" field,
 // whether or not it arrived next to a thinking block) wins over anything
 // inferred from a thinking budget. Before this, an Anthropic request carrying
 // both thinking.budget_tokens and output_config.effort threw the explicit
 // effort away and reported the budget bucket instead, so a client asking for
 // "max" was served as "high".
+=======
+// Precedence matters: a level the client stated explicitly (an "effort" or
+// "reasoning_effort" key, whether or not it arrived next to a thinking block)
+// wins over anything inferred from a thinking budget. Before this, an
+// Anthropic request carrying both thinking.budget_tokens and
+// output_config.effort threw the explicit effort away and reported the budget
+// bucket instead, so a client asking for "max" was served as "high".
+//
+// Explicitly disabled reasoning remains distinct from an unset value so later
+// defaults cannot turn it back on.
+>>>>>>> theirs
 func reasoningEffort(value any) any {
 	if object, ok := value.(map[string]any); ok {
+		if jsonutil.StringAt(object, "type") == "disabled" {
+			return "none"
+		}
 		if effort, ok := explicitEffort(object); ok {
 			return effort
 		}
 		switch jsonutil.StringAt(object, "type") {
-		case "disabled":
-			return nil
 		case "enabled", "adaptive":
 			return effortForThinkingBudget(jsonutil.IntAt(object, "budget_tokens"))
 		default:
+			if effort, ok := normalizeEffortValue(object["type"]); ok {
+				return effort
+			}
 			return object["type"]
 		}
 	}
@@ -217,6 +233,12 @@ func reasoningEffort(value any) any {
 		return effort
 	}
 	return value
+}
+
+// reasoningDisabled reports whether a reasoning value explicitly disables it.
+func reasoningDisabled(value any) bool {
+	effort, ok := reasoningEffort(value).(string)
+	return ok && effort == "none"
 }
 
 // explicitEffort reports the effort a client stated verbatim in a reasoning
@@ -250,9 +272,7 @@ func normalizeEffortValue(value any) (any, bool) {
 	}
 	switch strings.ToLower(strings.TrimSpace(text)) {
 	case "none", "disabled":
-		// Explicitly no reasoning: clear any inferred level instead of
-		// resurrecting one from a budget.
-		return nil, true
+		return "none", true
 	case "":
 		return nil, false
 	}
@@ -274,6 +294,9 @@ func normalizeEffortValue(value any) (any, bool) {
 func anthropicThinking(value any) (any, map[string]any) {
 	if value == nil {
 		return nil, nil
+	}
+	if reasoningDisabled(value) {
+		return map[string]any{"type": "disabled"}, nil
 	}
 	budget := 0
 	if object, ok := value.(map[string]any); ok {
