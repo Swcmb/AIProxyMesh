@@ -1135,9 +1135,26 @@ func (g *Gateway) recordUpstreamAttempt(ctx context.Context, route models.Route,
 	})
 }
 
+<<<<<<< ours
 func proxyTrace(proxy *proxyTransport) egressTrace {
 	if proxy == nil {
 		return egressTrace{Proxy: "unavailable"}
+=======
+// upstreamRequest builds the POST for one attempt: baseURL plus the protocol's
+// /v1/... route, carrying body. The header set follows the lane: setV1Headers
+// when models.IsV1Upstream(baseURL), setV2Headers otherwise. Anthropic
+// endpoints on a v2 lane gain beta=true, matching the 2.x client; the 1.x lane
+// keeps its shape. key is sent as x-api-key (with anthropic-version) on the
+// Anthropic protocol and as a Bearer token on every other one; the anonymous
+// lane passes anonymousZenKey.
+func upstreamRequest(ctx context.Context, baseURL string, protocol wire.Protocol, body []byte, ids identity.RequestIDs, key string) (*http.Request, error) {
+	endpoint := strings.TrimRight(baseURL, "/") + wire.Path(protocol)
+	if !models.IsV1Upstream(baseURL) {
+		endpoint = strings.TrimRight(baseURL, "/") + v2EndpointPath(baseURL, protocol)
+	}
+	if protocol == wire.Anthropic && !models.IsV1Upstream(baseURL) {
+		endpoint = withAnthropicBeta(endpoint)
+>>>>>>> theirs
 	}
 	return egressTrace{Proxy: config.RedactURL(proxy.name)}
 }
@@ -1186,11 +1203,284 @@ func newUpstreamRequest(ctx context.Context, baseURL string, protocol wire.Proto
 	return req, nil
 }
 
+<<<<<<< ours
 // clientProjectID renders the project header the way the client does: a bare
 // 40-character lowercase hex id rather than the gateway's "prj_" prefixed
 // stable id. The value itself is not checked upstream, only its shape, but
 // hashing keeps one conversation pinned to one project.
 func clientProjectID(project string) string {
+=======
+// v2EndpointPath returns the route a 2.1 client posts to on a v2 origin. The
+// 2.1 client groups /inference routes by provider family, so the family
+// segment sits between the origin and the protocol path (a 2.0.32 client
+// posted the protocol path directly, and that route still answers). Origins
+// that are not the /inference gateway — a custom base, or /zen/go — keep the
+// flat route, because the family grouping is specific to /inference.
+func v2EndpointPath(baseURL string, protocol wire.Protocol) string {
+	parsed, err := url.Parse(baseURL)
+	if err != nil || !strings.HasSuffix(strings.TrimRight(parsed.Path, "/"), "/inference") {
+		return wire.Path(protocol)
+	}
+	family := "openai"
+	if protocol == wire.Anthropic {
+		family = "anthropic"
+	}
+	return "/" + family + wire.Path(protocol)
+}
+
+// withAnthropicBeta marks an Anthropic endpoint as beta the way the OpenCode
+// 2.x client does, preserving any query a configured base URL already carries.
+func withAnthropicBeta(endpoint string) string {
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return endpoint
+	}
+	query := parsed.Query()
+	if query.Get("beta") == "true" {
+		return endpoint
+	}
+	query.Set("beta", "true")
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
+}
+
+// setV1Headers renders the v1 lane's header set, that of an OpenCode 1.19.3
+// model request on its opencode provider, as captured from the official
+// release: the AI SDK User-Agent of the package serving the protocol, both
+// session headers, the user message id as x-opencode-request (a fresh
+// ascending msg_ id when none was derived), the git root commit as the
+// project, the canonical parent session under both parent headers, and only
+// the anthropic-beta flags the AI SDK derives from the body. The v1 client
+// sends no x-session-affinity or X-Session-Id to this provider.
+func setV1Headers(header http.Header, protocol wire.Protocol, body []byte, ids identity.RequestIDs) {
+	header.Set("Accept", "*/*")
+	header.Set("User-Agent", httpx.V1ModelUserAgent(v1ProviderUtils(protocol)))
+	header.Set("x-opencode-client", "cli")
+	header.Set("x-opencode-session", ids.Session)
+	header.Set("x-opencode-session-id", ids.Session)
+	message := ids.Message
+	if message == "" {
+		message = identity.AscendingID("msg", time.Now())
+	}
+	header.Set("x-opencode-request", message)
+	header.Set("x-opencode-project", projectID(ids.Project))
+	if ids.ParentSession != "" {
+		parent := identity.CanonicalSessionID(ids.ParentSession)
+		header.Set("x-opencode-parent-session-id", parent)
+		header.Set("x-parent-session-id", parent)
+	}
+	if protocol == wire.Anthropic {
+		if betas := v1AnthropicBetas(body); betas != "" {
+			header.Set("anthropic-beta", betas)
+		}
+	}
+}
+
+// setV2Headers renders the OpenCode 2.x CLI header set the v2 gates
+// fingerprint: the "opencode/<channel>/<version>/cli" User-Agent, the
+// client's child session as x-opencode-session-id, the conversation affinity
+// (the canonical parent when one is present) as x-opencode-session,
+// x-session-affinity and X-Session-Id, and a bare 40-character hex
+// x-opencode-project. The v2 gate rejects x-opencode-request and canonical
+// prj_* project ids with 403 FreeTierError, so neither is sent. Anthropic
+// requests carry a fixed anthropic-beta set; upstreamRequest adds
+// anthropic-version and the beta query.
+func setV2Headers(header http.Header, protocol wire.Protocol, ids identity.RequestIDs) {
+	header.Set("Accept", "application/json, text/event-stream")
+	header.Set("x-opencode-client", "cli")
+	rootSession := ids.Session
+	if ids.ParentSession != "" {
+		parent := identity.CanonicalSessionID(ids.ParentSession)
+		rootSession = parent
+		header.Set("x-opencode-parent-session-id", parent)
+		header.Set("x-parent-session-id", parent)
+	}
+	childSession := ids.ChildSession
+	if childSession == "" {
+		childSession = ids.Session
+	}
+	header.Set("x-session-affinity", rootSession)
+	header.Set("X-Session-Id", rootSession)
+	header.Set("x-opencode-session", rootSession)
+	header.Set("x-opencode-session-id", childSession)
+	header.Set("User-Agent", httpx.V2UserAgent())
+	header.Set("x-opencode-project", projectID(ids.Project))
+	if protocol == wire.Anthropic {
+		header.Set("anthropic-beta", "interleaved-thinking-2025-05-14")
+	}
+}
+
+// v1ProviderUtils names the provider-utils version of the AI SDK package the
+// OpenCode 1.x client routes a protocol through, for the v1 User-Agent. System
+// One has no v1 counterpart and reports the chat package.
+func v1ProviderUtils(protocol wire.Protocol) string {
+	switch protocol {
+	case wire.Responses:
+		return httpx.V1ResponsesSDK
+	case wire.Anthropic:
+		return httpx.V1AnthropicSDK
+	default:
+		return httpx.V1ChatSDK
+	}
+}
+
+// gitCommitPattern matches the git root commit hash OpenCode uses as its
+// project id on both lanes.
+var gitCommitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// v1AnthropicBetaRequest holds the Messages body fields the AI SDK
+// anthropic provider derives beta flags from. Fields whose JSON type varies
+// stay raw so one unexpected value cannot hide the others.
+type v1AnthropicBetaRequest struct {
+	Model             string            `json:"model"`
+	MCPServers        []json.RawMessage `json:"mcp_servers"`
+	ContextManagement *struct {
+		Edits []struct {
+			Type string `json:"type"`
+		} `json:"edits"`
+	} `json:"context_management"`
+	Container    json.RawMessage `json:"container"`
+	OutputConfig struct {
+		TaskBudget json.RawMessage `json:"task_budget"`
+	} `json:"output_config"`
+	Speed     json.RawMessage `json:"speed"`
+	Fallbacks json.RawMessage `json:"fallbacks"`
+	Thinking  struct {
+		BlockBinding json.RawMessage `json:"block_binding"`
+	} `json:"thinking"`
+	Tools []struct {
+		Type           string          `json:"type"`
+		InputExamples  json.RawMessage `json:"input_examples"`
+		AllowedCallers json.RawMessage `json:"allowed_callers"`
+	} `json:"tools"`
+}
+
+// v1AnthropicToolBetas maps the server tool types of a Messages body to the
+// beta flag the AI SDK anthropic provider sends with each.
+var v1AnthropicToolBetas = map[string]string{
+	"code_execution_20250522": "code-execution-2025-05-22",
+	"code_execution_20250825": "code-execution-2025-08-25",
+	"computer_20241022":       "computer-use-2024-10-22",
+	"computer_20250124":       "computer-use-2025-01-24",
+	"computer_20251124":       "computer-use-2025-11-24",
+	"text_editor_20241022":    "computer-use-2024-10-22",
+	"text_editor_20250124":    "computer-use-2025-01-24",
+	"text_editor_20250429":    "computer-use-2025-01-24",
+	"bash_20241022":           "computer-use-2024-10-22",
+	"bash_20250124":           "computer-use-2025-01-24",
+	"memory_20250818":         "context-management-2025-06-27",
+	"web_fetch_20250910":      "web-fetch-2025-09-10",
+	"web_fetch_20260209":      "code-execution-web-tools-2026-02-09",
+	"web_search_20260209":     "code-execution-web-tools-2026-02-09",
+	"advisor_20260301":        "advisor-tool-2026-03-01",
+}
+
+// v1AnthropicBetas returns the anthropic-beta value OpenCode 1.19.3 sends
+// with a Messages body on the v1 lane, or "" when no flag applies. Its
+// opencode provider sets no fixed betas: the AI SDK derives them from the
+// request features (body features first, then tools, in the SDK's order), and
+// per-tool eager_input_streaming has replaced the old
+// fine-grained-tool-streaming flag.
+func v1AnthropicBetas(body []byte) string {
+	var request v1AnthropicBetaRequest
+	// A field of an unexpected type fails alone; the rest still decode.
+	_ = json.Unmarshal(body, &request)
+	var betas []string
+	add := func(beta string) {
+		if !slices.Contains(betas, beta) {
+			betas = append(betas, beta)
+		}
+	}
+	if len(request.MCPServers) > 0 {
+		add("mcp-client-2025-04-04")
+	}
+	if request.ContextManagement != nil {
+		add("context-management-2025-06-27")
+		for _, edit := range request.ContextManagement.Edits {
+			if edit.Type == "compact_20260112" {
+				add("compact-2026-01-12")
+			}
+		}
+	}
+	var container struct {
+		Skills []json.RawMessage `json:"skills"`
+	}
+	if json.Unmarshal(request.Container, &container) == nil && len(container.Skills) > 0 {
+		add("code-execution-2025-08-25")
+		add("skills-2025-10-02")
+		add("files-api-2025-04-14")
+	}
+	if isPresentJSON(request.OutputConfig.TaskBudget) {
+		add("task-budgets-2026-03-13")
+	}
+	if string(request.Speed) == `"fast"` {
+		add("fast-mode-2026-02-01")
+	}
+	var fallbacks []json.RawMessage
+	if string(request.Fallbacks) == `"default"` {
+		add("server-side-fallback-2026-07-01")
+	} else if json.Unmarshal(request.Fallbacks, &fallbacks) == nil && len(fallbacks) > 0 {
+		add("server-side-fallback-2026-06-01")
+	}
+	if isPresentJSON(request.Thinking.BlockBinding) {
+		add("thinking-binding-controls-2026-08-01")
+	}
+	for _, tool := range request.Tools {
+		if tool.Type == "" || tool.Type == "custom" {
+			if anthropicSupportsStructuredOutput(request.Model) {
+				add("structured-outputs-2025-11-13")
+			}
+			if isPresentJSON(tool.InputExamples) || isPresentJSON(tool.AllowedCallers) {
+				add("advanced-tool-use-2025-11-20")
+			}
+		} else if beta := v1AnthropicToolBetas[tool.Type]; beta != "" {
+			add(beta)
+		}
+	}
+	return strings.Join(betas, ",")
+}
+
+func isPresentJSON(raw json.RawMessage) bool {
+	return len(raw) > 0 && string(raw) != "null"
+}
+
+// claude3OrOlderPattern matches the Claude model families older than Claude 4
+// (Claude Instant, Claude 2 and every Claude 3.x model) that the AI SDK treats
+// as lacking structured output.
+var claude3OrOlderPattern = regexp.MustCompile(`claude-(?:instant(?:-|$)|v?2(?:$|[-.:])|3(?:$|[-.]))`)
+
+// anthropicSupportsStructuredOutput mirrors the AI SDK anthropic provider's
+// model capability table, checked in the same order: the dated Claude 4.0
+// releases and Claude 3 and older lack structured output, every other Claude
+// model has it, and non-Claude models do not.
+func anthropicSupportsStructuredOutput(model string) bool {
+	for _, supported := range []string{
+		"claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-fable-5", "claude-sonnet-5",
+		"claude-sonnet-4-6", "claude-opus-4-6", "claude-sonnet-4-5", "claude-opus-4-5", "claude-haiku-4-5",
+		"claude-opus-4-1",
+	} {
+		if strings.Contains(model, supported) {
+			return true
+		}
+	}
+	if strings.Contains(model, "claude-sonnet-4-") || strings.Contains(model, "claude-opus-4-") ||
+		strings.Contains(model, "claude-3-haiku") || claude3OrOlderPattern.MatchString(model) {
+		return false
+	}
+	return strings.Contains(model, "claude-")
+}
+
+// projectID renders the project header in the shape both lanes use: the
+// genuine git root commit hash or "global" is kept verbatim, and any other
+// project is hashed into the same 40-character lowercase hex shape. The value
+// itself is not checked upstream, only its shape, but hashing keeps one
+// project mapped to one stable upstream project id and masks a caller's
+// prj_*-style project, which the v2 gate rejects.
+func projectID(project string) string {
+	if project == "global" || gitCommitPattern.MatchString(project) {
+		return project
+	}
+>>>>>>> theirs
 	sum := sha256.Sum256([]byte("opencode-project\x00" + project))
 	return hex.EncodeToString(sum[:20])
 }

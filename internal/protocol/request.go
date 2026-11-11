@@ -42,6 +42,9 @@ func ForcedEffort(protocol Protocol, body map[string]any, effort string) {
 	if body == nil {
 		return
 	}
+	if requestDisablesReasoning(protocol, body) {
+		return
+	}
 	effort = strings.ToLower(strings.TrimSpace(effort))
 	if !validForcedEffort(effort) {
 		return
@@ -79,8 +82,31 @@ func ForcedEffort(protocol Protocol, body map[string]any, effort string) {
 	}
 }
 
+<<<<<<< ours
 // clientEffortExplicit reports whether an upstream body already carries a level
 // the client stated, as opposed to one the gateway derived from a budget.
+=======
+func requestDisablesReasoning(protocol Protocol, body map[string]any) bool {
+	switch protocol {
+	case Chat:
+		return reasoningDisabled(body["reasoning_effort"]) ||
+			reasoningDisabled(body["reasoning"]) ||
+			reasoningDisabled(body["thinking"])
+	case Responses:
+		return reasoningDisabled(jsonutil.AnyAt(body, "reasoning", "effort")) ||
+			reasoningDisabled(body["reasoning_effort"])
+	case Anthropic:
+		return reasoningDisabled(body["thinking"]) ||
+			reasoningDisabled(jsonutil.AnyAt(body, "output_config", "effort")) ||
+			reasoningDisabled(body["effort"])
+	default:
+		return false
+	}
+}
+
+// clientEffortExplicit reports whether an upstream body already carries a
+// level in its protocol's native slot, which a forced level must not replace.
+>>>>>>> theirs
 //
 // The shapes differ per protocol, and each one mirrors how that protocol
 // expressed the level natively: Anthropic states it in output_config.effort (or
@@ -328,12 +354,13 @@ func anthropicContentHasType(content []any, kind string) bool {
 // {adaptive}` plus `output_config: {effort: "max"}` decoded as the thinking
 // block and was reported downstream as the budget bucket "high".
 func anthropicReasoning(input map[string]any) any {
+	if reasoningDisabled(input["thinking"]) {
+		return "none"
+	}
 	stated := jsonutil.FirstAny(jsonutil.AnyAt(input, "output_config", "effort"), input["effort"])
 	if effort, ok := normalizeEffortValue(stated); ok {
-		// The explicit effort survives next to the thinking block's budget so
-		// nothing the client said is lost on the way to the bridge.
-		if effort == nil {
-			return nil
+		if effort == "none" {
+			return "none"
 		}
 		if thinking, ok := input["thinking"].(map[string]any); ok {
 			merged := make(map[string]any, len(thinking)+1)
@@ -361,6 +388,9 @@ func decodeBridgeRequest(protocol Protocol, input map[string]any) (bridgeRequest
 		request.MaxTokens = jsonutil.FirstAny(input["max_completion_tokens"], input["max_tokens"])
 		request.Stop = input["stop"]
 		request.Reasoning = jsonutil.FirstAny(input["reasoning_effort"], input["reasoning"])
+		if reasoningDisabled(input["thinking"]) {
+			request.Reasoning = "none"
+		}
 		for i, raw := range jsonutil.SliceAt(input, "messages") {
 			message, ok := raw.(map[string]any)
 			if !ok {
@@ -576,6 +606,9 @@ func decodeBridgeRequest(protocol Protocol, input map[string]any) (bridgeRequest
 	default:
 		return request, fmt.Errorf("unsupported input protocol %q", protocol)
 	}
+	if reasoningDisabled(request.Reasoning) {
+		request.Reasoning = "none"
+	}
 	for i := range request.Messages {
 		for j := range request.Messages[i].Blocks {
 			block := &request.Messages[i].Blocks[j]
@@ -663,7 +696,11 @@ func encodeChatRequest(request bridgeRequest) (map[string]any, error) {
 	jsonutil.Put(output, "max_tokens", request.MaxTokens)
 	jsonutil.Put(output, "stop", request.Stop)
 	if effort := reasoningEffort(request.Reasoning); effort != nil {
-		output["reasoning_effort"] = effort
+		if effort == "none" {
+			output["reasoning_effort"] = "none"
+		} else {
+			output["reasoning_effort"] = effort
+		}
 	}
 	jsonutil.Put(output, "response_format", chatResponseFormat(request.ResponseFormat))
 	jsonutil.Put(output, "parallel_tool_calls", request.ParallelToolCalls)
@@ -894,8 +931,13 @@ func missingToolIDs(order []string, pending map[string]bool) []string {
 // no reasoning configuration at all.
 func responsesReasoning(value any) any {
 	if object, ok := value.(map[string]any); ok {
+<<<<<<< ours
 		if jsonutil.StringAt(object, "type") == "disabled" {
 			return object
+=======
+		if reasoningDisabled(object) {
+			return map[string]any{"effort": "none"}
+>>>>>>> theirs
 		}
 		// "effort" is authoritative here for the same reason as in
 		// encodeChatRequest: it either came from the client verbatim or was
