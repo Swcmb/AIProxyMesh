@@ -8,7 +8,7 @@
       "blocked_sha": "57b906b23fbecf3eed12297883a9e3bbf44e1493",
       "blocked_issue": 50,
       "last_release": "v1.4.3",
-      "last_checked": "2026-11-24T14:54:11Z"
+      "last_checked": "2026-11-25T14:26:01Z"
     },
     "resin": {
       "repo": "Resinat/Resin",
@@ -17,7 +17,7 @@
       "blocked_sha": "e5c12863facae989c0bd7e563436deef901542f3",
       "blocked_issue": 51,
       "last_release": "v1.3.0",
-      "last_checked": "2026-11-24T14:54:12Z"
+      "last_checked": "2026-11-25T14:26:01Z"
     }
   }
 }
